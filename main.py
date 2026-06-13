@@ -19,6 +19,9 @@ import sys
 from pathlib import Path
 
 from src.config import Config
+from src.lemmatizer import Lemmatizer
+from src.synonyms import SynonymDict
+from src.preprocess import preprocess
 
 # ---------------------------------------------------------------------------
 # Константы
@@ -133,7 +136,9 @@ def run_pipeline(
     hints: list[str],
     debug: bool,
     min_confidence: float | None,
-    cfg,  # type: ignore[type-arg]  # Config будет добавлен в изменении 5
+    cfg: Config,
+    lemmatizer: Lemmatizer | None = None,
+    synonym_dict: SynonymDict | None = None,
 ) -> dict:
     """Центральный пайплайн обработки запроса.
 
@@ -153,21 +158,22 @@ def run_pipeline(
     """
     logger.info("Запуск пайплайна: term=%r hints=%r", term, hints)
 
-    # --- ПЛАН РЕАЛИЗАЦИИ (будут подключаться постепенно) ---
-    # Шаг 1: preprocess()        -- src/preprocess.py     (изменение 9-10)
-    # Шаг 2: vectorize()          -- src/vectorize.py     (изменение 11-12)
-    # Шаг 3: search_similar_concepts() -- src/search.py   (изменение 17)
-    # Шаг 4: aggregate_parameters()    -- src/aggregation.py (изменение 18)
-    # Шаг 4-бис: generative_suggest()  -- src/generative.py  (изменение 21+)
-    # Шаг 5: build_response()      -- src/response_builder.py (изменение 19-20)
+    # Шаг 1: предобработка
+    processed = preprocess(term, hints, cfg, synonym_dict, lemmatizer)
+    if processed["status"] == "error":
+        return {
+            "status": "error",
+            "message": processed["message"],
+        }
 
+    # Шаги 2-5 будут добавлены по мере реализации векторизации и поиска
     result: dict = {
         "status": "ok",
-        "term": term,
+        "term": processed["clean_term"],
         "selected_context": {"domain": "не определено", "confidence": 0.0},
         "parameters": [],
         "suggested_refinements": [],
-        "warnings": ["Заглушка: реальная обработка появится в изменениях 6-19"],
+        "warnings": processed.get("warnings", []),
     }
 
     if debug:
@@ -218,6 +224,9 @@ def main() -> None:
         print(json.dumps({"status": "error", "message": str(exc)}, ensure_ascii=False))
         sys.exit(1)
 
+    lemmatizer = Lemmatizer(cache_size=cfg.cache_lemma_size)
+    synonym_dict = SynonymDict(json_path=cfg.synonyms_path)
+
     # --- Чтение входа ---
     try:
         if args.input is not None:
@@ -237,6 +246,8 @@ def main() -> None:
             debug=parsed["debug"],
             min_confidence=parsed["min_confidence"],
             cfg=cfg,
+            lemmatizer=lemmatizer,
+            synonym_dict=synonym_dict,
         )
 
     except ValueError as exc:

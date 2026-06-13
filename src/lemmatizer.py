@@ -1,0 +1,93 @@
+"""src/lemmatizer.py -- \u0441\u0438\u043d\u0433\u043b\u0442\u043e\u043d-\u043b\u0435\u043c\u043c\u0430\u0442\u0438\u0437\u0430\u0442\u043e\u0440 \u0441 LRU-\u043a\u044d\u0448\u0435\u043c.
+
+\u0418\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u0435\u0442 pymorphy3 \u0434\u043b\u044f \u043f\u0440\u0438\u0432\u0435\u0434\u0435\u043d\u0438\u044f \u0441\u043b\u043e\u0432 \u043a \u043d\u0430\u0447\u0430\u043b\u044c\u043d\u043e\u0439 \u0444\u043e\u0440\u043c\u0435.\n\u0421\u043e\u0437\u0434\u0430\u0451\u0442\u0441\u044f \u043e\u0434\u0438\u043d \u0440\u0430\u0437 \u0437\u0430 \u0432\u0441\u0451 \u0432\u0440\u0435\u043c\u044f \u0440\u0430\u0431\u043e\u0442\u044b \u043f\u0440\u0438\u043b\u043e\u0436\u0435\u043d\u0438\u044f (\u0441\u0438\u043d\u0433\u043b\u0442\u043e\u043d).
+\u041f\u043e\u0432\u0442\u043e\u0440\u043d\u044b\u0435 Lemmatizer() \u0432\u043e\u0437\u0432\u0440\u0430\u0449\u0430\u044e\u0442 \u0442\u043e\u0442 \u0436\u0435 \u043e\u0431\u044a\u0435\u043a\u0442, \u043a\u044d\u0448 \u043d\u0435 \u0441\u0431\u0440\u0430\u0441\u044b\u0432\u0430\u0435\u0442\u0441\u044f.
+"""
+from collections import OrderedDict
+import logging
+
+import pymorphy3
+
+logger = logging.getLogger("ai_terminator.lemmatizer")
+
+
+class Lemmatizer:
+    """\u0421\u0438\u043d\u0433\u043b\u0442\u043e\u043d-\u043b\u0435\u043c\u043c\u0430\u0442\u0438\u0437\u0430\u0442\u043e\u0440 \u0440\u0443\u0441\u0441\u043a\u043e\u0433\u043e \u044f\u0437\u044b\u043a\u0430 \u0441 LRU-\u043a\u044d\u0448\u0435\u043c.
+
+    \u041f\u0440\u0438\u043c\u0435\u0440:
+        lemmatizer = Lemmatizer(cache_size=1000)
+        lemmatizer.lemmatize_word('\u043a\u043b\u044e\u0447\u0438')     # -> '\u043a\u043b\u044e\u0447'
+        lemmatizer.lemmatize_phrase('\u043a\u043b\u044e\u0447-\u0433\u0430\u0435\u0447\u043d\u044b\u0439')  # -> ['\u043a\u043b\u044e\u0447', '\u0433\u0430\u0435\u0447\u043d\u044b\u0439']
+    """
+
+    _instance: "Lemmatizer | None" = None
+
+    def __new__(cls, cache_size: int = 1000) -> "Lemmatizer":
+        if cls._instance is None:
+            instance = super().__new__(cls)
+            instance._morph = pymorphy3.MorphAnalyzer()
+            instance._cache: OrderedDict[str, str] = OrderedDict()
+            instance._cache_size = cache_size
+            cls._instance = instance
+            logger.info("Lemmatizer \u0438\u043d\u0438\u0446\u0438\u0430\u043b\u0438\u0437\u0438\u0440\u043e\u0432\u0430\u043d (cache_size=%d)", cache_size)
+        return cls._instance
+
+    # ------------------------------------------------------------------
+    def lemmatize_word(self, word: str) -> str:
+        """\u041f\u0440\u0438\u0432\u0435\u0441\u0442\u0438 \u043e\u0434\u043d\u043e \u0441\u043b\u043e\u0432\u043e \u043a \u043d\u0430\u0447\u0430\u043b\u044c\u043d\u043e\u0439 \u0444\u043e\u0440\u043c\u0435 (\u043b\u0435\u043c\u043c\u0435).
+
+        Args:
+            word: \u043e\u0434\u043d\u043e \u0441\u043b\u043e\u0432\u043e \u0431\u0435\u0437 \u043f\u0440\u043e\u0431\u0435\u043b\u043e\u0432 \u0438 \u0434\u0435\u0444\u0438\u0441\u043e\u0432.
+
+        Returns:
+            \u041b\u0435\u043c\u043c\u0430 \u0441\u043b\u043e\u0432\u0430 \u0438\u043b\u0438 word.lower() \u0435\u0441\u043b\u0438 \u043f\u0430\u0440\u0441\u0438\u043d\u0433 \u043d\u0435\u0432\u043e\u0437\u043c\u043e\u0436\u0435\u043d.
+        """
+        if not word:
+            return ""
+
+        # \u041f\u0440\u043e\u0432\u0435\u0440\u044f\u0435\u043c \u043a\u044d\u0448
+        if word in self._cache:
+            self._cache.move_to_end(word)
+            logger.debug("\u041a\u044d\u0448-\u043f\u043e\u043f\u0430\u0434\u0430\u043d\u0438\u0435: %r", word)
+            return self._cache[word]
+
+        # \u041a\u044d\u0448-\u043f\u0440\u043e\u043c\u0430\u0445: \u043b\u0435\u043c\u043c\u0430\u0442\u0438\u0437\u0438\u0440\u0443\u0435\u043c
+        try:
+            parses = self._morph.parse(word)
+            if parses:
+                best = max(parses, key=lambda p: p.score)
+                lemma = best.normal_form
+            else:
+                lemma = word.lower()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("\u041e\u0448\u0438\u0431\u043a\u0430 \u043b\u0435\u043c\u043c\u0430\u0442\u0438\u0437\u0430\u0446\u0438\u0438 %r: %s", word, exc)
+            lemma = word.lower()
+
+        # \u0414\u043e\u0431\u0430\u0432\u043b\u044f\u0435\u043c \u0432 LRU-\u043a\u044d\u0448
+        if len(self._cache) >= self._cache_size:
+            self._cache.popitem(last=False)
+        self._cache[word] = lemma
+        logger.debug("\u041b\u0435\u043c\u043c\u0430\u0442\u0438\u0437\u0430\u0446\u0438\u044f: %r -> %r", word, lemma)
+        return lemma
+
+    def lemmatize_phrase(self, phrase: str) -> list[str]:
+        """\u0420\u0430\u0437\u0431\u0438\u0442\u044c \u0444\u0440\u0430\u0437\u0443 \u043d\u0430 \u0441\u043b\u043e\u0432\u0430 \u0438 \u043b\u0435\u043c\u043c\u0430\u0442\u0438\u0437\u0438\u0440\u043e\u0432\u0430\u0442\u044c \u043a\u0430\u0436\u0434\u043e\u0435.
+
+        \u0414\u0435\u0444\u0438\u0441\u044b \u0437\u0430\u043c\u0435\u043d\u044f\u044e\u0442\u0441\u044f \u043f\u0440\u043e\u0431\u0435\u043b\u0430\u043c\u0438 \u043f\u0435\u0440\u0435\u0434 \u0440\u0430\u0437\u0431\u0438\u0435\u043d\u0438\u0435\u043c.
+
+        Args:
+            phrase: \u0441\u0442\u0440\u043e\u043a\u0430, \u043c\u043e\u0436\u0435\u0442 \u0441\u043e\u0434\u0435\u0440\u0436\u0430\u0442\u044c \u043f\u0440\u043e\u0431\u0435\u043b\u044b \u0438/\u0438\u043b\u0438 \u0434\u0435\u0444\u0438\u0441\u044b.
+
+        Returns:
+            \u0421\u043f\u0438\u0441\u043e\u043a \u043b\u0435\u043c\u043c \u043a\u0430\u0436\u0434\u043e\u0433\u043e \u0441\u043b\u043e\u0432\u0430, \u043f\u0443\u0441\u0442\u044b\u0435 \u0441\u0442\u0440\u043e\u043a\u0438 \u043e\u0442\u0431\u0440\u0430\u0441\u044b\u0432\u0430\u044e\u0442\u0441\u044f.
+        """
+        if not phrase:
+            return []
+        phrase = phrase.replace("-", " ")
+        return [
+            lemma
+            for w in phrase.split()
+            if w
+            for lemma in [self.lemmatize_word(w)]
+            if lemma
+        ]
