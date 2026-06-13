@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+logs/*.log
+models/*.bin
+data/fallback_embeddings.npy
+.env
