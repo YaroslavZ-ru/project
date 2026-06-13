@@ -1,10 +1,10 @@
-"""src/synonyms.py -- \u0441\u043b\u043e\u0432\u0430\u0440\u044c \u0441\u0438\u043d\u043e\u043d\u0438\u043c\u043e\u0432 \u0441 \u0432\u0435\u0441\u0430\u043c\u0438 \u0440\u0435\u043b\u0435\u0432\u0430\u043d\u0442\u043d\u043e\u0441\u0442\u0438.
+"""src/synonyms.py -- словарь синонимов с весами релевантности.
 
-\u0424\u043e\u0440\u043c\u0430\u0442 data/synonyms.json:
-  {"\u043a\u043b\u044e\u0447": [{"word": "\u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442", "weight": 0.8}, ...]}
+Формат data/synonyms.json:
+  {"ключ": [{"word": "инструмент", "weight": 0.8}, ...]}
 
-weight \u0432 \u0444\u0430\u0439\u043b\u0435 -- \u0432\u0435\u0441 \u0440\u0435\u043b\u0435\u0432\u0430\u043d\u0442\u043d\u043e\u0441\u0442\u0438 (\u0434\u043b\u044f \u043e\u0442\u0431\u043e\u0440\u0430 \u0442\u043e\u043f-N). \u041d\u0435 \u043f\u0443\u0442\u0430\u0442\u044c
-\u0441 \u0432\u0435\u0441\u043e\u043c \u043f\u0440\u0438 \u0432\u0435\u043a\u0442\u043e\u0440\u0438\u0437\u0430\u0446\u0438\u0438 (0.1/M) -- \u043e\u043d \u0432\u044b\u0447\u0438\u0441\u043b\u044f\u0435\u0442\u0441\u044f \u0432 preprocess.py.
+weight в файле -- вес релевантности (для отбора топ-N). Не путать
+с весом при векторизации (0.1/M) -- он вычисляется в preprocess.py.
 """
 import json
 import logging
@@ -14,14 +14,14 @@ logger = logging.getLogger("ai_terminator.synonyms")
 
 
 class SynonymDict:
-    """\u0417\u0430\u0433\u0440\u0443\u0436\u0430\u0435\u0442 \u0441\u043b\u043e\u0432\u0430\u0440\u044c \u0441\u0438\u043d\u043e\u043d\u0438\u043c\u043e\u0432 \u0438\u0437 JSON-\u0444\u0430\u0439\u043b\u0430.
+    """Загружает словарь синонимов из JSON-файла.
 
-    \u0415\u0441\u043b\u0438 \u0444\u0430\u0439\u043b \u043e\u0442\u0441\u0443\u0442\u0441\u0442\u0432\u0443\u0435\u0442 \u0438\u043b\u0438 \u043d\u0435\u0432\u0430\u043b\u0438\u0434\u0435\u043d, \u0441\u0438\u0441\u0442\u0435\u043c\u0430 \u0440\u0430\u0431\u043e\u0442\u0430\u0435\u0442 \u0441 \u043f\u0443\u0441\u0442\u044b\u043c \u0441\u043b\u043e\u0432\u0430\u0440\u0451\u043c.
+    Если файл отсутствует или невалиден, система работает с пустым словарём.
 
-    \u041f\u0440\u0438\u043c\u0435\u0440:
+    Пример:
         sd = SynonymDict(json_path='data/synonyms.json')
-        sd.get_synonyms('\u043a\u043b\u044e\u0447')          # -> ['\u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442', '\u043e\u0442\u043c\u044b\u0447\u043a\u0430']
-        sd.get_synonyms('\u043a\u043b\u044e\u0447', max_synonyms=1)  # -> ['\u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442']
+        sd.get_synonyms('ключ')          # -> ['инструмент', 'отмычка']
+        sd.get_synonyms('ключ', max_synonyms=1)  # -> ['инструмент']
     """
 
     def __init__(self, json_path: str | Path) -> None:
@@ -32,34 +32,34 @@ class SynonymDict:
             with open(path_str, encoding="utf-8") as f:
                 raw = json.load(f)
         except FileNotFoundError:
-            logger.warning("\u0424\u0430\u0439\u043b \u0441\u0438\u043d\u043e\u043d\u0438\u043c\u043e\u0432 \u043d\u0435 \u043d\u0430\u0439\u0434\u0435\u043d: %s. \u0420\u0430\u0431\u043e\u0442\u0430 \u0431\u0435\u0437 \u0441\u0438\u043d\u043e\u043d\u0438\u043c\u043e\u0432.", path_str)
+            logger.warning("Файл синонимов не найден: %s. Работа без синонимов.", path_str)
             return
         except json.JSONDecodeError as exc:
-            logger.error("\u041e\u0448\u0438\u0431\u043a\u0430 \u043f\u0430\u0440\u0441\u0438\u043d\u0433\u0430 %s: %s. \u0420\u0430\u0431\u043e\u0442\u0430 \u0431\u0435\u0437 \u0441\u0438\u043d\u043e\u043d\u0438\u043c\u043e\u0432.", path_str, exc)
+            logger.error("Ошибка парсинга %s: %s. Работа без синонимов.", path_str, exc)
             return
         except Exception as exc:  # noqa: BLE001
-            logger.error("\u041d\u0435\u043f\u0440\u0435\u0434\u0432\u0438\u0434\u0435\u043d\u043d\u0430\u044f \u043e\u0448\u0438\u0431\u043a\u0430 \u043f\u0440\u0438 \u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0435 %s: %s", path_str, exc)
+            logger.error("Непредвиденная ошибка при загрузке %s: %s", path_str, exc)
             return
 
         if not isinstance(raw, dict):
-            logger.error("\u041d\u0435\u0432\u0435\u0440\u043d\u044b\u0439 \u0444\u043e\u0440\u043c\u0430\u0442: \u043a\u043e\u0440\u0435\u043d\u044c \u0434\u043e\u043b\u0436\u0435\u043d \u0431\u044b\u0442\u044c \u0441\u043b\u043e\u0432\u0430\u0440\u0451\u043c, \u043f\u043e\u043b\u0443\u0447\u0435\u043d %s", type(raw).__name__)
+            logger.error("Неверный формат: корень должен быть словарём, получен %s", type(raw).__name__)
             return
 
         validated: dict[str, list[dict]] = {}
         for key, entries in raw.items():
             if not isinstance(entries, list):
-                logger.error("\u0421\u0442\u0430\u0442\u044c\u044f %r: \u0437\u043d\u0430\u0447\u0435\u043d\u0438\u0435 \u0434\u043e\u043b\u0436\u043d\u043e \u0431\u044b\u0442\u044c \u0441\u043f\u0438\u0441\u043a\u043e\u043c, \u043f\u043e\u043b\u0443\u0447\u0435\u043d %s. \u041f\u0440\u043e\u043f\u0443\u0449\u0435\u043d\u0430.", key, type(entries).__name__)
+                logger.error("Статья %r: значение должно быть списком, получен %s. Пропущена.", key, type(entries).__name__)
                 self._data = {}
                 return
             clean_entries = []
             for item in entries:
                 if not isinstance(item, dict):
-                    logger.error("\u0421\u0442\u0430\u0442\u044c\u044f %r: \u044d\u043b\u0435\u043c\u0435\u043d\u0442 \u0434\u043e\u043b\u0436\u0435\u043d \u0431\u044b\u0442\u044c \u0441\u043b\u043e\u0432\u0430\u0440\u0451\u043c, \u043f\u043e\u043b\u0443\u0447\u0435\u043d %s. \u041f\u0440\u043e\u043f\u0443\u0449\u0435\u043d.", key, type(item).__name__)
+                    logger.error("Статья %r: элемент должен быть словарём, получен %s. Пропущен.", key, type(item).__name__)
                     self._data = {}
                     return
                 word = item.get("word", "")
                 if not word or not str(word).strip():
-                    logger.warning("\u0421\u0442\u0430\u0442\u044c\u044f %r: \u043f\u0443\u0441\u0442\u043e\u0435 \u043f\u043e\u043b\u0435 'word'. \u041f\u0440\u043e\u043f\u0443\u0449\u0435\u043d\u043e.", key)
+                    logger.warning("Статья %r: пустое поле 'word'. Пропущено.", key)
                     continue
                 weight = item.get("weight", 0.5)
                 if not isinstance(weight, (int, float)):
@@ -68,17 +68,17 @@ class SynonymDict:
             validated[key] = clean_entries
 
         self._data = validated
-        logger.info("\u0417\u0430\u0433\u0440\u0443\u0436\u0435\u043d\u043e %d \u0441\u043b\u043e\u0432\u0430\u0440\u043d\u044b\u0445 \u0441\u0442\u0430\u0442\u0435\u0439 \u0438\u0437 %s", len(self._data), path_str)
+        logger.info("Загружено %d словарных статей из %s", len(self._data), path_str)
 
     def get_synonyms(self, lemma: str, max_synonyms: int = 2) -> list[str]:
-        """\u0412\u0435\u0440\u043d\u0443\u0442\u044c \u0442\u043e\u043f-N \u0441\u0438\u043d\u043e\u043d\u0438\u043c\u043e\u0432 \u0434\u043b\u044f \u043b\u0435\u043c\u043c\u044b \u043f\u043e \u0443\u0431\u044b\u0432\u0430\u043d\u0438\u044e \u0432\u0435\u0441\u0430.
+        """Вернуть топ-N синонимов для леммы по убыванию веса.
 
         Args:
-            lemma:        \u043b\u0435\u043c\u043c\u0430 \u0441\u043b\u043e\u0432\u0430 (\u043d\u043e\u0440\u043c\u0430\u043b\u044c\u043d\u0430\u044f \u0444\u043e\u0440\u043c\u0430).
-            max_synonyms: \u043c\u0430\u043a\u0441\u0438\u043c\u0430\u043b\u044c\u043d\u043e\u0435 \u043a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e \u0441\u0438\u043d\u043e\u043d\u0438\u043c\u043e\u0432.
+            lemma:        лемма слова (нормальная форма).
+            max_synonyms: максимальное количество синонимов.
 
         Returns:
-            \u0421\u043f\u0438\u0441\u043e\u043a \u0441\u043b\u043e\u0432-\u0441\u0438\u043d\u043e\u043d\u0438\u043c\u043e\u0432, \u043e\u0442\u0441\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u0430\u043d\u043d\u044b\u0445 \u043f\u043e \u0443\u0431\u044b\u0432\u0430\u043d\u0438\u044e \u0432\u0435\u0441\u0430 \u0440\u0435\u043b\u0435\u0432\u0430\u043d\u0442\u043d\u043e\u0441\u0442\u0438.
+            Список слов-синонимов, отсортированных по убыванию веса релевантности.
         """
         entries = self._data.get(lemma, [])
         if not entries:
@@ -87,5 +87,5 @@ class SynonymDict:
         return [e["word"] for e in sorted_entries[:max_synonyms]]
 
     def has_synonyms(self, lemma: str) -> bool:
-        """\u0412\u0435\u0440\u043d\u0443\u0442\u044c True \u0435\u0441\u043b\u0438 \u0434\u043b\u044f \u043b\u0435\u043c\u043c\u044b \u0435\u0441\u0442\u044c \u0445\u043e\u0442\u044f \u0431\u044b \u043e\u0434\u0438\u043d \u0441\u0438\u043d\u043e\u043d\u0438\u043c."""
+        """Вернуть True если для леммы есть хотя бы один синоним."""
         return bool(self._data.get(lemma))

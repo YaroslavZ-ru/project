@@ -29,7 +29,7 @@ _AUTO_PATH_FIELDS = (
 
 @dataclass
 class Config:
-    """\u0412се настройки AI-Terminator.
+    """Все настройки AI-Terminator.
 
     Поля-пути хранятся как абсолютные Path (преобразуются в from_json).
     fallback_embeddings_path хранится как str: пустая строка = нет fallback.

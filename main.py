@@ -3,12 +3,12 @@
 main.py -- точка входа AI-Terminator.
 
 Принимает JSON двумя способами:
-  1. Через stdin:     echo '{"term":"\u043aлюч"}' | python main.py
-  2. Через аргумент: python main.py --input '{"term":"\u043aлюч"}'
+  1. Через stdin:     echo '{"term":"ключ"}' | python main.py
+  2. Через аргумент: python main.py --input '{"term":"ключ"}'
 
 В stdout выводится ТОЛЬКО JSON. Всё остальное -- в logs/ai_terminator.log и stderr.
 
-CURRENT STATE (\u0418\u0437\u043c\u0435\u043d\u0435\u043d\u0438\u0435 3): заглушка -- run_pipeline возвращает фиктивные данные.
+CURRENT STATE (Изменение 3): заглушка -- run_pipeline возвращает фиктивные данные.
 Реальные модули (preprocess, vectorize, search...) будут подключаться по мере развития проекта.
 """
 

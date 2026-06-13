@@ -21,22 +21,22 @@ def lm():
     return Lemmatizer()
 
 def test_basic(cfg, lm):
-    r = preprocess_base("\u041a\u043b\u044e\u0447!", ["\u0422\u0435\u0445\u043d\u0438\u043a\u0430", "\u0422\u0435\u0445\u043d\u0438\u043a\u0430"], cfg, lm)
+    r = preprocess_base("Ключ!", ["Техника", "Техника"], cfg, lm)
     assert r["status"] == "ok"
-    assert r["term_lemmas"] == ["\u043a\u043b\u044e\u0447"]
-    assert r["clean_hints"] == ["\u0442\u0435\u0445\u043d\u0438\u043a\u0430"]
-    assert any("\u0434\u0443\u0431\u043b" in w for w in r["warnings"])
+    assert r["term_lemmas"] == ["ключ"]
+    assert r["clean_hints"] == ["техника"]
+    assert any("дубл" in w for w in r["warnings"])
 
 def test_empty_term(cfg, lm):
     r = preprocess_base("!!!", [], cfg, lm)
     assert r["status"] == "error"
 
 def test_long_term(cfg, lm):
-    r = preprocess_base("\u043a" * 200, [], cfg, lm)
+    r = preprocess_base("к" * 200, [], cfg, lm)
     assert r["status"] == "error"
-    assert "\u0434\u043b\u0438\u043d\u043d" in r["message"]
+    assert "длинн" in r["message"]
 
 def test_none_hints(cfg, lm):
-    r = preprocess_base("\u043a\u043b\u044e\u0447", None, cfg, lm)
+    r = preprocess_base("ключ", None, cfg, lm)
     assert r["status"] == "ok"
     assert r["hints_lemmas"] == []
