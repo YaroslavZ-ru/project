@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 main.py -- точка входа AI-Terminator.
 
@@ -18,10 +18,15 @@ import logging
 import sys
 from pathlib import Path
 
+import numpy as np
+
 from src.config import Config
 from src.lemmatizer import Lemmatizer
 from src.synonyms import SynonymDict
 from src.preprocess import preprocess
+from src.embeddings import FastTextWrapper
+from src.vectorize import vectorize
+from src.cache import QueryVectorCache
 
 # ---------------------------------------------------------------------------
 # Константы
@@ -133,12 +138,14 @@ def parse_input(raw: str) -> dict:
 
 def run_pipeline(
     term: str,
-    hints: list[str],
+    hints,
     debug: bool,
-    min_confidence: float | None,
+    min_confidence,
     cfg: Config,
-    lemmatizer: Lemmatizer | None = None,
-    synonym_dict: SynonymDict | None = None,
+    lemmatizer=None,
+    synonym_dict=None,
+    embedding_model=None,
+    vector_cache=None,
 ) -> dict:
     """Центральный пайплайн обработки запроса.
 
@@ -157,30 +164,49 @@ def run_pipeline(
         parameters, suggested_refinements, warnings.
     """
     logger.info("Запуск пайплайна: term=%r hints=%r", term, hints)
+    if hints is None:
+        hints = []
+    effective_min_confidence = min_confidence if min_confidence is not None else cfg.min_confidence
 
     # Шаг 1: предобработка
     processed = preprocess(term, hints, cfg, synonym_dict, lemmatizer)
     if processed["status"] == "error":
-        return {
-            "status": "error",
-            "message": processed["message"],
-        }
+        return {"status": "error", "message": processed["message"]}
+    warnings_list = list(processed.get("warnings", []))
 
-    # Шаги 2-5 будут добавлены по мере реализации векторизации и поиска
+    # Шаг 2: векторизация (с кэшем)
+    query_vector = None
+    if vector_cache is not None:
+        query_vector = vector_cache.get(term, hints, cfg)
+        if query_vector is not None:
+            logger.info("Кэш-попадание вектора для: %r", term)
+    if query_vector is None:
+        query_vector = vectorize(processed, embedding_model)
+        if vector_cache is not None:
+            vector_cache.put(term, hints, cfg, query_vector)
+        logger.info("Вычислен новый вектор для: %r", term)
+    if np.all(query_vector == 0):
+        warnings_list.append("Вектор запроса нулевой. Модель эмбеддингов недоступна. Поиск не выполнен.")
+
+    # Шаги 3-5 (заглушки до реализации поиска)
+    selected_context = {"domain": "не определено", "confidence": 0.0}
+    parameters = []
+    suggested_refinements = []
+
     result: dict = {
         "status": "ok",
-        "term": processed["clean_term"],
-        "selected_context": {"domain": "не определено", "confidence": 0.0},
-        "parameters": [],
-        "suggested_refinements": [],
-        "warnings": processed.get("warnings", []),
+        "term": term,
+        "selected_context": selected_context,
+        "parameters": parameters,
+        "suggested_refinements": suggested_refinements,
+        "warnings": warnings_list,
     }
 
     if debug:
         result["debug_info"] = {
-            "hints_received": hints,
-            "min_confidence_used": min_confidence,
-            "pipeline_stage": "заглушка (изменение 3)",
+            "query_vector": query_vector.tolist(),
+            "candidates_raw": [],
+            "scores_distribution": [],
         }
 
     logger.debug("Пайплайн завершён: %r", result)
@@ -190,6 +216,19 @@ def run_pipeline(
 # ---------------------------------------------------------------------------
 # Точка входа
 # ---------------------------------------------------------------------------
+
+
+def _init_components(cfg):
+    lemmatizer = Lemmatizer(cache_size=cfg.cache_lemma_size)
+    synonym_dict = SynonymDict(json_path=cfg.synonyms_path)
+    fallback_path = cfg.fallback_embeddings_path if cfg.fallback_embeddings_path else None
+    embedding_model = FastTextWrapper(
+        model_path=cfg.fasttext_model_path,
+        fallback_path=fallback_path,
+        cache_size=cfg.word_vector_cache_size,
+    )
+    vector_cache = QueryVectorCache(maxsize=cfg.query_cache_size)
+    return synonym_dict, lemmatizer, embedding_model, vector_cache
 
 def main() -> None:
     """Читает вход, запускает пайплайн, выводит JSON в stdout.
@@ -224,9 +263,6 @@ def main() -> None:
         print(json.dumps({"status": "error", "message": str(exc)}, ensure_ascii=False))
         sys.exit(1)
 
-    lemmatizer = Lemmatizer(cache_size=cfg.cache_lemma_size)
-    synonym_dict = SynonymDict(json_path=cfg.synonyms_path)
-
     # --- Чтение входа ---
     try:
         if args.input is not None:
@@ -240,14 +276,20 @@ def main() -> None:
             raise ValueError("Входные данные пустые. Передайте JSON через --input или stdin.")
 
         parsed = parse_input(raw)
+        synonym_dict, lemmatizer, embedding_model, vector_cache = _init_components(cfg)
+        logger.info("Прогрев модели...")
+        _ = embedding_model.get_word_vector("а")
+        logger.info("Прогрев завершён.")
         result = run_pipeline(
             term=parsed["term"],
-            hints=parsed["hints"],
-            debug=parsed["debug"],
-            min_confidence=parsed["min_confidence"],
+            hints=parsed.get("hints", []),
+            debug=parsed.get("debug", False),
+            min_confidence=parsed.get("min_confidence"),
             cfg=cfg,
             lemmatizer=lemmatizer,
             synonym_dict=synonym_dict,
+            embedding_model=embedding_model,
+            vector_cache=vector_cache,
         )
 
     except ValueError as exc:
