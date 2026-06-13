@@ -27,6 +27,8 @@
   "word_vector_cache_size": 20000,
   "query_cache_size": 100,
   "use_faiss": false,
+  "faiss_threshold": 10000,
+  "fallback_domain_keywords_path": "configs/domain_keywords.json",
   "faiss_index_path": "",
   "session_ttl_seconds": 1800,
   "session_cache_size": 1000,

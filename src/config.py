@@ -73,6 +73,8 @@ class Config:
     # --- Опциональные с дефолтами ---
     fallback_embeddings_path: str = ""
     use_faiss: bool = False
+    faiss_threshold: int = 10000
+    fallback_domain_keywords_path: str = "configs/domain_keywords.json"
     faiss_index_path: str = ""
     session_ttl_seconds: int = 1800
     session_cache_size: int = 1000

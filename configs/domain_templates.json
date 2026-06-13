@@ -1,0 +1,23 @@
+{
+  "музыка": {
+    "parameters": [
+      {"name": "genre",    "label_ru": "Жанр",              "type": "string", "description": "Музыкальное направление"},
+      {"name": "composer", "label_ru": "Автор / Композитор", "type": "string", "description": "Создатель произведения"},
+      {"name": "tempo",    "label_ru": "Темп",               "type": "string", "description": "Скорость исполнения"}
+    ]
+  },
+  "слесарный инструмент": {
+    "parameters": [
+      {"name": "material", "label_ru": "Материал",   "type": "string", "description": "Материал изготовления"},
+      {"name": "size",     "label_ru": "Размер",     "type": "float",  "description": "Характерный размер", "unit": "мм"},
+      {"name": "purpose",  "label_ru": "Назначение", "type": "string", "description": "Для каких работ"}
+    ]
+  },
+  "общее": {
+    "parameters": [
+      {"name": "name",        "label_ru": "Наименование", "type": "string", "description": "Официальное название"},
+      {"name": "description", "label_ru": "Описание",    "type": "string", "description": "Краткое описание"},
+      {"name": "category",    "label_ru": "Категория",    "type": "string", "description": "Предметная область"}
+    ]
+  }
+}

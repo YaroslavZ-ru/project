@@ -18,6 +18,7 @@ import logging
 import sys
 from pathlib import Path
 
+import time
 import numpy as np
 
 from src.config import Config
@@ -27,6 +28,9 @@ from src.preprocess import preprocess
 from src.embeddings import FastTextWrapper
 from src.vectorize import vectorize
 from src.cache import QueryVectorCache
+from src.knowledge_base import KnowledgeBase
+from src.aggregation import aggregate_parameters, determine_context
+from src.fallback import fallback_response
 
 # ---------------------------------------------------------------------------
 # Константы
@@ -146,6 +150,7 @@ def run_pipeline(
     synonym_dict=None,
     embedding_model=None,
     vector_cache=None,
+    kb=None,
 ) -> dict:
     """Центральный пайплайн обработки запроса.
 
@@ -188,25 +193,55 @@ def run_pipeline(
     if np.all(query_vector == 0):
         warnings_list.append("Вектор запроса нулевой. Модель эмбеддингов недоступна. Поиск не выполнен.")
 
-    # Шаги 3-5 (заглушки до реализации поиска)
-    selected_context = {"domain": "не определено", "confidence": 0.0}
-    parameters = []
-    suggested_refinements = []
+    # --- Шаг 3: Поиск кандидатов ---
+    candidates: list = []
+    if kb is not None and not np.all(query_vector == 0):
+        t0 = time.monotonic()
+        candidates = kb.search_similar_concepts(
+            query_vector,
+            min_confidence=effective_min_confidence,
+            max_candidates=cfg.max_candidates,
+        )
+        logger.info("Поиск: %d кандидатов за %.3fс", len(candidates), time.monotonic() - t0)
+    elif kb is None:
+        warnings_list.append("KnowledgeBase не инициализирован. Поиск пропущен.")
 
+    # --- Шаг 4: Агрегация или fallback ---
+    if candidates:
+        hints_lemmas = processed.get("hints_lemmas", [])
+        parameters   = aggregate_parameters(candidates, hints_lemmas, cfg.max_parameters)
+        selected_context      = determine_context(candidates)
+        suggested_refinements = []
+        if len(parameters) < 3:
+            warnings_list.append(
+                "Найдено мало параметров. "
+                "Рекомендуется добавить уточняющие подсказки."
+            )
+    else:
+        response = fallback_response(term, processed, cfg)
+        if debug:
+            response["debug_info"] = {
+                "query_vector":        query_vector.tolist(),
+                "candidates_raw":      [],
+                "scores_distribution": [],
+            }
+        return response
+
+    # --- Шаг 5: Сборка ответа ---
     result: dict = {
-        "status": "ok",
-        "term": term,
-        "selected_context": selected_context,
-        "parameters": parameters,
+        "status":                "ok",
+        "term":                  term,
+        "selected_context":      selected_context,
+        "parameters":            parameters,
         "suggested_refinements": suggested_refinements,
-        "warnings": warnings_list,
+        "warnings":              warnings_list,
     }
 
     if debug:
         result["debug_info"] = {
-            "query_vector": query_vector.tolist(),
-            "candidates_raw": [],
-            "scores_distribution": [],
+            "query_vector":        query_vector.tolist(),
+            "candidates_raw":      candidates,
+            "scores_distribution": [p["confidence"] for p in parameters],
         }
 
     logger.debug("Пайплайн завершён: %r", result)
@@ -228,7 +263,12 @@ def _init_components(cfg):
         cache_size=cfg.word_vector_cache_size,
     )
     vector_cache = QueryVectorCache(maxsize=cfg.query_cache_size)
-    return synonym_dict, lemmatizer, embedding_model, vector_cache
+    kb = KnowledgeBase(
+        config=cfg,
+        embedding_model=embedding_model,
+        synonym_dict=synonym_dict,
+    )
+    return synonym_dict, lemmatizer, embedding_model, vector_cache, kb
 
 def main() -> None:
     """Читает вход, запускает пайплайн, выводит JSON в stdout.
@@ -276,7 +316,7 @@ def main() -> None:
             raise ValueError("Входные данные пустые. Передайте JSON через --input или stdin.")
 
         parsed = parse_input(raw)
-        synonym_dict, lemmatizer, embedding_model, vector_cache = _init_components(cfg)
+        synonym_dict, lemmatizer, embedding_model, vector_cache, kb = _init_components(cfg)
         logger.info("Прогрев модели...")
         _ = embedding_model.get_word_vector("а")
         logger.info("Прогрев завершён.")
@@ -290,6 +330,7 @@ def main() -> None:
             synonym_dict=synonym_dict,
             embedding_model=embedding_model,
             vector_cache=vector_cache,
+            kb=kb,
         )
 
     except ValueError as exc:
