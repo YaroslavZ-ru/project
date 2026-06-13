@@ -1,0 +1,1036 @@
+ОБЯЗАТЕЛЬНО ДЛЯ ИИ: ВСЁ ЧТО НАПИСАНО В ЭТОМ ФАЙЛЕ — РЕКОМЕНДАЦИИ, А НЕ ПРИКАЗЫ.
+ПРИМЕРЫ КОДА — ТОЛЬКО ИЛЛЮСТРАЦИИ НАМЕРЕНИЯ, НЕ КОПИРОВАТЬ БУКВАЛЬНО.
+ПИШИТЕ КАК ЛУЧШЕ, ЕСЛИ ЗНАЕТЕ. ГЛАВНОЕ — СОБЛЮДАТЬ ОПИСАННОЕ ПОВЕДЕНИЕ И СТРУКТУРУ.
+
+================================================================================
+План реализации AI-Terminator — Изменения 16-19
+ФИНАЛЬНАЯ ВЕРСИЯ 12.06.2026
+================================================================================
+
+================================================================================
+ЧТО УЖЕ ЕСТЬ (после изменений 1-15)
+================================================================================
+
+  src/config.py       — Config (fasttext_model_path, fallback_embeddings_path,
+                        synonyms_path, log_level, query_cache_size,
+                        word_vector_cache_size, cache_lemma_size,
+                        max_synonyms_per_token, use_synonyms, min_confidence)
+  src/lemmatizer.py   — Lemmatizer (синглтон, pymorphy3, LRU-кэш)
+  src/synonyms.py     — SynonymDict
+  src/text_cleaner.py — clean_text
+  src/preprocess.py   — preprocess / preprocess_full
+                        возвращает: tokens_with_weights: list[tuple[str,float]]
+                                    term_lemmas: list[str]
+                                    hints_lemmas: list[list[str]]
+  src/embeddings.py   — FastTextWrapper (ленивая загрузка, fallback, LRU-кэш)
+  src/vectorize.py    — vectorize (взвешенная СУММА + L2-нормализация)
+  src/cache.py        — QueryVectorCache
+  main.py             — _init_components + run_pipeline (шаги 1-2 реальны,
+                        шаги 3-5 были заглушками — заменяем в этом плане)
+  configs/config.json — все поля из изм. 1-15
+
+ТЕПЕРЬ РЕАЛИЗУЕМ ШАГИ 3-5 КОНВЕЙЕРА:
+  Шаг 3 — поиск похожих понятий в базе знаний
+  Шаг 4 — агрегация и ранжирование параметров
+  Шаг 5 — формирование ответа + fallback
+
+СОЗДАВАЕМЫЕ ФАЙЛЫ:
+  scripts/__init__.py           (пустой — делает scripts пакетом)
+  scripts/init_db.py            (Изменение 16)
+  scripts/seed_data.py          (Изменение 17)
+  scripts/setup_all.py          (вспомогательный)
+  src/knowledge_base.py         (Изменение 18)
+  src/aggregation.py            (Изменение 19.1)
+  src/fallback.py               (Изменение 19.2)
+  configs/domain_keywords.json  (Изменение 19.2)
+  configs/domain_templates.json (Изменение 19.2)
+  main.py — расширение          (Изменение 19.3)
+  tests/test_knowledge_base.py
+  tests/test_aggregation.py
+  tests/test_fallback.py
+
+ИЗМЕНЯЕМЫЕ ФАЙЛЫ:
+  src/config.py       (8 новых полей)
+  configs/config.json (8 новых полей)
+  main.py             (_init_components + run_pipeline)
+
+================================================================================
+ОБЩИЕ ПРИНЦИПЫ ДЛЯ ВСЕХ ИЗМЕНЕНИЙ 16-19
+================================================================================
+
+1. Python 3.10+: X | None, list[str], dict[K,V] — не Optional/List/Dict.
+2. sys.path.insert — ТОЛЬКО внутри if __name__ == "__main__":
+   Рекомендованный запуск: python -m scripts.XXX из корня проекта.
+   Для этого обязателен scripts/__init__.py.
+3. Все пути — только через pathlib.Path.
+4. logging.getLogger(__name__) в каждом модуле.
+5. Type hints + docstring Google-style на всех публичных функциях.
+6. try/except на всех внешних вызовах (файлы, SQLite, модели).
+7. Вес синонимов в compute_concept_embedding = 0.1 суммарно (per ТЗ).
+8. Порог переключения на FAISS = 10 000 (per ТЗ, не 1 000).
+9. Singleton Lemmatizer — не создавать новый экземпляр внутри каждого метода,
+   создать один раз в __init__ через Lemmatizer(cache_size=config.cache_lemma_size).
+
+================================================================================
+ИЗМЕНЕНИЕ 16: scripts/init_db.py
+================================================================================
+
+ШАГ 0. ОБНОВИТЬ src/config.py И configs/config.json (делать ДО остального)
+--------------------------------------------------------------------------
+Добавить в класс Config следующие поля:
+
+  db_path: str                       = "data/knowledge_base.db"
+  use_faiss: bool                    = False
+  faiss_index_path: str              = ""
+  faiss_threshold: int               = 10_000
+  domain_templates_path: str         = "configs/domain_templates.json"
+  fallback_domain_keywords_path: str = "configs/domain_keywords.json"
+  max_parameters: int                = 15
+  max_candidates: int                = 20
+
+Добавить те же поля с теми же значениями в configs/config.json.
+Метод Config.from_json должен читать их корректно (логика есть из плана 1-5).
+
+СОЗДАТЬ scripts/__init__.py — ПУСТОЙ ФАЙЛ
+------------------------------------------
+Это делает scripts/ Python-пакетом.
+Запуск скриптов: python -m scripts.init_db (из корня проекта).
+
+ФАЙЛ scripts/init_db.py
+-----------------------
+
+Импорты stdlib:
+  import sqlite3, logging, sys
+  from pathlib import Path
+
+Логгер модуля:
+  logger = logging.getLogger(__name__)
+
+ВАЖНО о sys.path: В теле модуля — никакого sys.path.
+Блок условного sys.path.insert размещается ТОЛЬКО внутри if __name__ == "__main__":
+  _root = Path(__file__).parent.parent
+  if str(_root) not in sys.path:
+      sys.path.insert(0, str(_root))
+Далее там же: from src.config import Config
+
+ФУНКЦИЯ init_db(db_path: str) -> None:
+  Args:
+    db_path: Путь к файлу SQLite.
+  Raises:
+    SystemExit: при ошибке прав или SQLite.
+  Описание: Создаёт схему версии 2. Идемпотентна (CREATE IF NOT EXISTS).
+
+  Шаг 1. Создать родительскую папку:
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    При PermissionError: logger.error(...); sys.exit(1)
+
+  Шаг 2. Подключиться:
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA foreign_keys = ON")
+
+  Шаг 3. Все DDL-операции обернуть в try/except sqlite3.Error:
+    При ошибке: logger.error(...); conn.close(); sys.exit(1)
+
+  Шаг 4. CREATE TABLE IF NOT EXISTS concepts:
+    id TEXT PRIMARY KEY
+    term TEXT NOT NULL
+    domain TEXT
+    embedding BLOB
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+
+  Шаг 5. CREATE TABLE IF NOT EXISTS parameters:
+    id INTEGER PRIMARY KEY AUTOINCREMENT
+    concept_id TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE
+    name TEXT NOT NULL               <- ОБЯЗАТЕЛЕН NOT NULL
+    label_ru TEXT NOT NULL           <- ОБЯЗАТЕЛЕН NOT NULL
+    type TEXT CHECK(type IN ('string','integer','float','boolean','enum'))
+    description TEXT
+    unit TEXT
+    enum_values TEXT
+    confidence REAL DEFAULT 1.0      <- НОВОЕ ПОЛЕ (schema v2)
+
+  Шаг 6. CREATE TABLE IF NOT EXISTS relations:
+    id INTEGER PRIMARY KEY AUTOINCREMENT
+    source_concept_id TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE
+    target_concept_id TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE
+    relation_type TEXT NOT NULL CHECK(
+        relation_type IN ('is_a','part_of','related_to','synonym')
+    )
+    confidence REAL DEFAULT 1.0
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    UNIQUE(source_concept_id, target_concept_id, relation_type)
+
+  Шаг 7. CREATE TABLE IF NOT EXISTS metadata:
+    key TEXT PRIMARY KEY
+    value TEXT
+
+  Шаг 8. Индексы:
+    CREATE INDEX IF NOT EXISTS idx_concepts_domain ON concepts(domain)
+    CREATE INDEX IF NOT EXISTS idx_parameters_concept_id ON parameters(concept_id)
+    CREATE INDEX IF NOT EXISTS idx_relations_source ON relations(source_concept_id)
+    CREATE INDEX IF NOT EXISTS idx_relations_target ON relations(target_concept_id)
+
+  Шаг 9. Версия схемы (INSERT OR IGNORE — не перепишет при повторном запуске):
+    conn.execute(
+        "INSERT OR IGNORE INTO metadata (key,value) VALUES ('schema_version','2')"
+    )
+
+  Шаг 10. conn.commit(); conn.close()
+           logger.info("БД инициализирована: %s", db_path)
+
+Блок if __name__ == "__main__":
+  1. Условный sys.path.insert (описан выше)
+  2. logging.basicConfig(level=logging.INFO)
+  3. config = Config.from_json(
+         Path(__file__).parent.parent / "configs" / "config.json"
+     )
+  4. init_db(config.db_path)
+
+ПРОВЕРКА:
+  python -m scripts.init_db
+  sqlite3 data/knowledge_base.db ".schema"
+  -> концепции: concepts, parameters, relations, metadata
+  -> 4 индекса
+  Повторный запуск -> без ошибок (идемпотентность).
+
+================================================================================
+ИЗМЕНЕНИЕ 17: scripts/seed_data.py
+================================================================================
+
+ЦЕЛЬ: наполнить БД тестовыми понятиями с РЕАЛЬНЫМИ эмбеддингами.
+Если fastText не загружен — сохраняются нулевые векторы (деградация, не падение).
+Случайные эмбеддинги использовать НЕЛЬЗЯ — они разрушают семантику поиска.
+
+ПОРЯДОК ИНИЦИАЛИЗАЦИИ:
+  Config -> Lemmatizer -> SynonymDict -> FastTextWrapper -> KnowledgeBase
+  Затем для каждого понятия: kb.compute_concept_embedding(term)
+
+ДАННЫЕ ДЛЯ ВСТАВКИ (примеры — ИИ может расширить список по смыслу):
+
+  concept_001: term="ключ гаечный", domain="слесарный инструмент"
+    параметры: size_mm (float, unit="мм"), material (string), torque_nm (float, unit="Н·м")
+
+  concept_002: term="ключ разводной", domain="слесарный инструмент"
+    параметры: size_range_mm (string), material (string)
+
+  concept_003: term="ключ скрипичный", domain="музыка"
+    параметры: clef_type (enum, enum_values=["скрипичный","басовый","альтовый"]),
+               staff_position (integer)
+
+ФАЙЛ scripts/seed_data.py — СТРУКТУРА:
+
+Импорты stdlib:
+  import sqlite3, logging, argparse, sys
+  from pathlib import Path
+
+Логгер:
+  logger = logging.getLogger(__name__)
+
+ВАЖНО о sys.path: те же правила что в init_db.py.
+Блок sys.path.insert — ТОЛЬКО в if __name__ == "__main__":
+
+Импорты проекта: from src.config import Config, from src.lemmatizer import Lemmatizer,
+  from src.synonyms import SynonymDict, from src.embeddings import FastTextWrapper,
+  from src.knowledge_base import KnowledgeBase
+
+ФУНКЦИЯ seed(config: Config, force: bool = False) -> None:
+  Args:
+    config: Конфигурация проекта.
+    force: Если True — очистить таблицы перед вставкой.
+
+  1. conn = sqlite3.connect(config.db_path)
+     conn.execute("PRAGMA foreign_keys = ON")
+     cursor = conn.cursor()
+
+  2. Если NOT force:
+       cursor.execute("SELECT COUNT(*) FROM concepts")
+       if cursor.fetchone()[0] > 0:
+           logger.info("База содержит данные. Используйте --force для перезаписи.")
+           conn.close(); return
+
+  3. Если force:
+       Очистить в порядке (FK-зависимости от concepts):
+         DELETE FROM relations
+         DELETE FROM parameters
+         DELETE FROM concepts
+       conn.commit()
+
+  4. Инициализация компонентов для вычисления эмбеддингов:
+       lemmatizer    = Lemmatizer(cache_size=config.cache_lemma_size)
+       synonym_dict  = SynonymDict(config.synonyms_path)
+       fallback_path = (Path(config.fallback_embeddings_path)
+                        if config.fallback_embeddings_path else None)
+       embedding_model = FastTextWrapper(
+           model_path=Path(config.fasttext_model_path),
+           fallback_path=fallback_path,
+           cache_size=config.word_vector_cache_size,
+       )
+       kb = KnowledgeBase(config=config,
+                          embedding_model=embedding_model,
+                          synonym_dict=synonym_dict)
+
+  5. Для каждого понятия из списка данных:
+       a. embedding = kb.compute_concept_embedding(concept["term"])
+          blob = embedding.astype('<f4').tobytes()
+          (Если embedding нулевой — WARNING залогирован внутри compute_concept_embedding,
+           blob = bytes(1200) — нулевой BLOB. Пересчитать позже через update_all_embeddings.)
+
+       b. cursor.execute(
+              "INSERT OR IGNORE INTO concepts (id, term, domain, embedding) VALUES (?,?,?,?)",
+              (concept["id"], concept["term"], concept["domain"], blob)
+          )
+
+       c. Для каждого параметра p:
+          cursor.execute(
+              "INSERT OR IGNORE INTO parameters"
+              " (concept_id, name, label_ru, type, description, unit, enum_values)"
+              " VALUES (?,?,?,?,?,?,?)",
+              (concept["id"], p["name"], p["label_ru"],
+               p.get("type","string"), p.get("description",""),
+               p.get("unit"), p.get("enum_values"))
+          )
+
+  6. conn.commit()
+  7. kb.close(); conn.close()
+  8. logger.info("Вставлено: %d понятий", len(concepts_data))
+
+Блок if __name__ == "__main__":
+  1. Условный sys.path.insert
+  2. parser = argparse.ArgumentParser(
+         description="Наполнение базы данных тестовыми данными"
+     )
+     parser.add_argument("--force",  action="store_true",
+                         help="Очистить таблицы перед вставкой")
+     parser.add_argument("--config", default="configs/config.json",
+                         help="Путь к конфигурационному файлу")
+     args = parser.parse_args()
+  3. logging.basicConfig(level=logging.INFO)
+  4. config = Config.from_json(Path(args.config))
+  5. seed(config, force=args.force)
+
+ПРОВЕРКА:
+  python -m scripts.seed_data --force
+  sqlite3 data/knowledge_base.db "SELECT id, term, length(embedding) FROM concepts"
+  -> 3 строки; length(embedding)=1200 если модель загружена, иначе 0.
+  sqlite3 data/knowledge_base.db "SELECT COUNT(*) FROM parameters"
+  -> 7
+
+================================================================================
+ИЗМЕНЕНИЕ 18: src/knowledge_base.py
+================================================================================
+
+ЦЕЛЬ: единая точка доступа к базе знаний.
+  1. Чтение/запись понятий и параметров через SQLite.
+  2. Десериализация BLOB -> numpy (и обратно).
+  3. Вычисление эмбеддинга понятия по его термину.
+  4. Пересчёт эмбеддингов всех понятий (update_all_embeddings).
+  5. Поиск похожих понятий (линейный или FAISS).
+  6. Контекстный менеджер (with KnowledgeBase(...) as kb:).
+
+ИМПОРТЫ:
+  import sqlite3, json, logging, time
+  import numpy as np
+  from pathlib import Path
+  from src.config import Config
+  from src.lemmatizer import Lemmatizer
+  from src.synonyms import SynonymDict
+  from src.embeddings import FastTextWrapper
+
+НЕ импортировать pymorphy3 напрямую — только через Lemmatizer.
+
+--------------------------------------------------------------------
+КЛАСС KnowledgeBase
+--------------------------------------------------------------------
+
+__init__(self,
+         config: Config,
+         embedding_model: FastTextWrapper | None = None,
+         synonym_dict: SynonymDict | None = None) -> None:
+
+  Внутренние атрибуты:
+    self._db_path          = Path(config.db_path)
+    self._config           = config
+    self._embedding_model  = embedding_model
+    self._synonym_dict     = synonym_dict
+    self._lemmatizer       = Lemmatizer(cache_size=config.cache_lemma_size)
+    self._conn             = sqlite3.connect(str(self._db_path))
+    self._conn.row_factory = sqlite3.Row
+    self._conn.execute("PRAGMA foreign_keys = ON")
+    self._concepts_cache: list[dict] | None = None   <- унифицированное имя
+    self._faiss_index      = None
+    self.logger            = logging.getLogger(__name__)
+
+КОНТЕКСТНЫЙ МЕНЕДЖЕР:
+  def __enter__(self) -> "KnowledgeBase": return self
+  def __exit__(self, *args) -> None:      self.close()
+  def close(self) -> None:               self._conn.close()
+
+--------------------------------------------------------------------
+_blob_to_vector(self, blob: bytes | None) -> np.ndarray
+--------------------------------------------------------------------
+  Если blob is None: return np.zeros(300, dtype=np.float32)
+  vec = np.frombuffer(blob, dtype='<f4').copy()
+  Если len(vec) != 300:
+      self.logger.warning("Некорректный BLOB: %d байт (ожидалось 1200)", len(blob))
+      return np.zeros(300, dtype=np.float32)
+  return vec
+
+  КРИТИЧНО: '<f4' — little-endian float32, кроссплатформенный порядок байт.
+  КРИТИЧНО: .copy() — без него изменение вектора может повредить буфер SQLite.
+
+_vector_to_blob(self, vector: np.ndarray) -> bytes:
+  return vector.astype('<f4').tobytes()
+
+_parse_enum(self, value: str | None) -> list[str] | None:
+  Если None или value.strip()=="": return None
+  Попытаться json.loads(value). При любой ошибке: WARNING + return None.
+
+--------------------------------------------------------------------
+get_all_concepts(self, use_cache: bool = True) -> list[dict]
+--------------------------------------------------------------------
+  Если use_cache и self._concepts_cache is not None:
+      return self._concepts_cache
+
+  SQL с LEFT JOIN (один запрос, без N+1 проблемы):
+    SELECT c.id, c.term, c.domain, c.embedding,
+           p.name, p.label_ru, p.type, p.description,
+           p.unit, p.enum_values, p.confidence
+    FROM concepts c
+    LEFT JOIN parameters p ON c.id = p.concept_id
+    ORDER BY c.id, p.id
+
+  Сборка в словарь concepts_dict:
+    Для каждой строки cursor:
+      cid = row["id"]
+      Если cid нет в concepts_dict:
+          concepts_dict[cid] = {
+              "id":         cid,
+              "term":       row["term"],
+              "domain":     row["domain"],
+              "embedding":  self._blob_to_vector(row["embedding"]),
+              "parameters": [],
+          }
+      Если row["name"] is not None:  <- строка содержит параметр
+          param = {
+              "name":        row["name"],
+              "label_ru":    row["label_ru"],
+              "type":        row["type"],
+              "description": row["description"] or "",
+              "unit":        row["unit"],
+              "enum_values": self._parse_enum(row["enum_values"]),
+              "confidence":  float(row["confidence"] or 1.0),
+              "source":      "knowledge_base",
+          }
+          concepts_dict[cid]["parameters"].append(param)
+
+  result = list(concepts_dict.values())
+  if use_cache: self._concepts_cache = result
+  return result
+
+--------------------------------------------------------------------
+compute_concept_embedding(self, term: str) -> np.ndarray
+--------------------------------------------------------------------
+  НАЗНАЧЕНИЕ: вычислить вектор понятия по той же логике что vectorize(),
+  но без подсказок (только термин + его синонимы).
+  Консистентность запрос/понятие — основа работы косинусного поиска.
+
+  ПРОВЕРКИ:
+    Если self._embedding_model is None:
+        raise RuntimeError("embedding_model не задан в KnowledgeBase")
+    Если self._synonym_dict is None:
+        raise RuntimeError("synonym_dict не задан в KnowledgeBase")
+
+  АЛГОРИТМ:
+  1. lemmas = self._lemmatizer.lemmatize_phrase(term)
+     Если пусто: return np.zeros(300, dtype=np.float32)
+
+  2. tokens_weights: list[tuple[str, float]] = []
+     Для каждой леммы: tokens_weights.append((lemma, 0.7 / len(lemmas)))
+     Суммарный вес слов термина = 0.7 — per ТЗ.
+
+  3. synonyms_set: set[str] = set()
+     lemmas_set = set(lemmas)
+     Для каждой леммы:
+         syns = self._synonym_dict.get_synonyms(
+             lemma, max_synonyms=self._config.max_synonyms_per_token
+         )
+         synonyms_set.update(s for s in syns if s not in lemmas_set)
+     (Синонимы не должны дублировать слова самого термина.)
+
+  4. Если synonyms_set не пуст:
+         syn_weight = 0.1 / len(synonyms_set)
+         Для каждого синонима: tokens_weights.append((syn, syn_weight))
+
+     КРИТИЧНО: суммарный вес синонимов = 0.1 — СТРОГО per ТЗ и план 6-10.
+     НЕ 0.3 — это была ошибка предыдущих редакций (Проблема 1).
+
+  5. weighted_sum = np.zeros(300, dtype=np.float64)
+     Для (token, weight) в tokens_weights:
+         vec = self._embedding_model.get_phrase_vector(token)  # float32
+         weighted_sum += weight * vec.astype(np.float64)       # float64 для точности
+
+  6. L2-нормализация:
+     norm = np.linalg.norm(weighted_sum)
+     if norm > 1e-9:
+         weighted_sum /= norm
+     else:
+         self.logger.warning("Нулевой вектор для термина '%s'", term)
+
+  7. return weighted_sum.astype('<f4')
+     Тип '<f4' — тот же что и при чтении из BLOB, консистентность.
+
+--------------------------------------------------------------------
+update_all_embeddings(self) -> int
+--------------------------------------------------------------------
+  Если нет embedding_model или synonym_dict: raise RuntimeError.
+  self._concepts_cache = None            <- сброс кэша
+
+  cursor.execute("SELECT id, term FROM concepts")
+  updated = 0
+  Для каждой строки (cid, term):
+      blob = self._vector_to_blob(self.compute_concept_embedding(term))
+      self._conn.execute("UPDATE concepts SET embedding=? WHERE id=?", (blob, cid))
+      updated += 1
+
+  self._conn.commit()
+  self._faiss_index = None               <- FAISS-индекс устарел
+  self.logger.info("Пересчитано эмбеддингов: %d", updated)
+  return updated
+
+--------------------------------------------------------------------
+_build_faiss_index(self, concepts: list[dict]) -> None
+--------------------------------------------------------------------
+  Тип: IndexFlatIP — точный поиск по скалярному произведению.
+  Использовать только если config.use_faiss=True и len > faiss_threshold.
+  При ImportError: WARNING + self._config.use_faiss = False (деградация).
+
+  Иллюстрация структуры (не копировать буквально):
+    import faiss
+    index = faiss.IndexFlatIP(300)
+    matrix = np.stack([c["embedding"] for c in concepts]).astype(np.float32)
+    index.add(matrix)
+    self._faiss_index = {"index": index, "concepts": concepts}
+
+  При росте базы > 10 000 понятий — мигрировать на IVF4096_HNSW32_PQ64
+  (как указано в ТЗ, проект_описание_ч1.txt).
+
+--------------------------------------------------------------------
+search_similar_concepts(
+    self,
+    query_vector: np.ndarray,
+    min_confidence: float | None = None,
+    max_candidates: int | None = None,
+) -> list[dict]
+--------------------------------------------------------------------
+  Если min_confidence is None: взять self._config.min_confidence
+  Если max_candidates is None: взять self._config.max_candidates
+
+  1. norm_q = np.linalg.norm(query_vector)
+     Если norm_q < 1e-6: self.logger.warning(...); return []
+
+  2. query_vector = (query_vector / norm_q).astype(np.float32)
+
+  3. concepts = self.get_all_concepts()
+     Если пусто: self.logger.warning(...); return []
+
+  4. Вспомогательная _linear_search(qv, concepts, threshold, max_cand) -> list:
+     results = []
+     Для каждого c:
+         sim = float(np.dot(qv, c["embedding"]))
+         if sim >= threshold:
+             results.append({
+                 "concept_id": c["id"],
+                 "term":       c["term"],
+                 "domain":     c["domain"],
+                 "similarity": sim,
+                 "parameters": c["parameters"],
+             })
+     results.sort(key=lambda x: x["similarity"], reverse=True)
+     return results[:max_cand]
+
+  5. Выбор стратегии поиска:
+     Если config.use_faiss И len(concepts) > config.faiss_threshold:
+         Если self._faiss_index is None: self._build_faiss_index(concepts)
+         D, I = self._faiss_index["index"].search(
+             query_vector.reshape(1,-1), max_candidates
+         )
+         Собрать results из D[0] и I[0], отфильтровать I==-1 и sim < threshold.
+     Иначе (текущий рабочий путь для небольшой БД):
+         results = _linear_search(query_vector, concepts,
+                                   min_confidence, max_candidates)
+
+  6. Авторасширение порога (если кандидатов мало):
+     Если len(results) < 3 И min_confidence > 0.2:
+         self.logger.info(
+             "Расширяем поиск: %d кандидатов -> снижаем порог до 0.2", len(results)
+         )
+         results = _linear_search(query_vector, concepts, 0.2, max_candidates)
+
+  7. self.logger.debug("search: %d кандидатов за %.3fс", len(results), elapsed)
+  8. return results
+
+ПРОВЕРКА ИЗМЕНЕНИЯ 18:
+  with KnowledgeBase(config, embedding_model, synonym_dict) as kb:
+      assert len(kb.get_all_concepts()) == 3   # после seed
+
+      vec = kb.compute_concept_embedding("ключ гаечный")
+      assert abs(np.linalg.norm(vec) - 1.0) < 1e-4
+
+      results = kb.search_similar_concepts(vec, min_confidence=0.0, max_candidates=5)
+      assert results[0]["concept_id"] == "concept_001"   # sim ≈ 1.0
+
+================================================================================
+ИЗМЕНЕНИЕ 19.1: src/aggregation.py
+================================================================================
+
+ЦЕЛЬ: шаг 4 конвейера — агрегация параметров из нескольких кандидатов.
+Этот модуль полностью отсутствовал в первой версии плана (Проблема 2).
+
+ИМПОРТЫ:
+  import logging
+  from src.lemmatizer import Lemmatizer
+  logger = logging.getLogger(__name__)
+
+--------------------------------------------------------------------
+ФУНКЦИЯ aggregate_parameters(
+    candidates: list[dict],
+    hints_lemmas: list[list[str]],
+    max_parameters: int,
+) -> list[dict]
+--------------------------------------------------------------------
+  Args:
+    candidates:    список от search_similar_concepts (содержат similarity + parameters)
+    hints_lemmas:  список списков лемм подсказок (из processed["hints_lemmas"])
+    max_parameters: максимум возвращаемых параметров
+  Returns:
+    Список параметров, отсортированных по score, с полями confidence и source.
+
+  Если candidates пуст: return []
+
+  Шаг 1. Собрать groups: dict[str, dict]  (ключ = param["name"])
+    Для каждого candidate:
+        sim = candidate["similarity"]
+        Для каждого param в candidate["parameters"]:
+            name = param["name"]
+            Если name нет в groups:
+                groups[name] = {
+                    "param":        param.copy(),
+                    "similarities": [],
+                    "freq":         0,
+                }
+            groups[name]["similarities"].append(sim)
+            groups[name]["freq"] += 1
+
+  Шаг 2. Предварительные вычисления:
+    max_freq = max(g["freq"] for g in groups.values())
+    hint_set = {l for sub in hints_lemmas for l in sub}  <- плоское множество
+
+  Шаг 3. Для каждой группы вычислить скор:
+    freq_norm  = g["freq"] / max_freq
+    avg_sim    = sum(g["similarities"]) / len(g["similarities"])
+    hint_match = _compute_hint_match(g["param"], hint_set)
+    g["score"] = 0.6 * freq_norm + 0.3 * avg_sim + 0.1 * hint_match
+
+    Вспомогательная _compute_hint_match(param: dict, hint_set: set[str]) -> float:
+      Если hint_set пуст: return 0.0
+      text = (param.get("label_ru","") + " " + param.get("description","")).lower()
+      lem  = Lemmatizer()
+      param_lemmas = set(lem.lemmatize_phrase(text))
+      return len(hint_set & param_lemmas) / len(hint_set)
+
+  Шаг 4. sorted_groups = sorted(groups.values(),
+                                  key=lambda g: g["score"], reverse=True)
+
+  Шаг 5. top_groups = sorted_groups[:max_parameters]
+
+  Шаг 6. max_score = top_groups[0]["score"] if top_groups else 1.0
+    Если max_score <= 0: max_score = 1.0
+
+  Шаг 7. result = []
+    Для каждой группы в top_groups:
+        p = g["param"].copy()
+        p["confidence"] = round(g["score"] / max_score, 4)
+        p["source"]     = "knowledge_base"
+        result.append(p)
+
+  Шаг 8. logger.info("aggregate: %d кандидатов -> %d параметров",
+                      len(candidates), len(result))
+  Шаг 9. return result
+
+--------------------------------------------------------------------
+ФУНКЦИЯ determine_context(candidates: list[dict]) -> dict
+--------------------------------------------------------------------
+  Returns: {"domain": str, "confidence": float}
+
+  Если пусто: return {"domain": "не определено", "confidence": 0.0}
+
+  domain_scores: dict[str, float] = {}
+  domain_counts: dict[str, int]   = {}
+  Для каждого c в candidates:
+      d = c.get("domain") or "неизвестно"
+      domain_scores[d] = domain_scores.get(d, 0.0) + c["similarity"]
+      domain_counts[d] = domain_counts.get(d, 0) + 1
+
+  best     = max(domain_scores, key=domain_scores.get)
+  avg_conf = domain_scores[best] / domain_counts[best]
+  return {"domain": best, "confidence": round(avg_conf, 4)}
+
+================================================================================
+ИЗМЕНЕНИЕ 19.2: configs/ + src/fallback.py
+================================================================================
+
+ФАЙЛ configs/domain_keywords.json (примеры — расширять по мере развития проекта):
+{
+    "музыка": ["музык", "нот", "скрипич", "бас", "аккорд", "ритм", "тональн"],
+    "слесарный инструмент": ["инструмент", "ключ", "гаечн", "разводн",
+                              "слесарн", "отвёртк", "плоскогубц"],
+    "электроника": ["ток", "напряжен", "резистор", "конденсатор", "схем",
+                    "электрон", "микросхем"],
+    "строительство": ["бетон", "кирпич", "раствор", "арматур", "фундамент"]
+}
+
+ФАЙЛ configs/domain_templates.json (примеры):
+{
+    "музыка": {
+        "parameters": [
+            {"name":"genre",    "label_ru":"Жанр",
+             "type":"string",   "description":"Музыкальное направление"},
+            {"name":"composer", "label_ru":"Автор / Композитор",
+             "type":"string",   "description":"Создатель произведения"},
+            {"name":"tempo",    "label_ru":"Темп",
+             "type":"string",   "description":"Скорость исполнения"}
+        ]
+    },
+    "слесарный инструмент": {
+        "parameters": [
+            {"name":"material", "label_ru":"Материал",
+             "type":"string",   "description":"Материал изготовления"},
+            {"name":"size",     "label_ru":"Размер",
+             "type":"float",    "description":"Характерный размер", "unit":"мм"},
+            {"name":"purpose",  "label_ru":"Назначение",
+             "type":"string",   "description":"Для каких работ"}
+        ]
+    },
+    "общее": {
+        "parameters": [
+            {"name":"name",        "label_ru":"Наименование",
+             "type":"string",      "description":"Официальное название"},
+            {"name":"description", "label_ru":"Описание",
+             "type":"string",      "description":"Краткое описание"},
+            {"name":"category",    "label_ru":"Категория",
+             "type":"string",      "description":"Предметная область"}
+        ]
+    }
+}
+
+ФАЙЛ src/fallback.py:
+Импорты:
+  import json, logging
+  from pathlib import Path
+  from src.config import Config
+  from src.lemmatizer import Lemmatizer
+  logger = logging.getLogger(__name__)
+
+ФУНКЦИЯ load_json_config(path: str | Path) -> dict:
+  Загружает JSON-файл. При ошибке — WARNING + return {}.
+  try: return json.loads(Path(path).read_text(encoding="utf-8"))
+  except FileNotFoundError: logger.warning("Файл не найден: %s", path); return {}
+  except json.JSONDecodeError: logger.warning("Ошибка JSON: %s", path);  return {}
+
+ФУНКЦИЯ detect_domain(all_lemmas: set[str], keywords_path: str) -> str:
+  Определяет домен по лемматизированным словам запроса.
+  keywords = load_json_config(keywords_path)
+  Если пуст: return "общее"
+  domain_scores: dict[str, int] = {}
+  Для каждого (domain, kws) в keywords.items():
+      domain_scores[domain] = sum(
+          1 for kw in kws for lemma in all_lemmas if kw in lemma
+      )
+  ПРИМЕЧАНИЕ: "kw in lemma" — подстрочный поиск. "скрипич" находит "скрипичный".
+  Ключевые слова — усечённые корни, это намеренно.
+  Если max(domain_scores.values()) == 0: return "общее"
+  return max(domain_scores, key=domain_scores.get)
+
+ФУНКЦИЯ fallback_response(term: str, processed: dict, config: Config) -> dict:
+  term_lemmas  = processed.get("term_lemmas", [])
+  hints_nested = processed.get("hints_lemmas", [])
+  hints_flat   = [l for sub in hints_nested for l in sub]
+  all_lemmas   = set(term_lemmas + hints_flat)
+
+  Если all_lemmas пуст:
+      lem = Lemmatizer()
+      all_lemmas = set(lem.lemmatize_phrase(term))
+
+  domain    = detect_domain(all_lemmas, config.fallback_domain_keywords_path)
+  templates = load_json_config(config.domain_templates_path)
+  template  = templates.get(domain, templates.get("общее", {}))
+  params    = [p.copy() for p in template.get("parameters", [])]
+
+  Для каждого p в params:
+      p["confidence"] = 0.3
+      p["source"]     = "template"
+
+  logger.warning("fallback: '%s' не найден. Домен: '%s'. Шаблонов: %d.",
+                  term, domain, len(params))
+
+  return {
+      "status": "ok",
+      "term":   term,
+      "selected_context": {"domain": domain, "confidence": 0.3},
+      "parameters": params,
+      "suggested_refinements": [],
+      "warnings": [
+          "Термин не найден в базе знаний. "
+          "Параметры предложены на основе шаблона предметной области."
+      ],
+  }
+
+================================================================================
+ИЗМЕНЕНИЕ 19.3: Обновление main.py (шаги 3-5 конвейера)
+================================================================================
+
+КОНТЕКСТ: run_pipeline из плана 14 содержит реальные шаги 0-2,
+шаги 3-5 — заглушки. Заменяем заглушки реальной логикой.
+
+НОВЫЕ ИМПОРТЫ В main.py (добавить к существующим):
+  import time
+  import numpy as np
+  from src.knowledge_base import KnowledgeBase
+  from src.aggregation import aggregate_parameters, determine_context
+  from src.fallback import fallback_response
+
+ОБНОВЛЕНИЕ _init_components(cfg: Config) -> tuple:
+  Было (план 14): (synonym_dict, lemmatizer, embedding_model, vector_cache)
+  Стало: добавить kb в конец кортежа:
+
+    kb = KnowledgeBase(
+        config=cfg,
+        embedding_model=embedding_model,
+        synonym_dict=synonym_dict,
+    )
+    return (synonym_dict, lemmatizer, embedding_model, vector_cache, kb)
+
+  ВАЖНО: KnowledgeBase создаётся ОДИН РАЗ при старте. НИКОГДА — в run_pipeline.
+  ВАЖНО: embedding_model инициализируется ДО передачи в KnowledgeBase.
+
+ДОБАВИТЬ ПАРАМЕТР к сигнатуре run_pipeline:
+  kb: KnowledgeBase | None = None
+
+ЗАМЕНА ЗАГЛУШЕК ШАГОв 3-5 (вставить после шага 2 из плана 14):
+
+  # --- Шаг 3: Поиск кандидатов ---
+  candidates: list[dict] = []
+  if kb is not None and not np.all(query_vector == 0):
+      t0 = time.monotonic()
+      candidates = kb.search_similar_concepts(
+          query_vector,
+          min_confidence=effective_min_confidence,
+          max_candidates=cfg.max_candidates,
+      )
+      logger.info("Поиск: %d кандидатов за %.3fс",
+                  len(candidates), time.monotonic() - t0)
+  elif kb is None:
+      warnings_list.append("KnowledgeBase не инициализирован. Поиск пропущен.")
+
+  # --- Шаг 4: Агрегация или fallback ---
+  if candidates:
+      hints_lemmas          = processed.get("hints_lemmas", [])
+      parameters            = aggregate_parameters(candidates, hints_lemmas,
+                                                    cfg.max_parameters)
+      selected_context      = determine_context(candidates)
+      suggested_refinements = []
+
+      if len(parameters) < 3:
+          warnings_list.append(
+              "Найдено мало параметров. "
+              "Рекомендуется добавить уточняющие подсказки."
+          )
+  else:
+      # Полный fallback — немедленный возврат
+      response = fallback_response(term, processed, cfg)
+      if debug:
+          response["debug_info"] = {
+              "query_vector":        query_vector.tolist(),
+              "candidates_raw":      [],
+              "scores_distribution": [],
+          }
+      return response
+
+  # --- Шаг 5: Сборка ответа (структура из плана 14 — поля не менять) ---
+  result = {
+      "status":                "ok",
+      "term":                  term,
+      "selected_context":      selected_context,
+      "parameters":            parameters,
+      "suggested_refinements": suggested_refinements,
+      "warnings":              warnings_list,
+  }
+  if debug:
+      result["debug_info"] = {
+          "query_vector":        query_vector.tolist(),
+          "candidates_raw":      candidates,
+          "scores_distribution": [p["confidence"] for p in parameters],
+      }
+  return result
+
+ОБНОВЛЕНИЕ ВЫЗОВА В __main__:
+  synonym_dict, lemmatizer, embedding_model, vector_cache, kb = _init_components(cfg)
+  result = run_pipeline(
+      term=..., hints=..., debug=..., min_confidence=..., cfg=cfg,
+      lemmatizer=lemmatizer, synonym_dict=synonym_dict,
+      embedding_model=embedding_model, vector_cache=vector_cache,
+      kb=kb,
+  )
+
+================================================================================
+ИЗМЕНЕНИЕ 19.4: Тесты
+================================================================================
+
+ФАЙЛ tests/test_knowledge_base.py (используют tmp_path от pytest):
+
+  Тест 1 — init_db:
+    Запустить init_db(str(tmp_path/"test.db"))
+    Проверить наличие таблиц: concepts, parameters, relations, metadata
+    Проверить 4 индекса через PRAGMA index_list
+    Проверить schema_version == '2'
+    Повторный вызов — не падает (идемпотентность)
+
+  Тест 2 — _blob_to_vector:
+    vec = np.random.randn(300).astype('<f4')
+    blob = vec.tobytes()
+    Проверить np.allclose(vec, kb._blob_to_vector(blob))
+    Проверить _blob_to_vector(None) == np.zeros(300)
+    Проверить _blob_to_vector(b"") -> np.zeros(300) + WARNING
+
+  Тест 3 — get_all_concepts:
+    Вставить 2 понятия с параметрами через sqlite3 напрямую
+    Проверить что get_all_concepts возвращает их с правильными параметрами
+    Понятие без параметров -> "parameters" == []
+    Второй вызов с use_cache=True -> тот же объект (is)
+
+  Тест 4 — compute_concept_embedding:
+    Мок FastTextWrapper: get_phrase_vector всегда возвращает np.ones(300)
+    Убедиться что норма результата ≈ 1.0
+    Пустой термин "" -> np.zeros(300)
+    embedding_model=None -> RuntimeError
+
+  Тест 5 — search_similar_concepts:
+    Вставить понятие с embedding=[1,0,...,0]
+    query_vector=[1,0,...,0] -> similarity ≈ 1.0, кандидат найден
+    query_vector=np.zeros(300) -> return []
+    min_confidence=0.99 при similarity=0.5 -> 0 кандидатов -> авторасширение до 0.2
+
+ФАЙЛ tests/test_aggregation.py:
+
+  Тест 1 — freq влияет на ранг:
+    candidates = [
+        {"similarity":0.9, "parameters":[{"name":"material",...},{"name":"size",...}]},
+        {"similarity":0.7, "parameters":[{"name":"material",...}]},
+    ]
+    "material" freq=2, "size" freq=1 -> "material" первый
+    Проверить source == "knowledge_base"
+    Проверить confidence нормирован: первый == 1.0
+
+  Тест 2 — пустые кандидаты -> []
+
+  Тест 3 — determine_context один домен:
+    candidates = [{"domain":"музыка","similarity":0.8}, ...]
+    result["domain"] == "музыка"
+
+  Тест 4 — несколько доменов:
+    "музыка" sim_sum=1.5, "техника" sim_sum=0.7 -> "музыка" побеждает
+
+  Тест 5 — hint_match влияет на ранг:
+    Параметр "material" с hint_match=0.8 обгоняет "size" с hint_match=0.0
+    при одинаковом freq и avg_sim.
+
+ФАЙЛ tests/test_fallback.py:
+
+  Тест 1 — detect_domain с совпадениями:
+    all_lemmas = {"скрипичный", "нотный"} -> "музыка"
+
+  Тест 2 — без совпадений -> "общее"
+
+  Тест 3 — fallback_response структура:
+    Проверить ключи: status, term, selected_context, parameters, warnings
+    Все параметры: confidence == 0.3, source == "template"
+    warnings непуст
+
+  Тест 4 — load_json_config несуществующий файл -> {} (не поднимает исключение)
+
+  Тест 5 — fallback_response пустые term_lemmas и hints_lemmas:
+    Не падает, возвращает хотя бы шаблон "общее".
+
+================================================================================
+ИЗМЕНЕНИЕ 19.5: scripts/setup_all.py
+================================================================================
+
+ЦЕЛЬ: полная инициализация системы одной командой.
+Запуск: python -m scripts.setup_all [--force] [--config path]
+
+Шаги внутри setup_all(config: Config, force: bool = False) -> None:
+  1. init_db(config.db_path)
+     logger.info("Шаг 1/3: схема создана.")
+
+  2. seed(config, force=force)
+     logger.info("Шаг 2/3: данные вставлены.")
+
+  3. Инициализировать компоненты (как в seed_data.py):
+       lemmatizer, synonym_dict, embedding_model = ...
+       with KnowledgeBase(config, embedding_model, synonym_dict) as kb:
+           updated = kb.update_all_embeddings()
+           logger.info("Шаг 3/3: пересчитано эмбеддингов: %d.", updated)
+
+Блок if __name__ == "__main__": — argparse с --force и --config.
+
+================================================================================
+ИТОГ ПЛАНА 16-19
+================================================================================
+
+СОЗДАННЫЕ ФАЙЛЫ:
+  scripts/__init__.py           (пустой — делает scripts пакетом)
+  scripts/init_db.py            (схема БД версии 2, идемпотентная)
+  scripts/seed_data.py          (тестовые данные, реальные эмбеддинги, argparse)
+  scripts/setup_all.py          (init + seed + update_embeddings)
+  src/knowledge_base.py         (KnowledgeBase: доступ, поиск, обновление)
+  src/aggregation.py            (aggregate_parameters, determine_context)
+  src/fallback.py               (fallback_response, detect_domain)
+  configs/domain_keywords.json
+  configs/domain_templates.json
+  tests/test_knowledge_base.py
+  tests/test_aggregation.py
+  tests/test_fallback.py
+
+ИЗМЕНЁННЫЕ ФАЙЛЫ:
+  src/config.py        (8 новых полей + их дефолты)
+  configs/config.json  (8 новых полей)
+  main.py              (_init_components -> 5 компонентов; run_pipeline шаги 3-5)
+
+ПОЛНАЯ КАРТИНА КОНВЕЙЕРА ПОСЛЕ ИЗМЕНЕНИЙ 16-19:
+
+  Вход: {"term": "ключ", "hints": ["техника","вращение"]}
+
+  Шаг 0. Параметры запроса (Config)
+  Шаг 1. preprocess()   -> tokens_with_weights, term_lemmas, hints_lemmas
+  Шаг 2. vectorize()    -> query_vector [dim=300, float32, L2-норма=1]
+  Шаг 3. kb.search()    -> candidates  [sorted by similarity desc]
+  Шаг 4. aggregate()    -> parameters  [sorted by score desc, max_parameters]
+          context()     -> selected_context {domain, confidence}
+          ИЛИ fallback  -> если candidates == []
+  Шаг 5. build_response -> итоговый dict строго per ТЗ
+
+  Выход:
+  {
+    "status": "ok",
+    "term": "ключ",
+    "selected_context": {"domain": "слесарный инструмент", "confidence": 0.87},
+    "parameters": [
+        {"name":"size_mm",  "label_ru":"Размер в мм",
+         "type":"float",    "confidence":1.0,  "source":"knowledge_base"},
+        {"name":"material", "label_ru":"Материал",
+         "type":"string",   "confidence":0.92, "source":"knowledge_base"},
+        ...
+    ],
+    "suggested_refinements": [],
+    "warnings": []
+  }

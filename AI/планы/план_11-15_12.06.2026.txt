@@ -1,0 +1,638 @@
+﻿ОБЯЗАТЕЛЬНО ДЛЯ ИИ: ВСЁ ЧТО НАПИСАНО В ЭТОМ ФАЙЛЕ — РЕКОМЕНДАЦИИ, А НЕ ПРИКАЗЫ.
+ПРИМЕРЫ КОДА — ТОЛЬКО ИЛЛЮСТРАЦИИ, НЕ КОПИРОВАТЬ БУКВАЛЬНО.
+ПИШИТЕ КАК ЛУЧШЕ, ЕСЛИ ЗНАЕТЕ. ГЛАВНОЕ — СОБЛЮДАТЬ ОПИСАННОЕ ПОВЕДЕНИЕ И СТРУКТУРУ.
+
+================================================================================
+План реализации AI-Terminator — Изменения 11-15
+ФИНАЛЬНАЯ ВЕРСИЯ 12.06.2026 (устранены все ошибки предыдущих редакций)
+================================================================================
+
+--------------------------------------------------------------------------------
+ЧТО УЖЕ ЕСТЬ К ЭТОМУ МОМЕНТУ (после изменений 1-10)
+--------------------------------------------------------------------------------
+
+После изм.1-10 у вас есть:
+  - src/config.py           — класс Config (включая fallback_embeddings_path)
+  - src/lemmatizer.py       — класс Lemmatizer (синглтон, LRU-кэш)
+  - src/synonyms.py         — класс SynonymDict
+  - src/text_cleaner.py     — функция clean_text
+  - src/preprocess.py       — preprocess_base, preprocess_full, псевдоним preprocess
+  - data/synonyms.json      — словарь синонимов (формат с весами)
+  - configs/config.json     — все поля (включая fallback_embeddings_path: "")
+  - main.py                 — заглушка run_pipeline, _init_components, логирование
+
+Шаг 1 конвейера (предобработка) полностью готов.
+preprocess(term, hints, config, synonym_dict, lemmatizer) -> dict
+возвращает поле tokens_with_weights: list[tuple[str, float]]
+
+ТЕПЕРЬ РЕАЛИЗУЕМ ШАГ 2 — ВЕКТОРИЗАЦИЮ ЗАПРОСА.
+
+СОЗДАВАЕМЫЕ МОДУЛИ
+-----------------
+  src/embeddings.py  — Изменение 11 (FastTextWrapper)
+  src/vectorize.py   — Изменение 12 (функция vectorize)
+  src/cache.py       — Изменение 13 (QueryVectorCache)
+  main.py (правка)   — Изменение 14 (обновление _init_components + run_pipeline)
+  tests/             — Изменение 15 (тесты для изм.11-14)
+
+ПРОВЕРКА КОНФИГА ПЕРЕД НАЧАЛОМ
+-------------------------------
+В configs/config.json и src/config.py должно быть поле:
+  "fallback_embeddings_path": ""
+Если отсутствует — добавить согласно изм.4 и изм.5 плана 1-5.
+
+--------------------------------------------------------------------------------
+ВАЖНЫЕ ПРИНЦИПЫ ДЛЯ ВСЕХ ИЗМЕНЕНИЙ 11-15
+--------------------------------------------------------------------------------
+
+ФОРМУЛА ВЕКТОРИЗАЦИИ (из ТЗ, не менять):
+  weighted_sum = sum(weight_i * vector(token_i))
+  query_vector = L2_normalize(weighted_sum)
+
+  НЕТ деления на сумму весов — это взвешенная сумма, не среднее.
+  Сумма весов токенов = 1.1 (0.7 + 0.3 + 0.1) — это нормально.
+  L2-нормализация в конце делает вектор единичным.
+
+ПОВЕДЕНИЕ ПРИ ОТСУТСТВИИ МОДЕЛИ:
+  Если fastText не загружен И fallback-файл отсутствует:
+    - get_word_vector возвращает нулевой вектор np.zeros(dim).
+    - НЕ возвращать случайный вектор (это разрушает семантику поиска).
+    - Логировать WARNING один раз на слово.
+    - В run_pipeline: нулевой итоговый вектор -> добавить WARNING в ответ.
+    - Статус ответа остаётся 'ok' (система деградирует, но не падает).
+
+СИНГЛТОНЫ И ПЕРЕДАЧА ЗАВИСИМОСТЕЙ:
+  FastTextWrapper и QueryVectorCache создаются ОДИН РАЗ в _init_components.
+  Передаются в run_pipeline как параметры.
+  НИКОГДА не создавать модели внутри run_pipeline — это катастрофически медленно.
+
+--------------------------------------------------------------------------------
+ИЗМЕНЕНИЕ 11: Обёртка над fastText (src/embeddings.py)
+--------------------------------------------------------------------------------
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Создать модуль src/embeddings.py с классом FastTextWrapper.
+
+НАЗНАЧЕНИЕ КЛАССА
+-----------------
+Единственная точка доступа к эмбеддингам в проекте.
+Скрывает загрузку модели, кэширование и fallback.
+Все другие модули работают только через этот класс.
+
+ИНИЦИАЛИЗАЦИЯ (конструктор)
+----------------------------
+Рекомендуется принимать config: Config (или отдельные параметры).
+Из конфига брать:
+  - fasttext_model_path    -> self._model_path (Path)
+  - fallback_embeddings_path -> self._fallback_path (Path или None)
+  - word_vector_cache_size -> self._cache_maxsize (int)
+
+Внутренние атрибуты:
+  self._model          = None   (fastText-модель, ленивая загрузка)
+  self._fallback       = None   (dict {слово: np.ndarray} или None)
+  self._model_loaded   = False  (флаг: попытка загрузки уже делалась)
+  self._fallback_loaded = False
+  self._dim            = 300    (уточнится при первой загрузке)
+  self._word_cache     = OrderedDict()  (LRU-кэш слов)
+  self._cache_maxsize  = int из конфига
+  self._warned_words   = set()  (слова, о которых уже выводили WARNING)
+
+ЛЕНИВАЯ ЗАГРУЗКА: _ensure_model()
+----------------------------------
+Вызывается в начале get_word_vector, get_phrase_vector, get_dimension.
+Если self._model_loaded == True — немедленный выход (не повторять загрузку).
+
+Алгоритм _ensure_model():
+1. self._model_loaded = True  (блокируем повторный запуск)
+2. Если self._model_path.exists():
+     Попытаться: self._model = fasttext.load_model(str(self._model_path))
+     ВАЖНО: API fasttext Python не поддерживает mmap='r'. Использовать:
+       self._model = fasttext.load_model(str(self._model_path))
+     При успехе: self._dim = len(self._model.get_word_vector('а'))
+     Лог INFO 'FastText загружена, размерность N'.
+   Иначе (файл не найден):
+     Лог ERROR 'Файл модели не найден: path'.
+     Вызвать self._load_fallback().
+3. При исключении во время загрузки:
+   Лог ERROR 'Ошибка загрузки fastText: exc'.
+   Вызвать self._load_fallback().
+4. Если после всего self._model is None and self._fallback is None:
+   Лог WARNING 'Ни fastText, ни fallback не загружены. 
+              'Все векторы будут нулевыми. Поиск не работает.'
+
+_load_fallback():
+1. Если self._fallback_loaded: return.
+2. self._fallback_loaded = True
+3. Если self._fallback_path is None или не существует:
+   Лог WARNING 'Fallback-файл не задан или не найден.'. return.
+4. Загрузить через np.load(..., allow_pickle=True).item()
+   ПРИМЕЧАНИЕ: allow_pickle=True допустимо только для файлов из своего репозитория.
+5. Проверить формат (dict, непустой). При ошибке: WARNING + return.
+6. self._dim = len(первого_вектора)
+7. self._fallback = data
+8. Лог INFO 'Fallback загружен: N слов, размерность D'.
+
+get_word_vector(word: str) -> np.ndarray:
+1. word = word.lower().strip(). Если пустой: return np.zeros(self._dim, float32).
+2. self._ensure_model()
+3. Кэш: if word in self._word_cache: move_to_end(word), return.
+4. Вычислить вектор:
+   а. Если self._model is not None:
+      Попробовать self._model.get_word_vector(word).
+      fastText обрабатывает OOV через n-граммы — это нормально.
+      При исключении: Лог WARNING, перейти к б.
+   б. Иначе если self._fallback is not None:
+      vec = self._fallback.get(word, None)
+      Если не найдено: vec = np.zeros(self._dim, float32)
+   в. Иначе (нет ни модели, ни fallback):
+      vec = np.zeros(self._dim, float32)
+      Если word not in self._warned_words:
+        Лог WARNING '...'
+        self._warned_words.add(word)
+5. Привести vec к np.ndarray float32.
+6. LRU-запись: если len >= maxsize: popitem(last=False)
+   self._word_cache[word] = vec
+7. return vec
+
+get_phrase_vector(phrase: str) -> np.ndarray:
+  Разбить по пробелам, отфильтровать пустые.
+  Если нет слов: np.zeros(self._dim, float32).
+  vecs = [get_word_vector(w) для каждого слова]
+  return np.mean(vecs, axis=0).astype(float32)
+
+get_dimension() -> int:
+  self._ensure_model()
+  return self._dim
+
+ИЛЛЮСТРАЦИЯ СТРУКТУРЫ (не для копирования):
+  class FastTextWrapper:
+      def __init__(self, model_path: Path, fallback_path: Path | None, cache_size: int):
+          ...
+      def _ensure_model(self) -> None: ...
+      def _load_fallback(self) -> None: ...
+      def get_word_vector(self, word: str) -> np.ndarray: ...
+      def get_phrase_vector(self, phrase: str) -> np.ndarray: ...
+      def get_dimension(self) -> int: ...
+
+ПРОВЕРКА
+--------
+tests/test_embeddings.py:
+  1. Без модели + без fallback: get_word_vector('ключ') == np.zeros(300).
+  2. Пустое слово: get_word_vector('') == np.zeros(300).
+  3. get_phrase_vector('ключ гаечный') == среднее двух get_word_vector.
+  4. LRU: cache_size=2, запросить 3 слова -> первое вытеснено из кэша.
+  5. WARNING логируется ровно 1 раз на слово без модели (caplog).
+  6. get_dimension() без модели возвращает 300.
+  7. С fastText моделью (если доступна): вектор 'ключ' имеет размерность 300.
+
+--------------------------------------------------------------------------------
+ИЗМЕНЕНИЕ 12: Функция векторизации (src/vectorize.py)
+--------------------------------------------------------------------------------
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Создать модуль src/vectorize.py с единственной публичной функцией vectorize.
+Это Шаг 2 конвейера (см. проект_описание_ч.1, Шаг 2).
+
+СИГНАТУРА
+---------
+vectorize(
+    processed_query: dict,
+    embedding_model: FastTextWrapper,
+    normalize: bool = True
+) -> np.ndarray
+
+ВХОДНЫЕ ДАННЫЕ
+--------------
+  processed_query — словарь из preprocess().
+    Используется только поле 'tokens_with_weights': list[tuple[str, float]].
+    Каждый кортеж (token: str, weight: float).
+    token может быть фразой (несколько слов) — обрабатывает get_phrase_vector.
+  embedding_model — экземпляр FastTextWrapper.
+  normalize       — True: L2-нормализация.
+    False — только для тестов и отладки.
+
+АЛГОРИТМ
+--------
+1. tokens_weights = processed_query.get('tokens_with_weights', [])
+2. Если пустой: Лог WARNING; return np.zeros(get_dimension(), float32).
+3. dim = embedding_model.get_dimension()
+4. weighted_sum = np.zeros(dim, dtype=float64)  # float64 для точности
+5. Для (token, weight) в tokens_weights:
+   а. Валидировать weight: не float/int -> WARNING + skip.
+      math.isnan(weight) или math.isinf(weight) -> WARNING + skip.
+      weight < 0 -> WARNING + skip.
+      weight == 0 -> разрешён (нулевой вклад, не пропускаем).
+   б. vec = embedding_model.get_phrase_vector(token)  # float32
+   в. np.any(np.isnan(vec) | np.isinf(vec)) -> ERROR + skip.
+   г. weighted_sum += weight * vec.astype(float64)
+6. Если np.any(np.isnan(weighted_sum)):
+   Лог ERROR 'NaN в weighted_sum, сброс.'; weighted_sum = np.zeros(dim, float64).
+7. Если normalize == True:
+   norm = np.linalg.norm(weighted_sum)
+   Если norm > 1e-9: weighted_sum /= norm
+   Иначе: Лог WARNING '...'
+8. return weighted_sum.astype(float32)
+
+ПОЧЕМУ НЕТ ДЕЛЕНИЯ НА СУММУ ВЕСОВ
+----------------------------------
+Формула ТЗ — взвешенная СУММА, не взвешенное среднее.
+Деление на sum(weights) изменило бы семантику и противоречит ТЗ.
+L2-нормализация устраняет масштаб — этого достаточно для косинусного поиска.
+
+ИЛЛЮСТРАЦИЯ (не для копирования):
+  import numpy as np, math, logging
+  from src.embeddings import FastTextWrapper
+  logger = logging.getLogger(__name__)
+
+  def vectorize(processed_query, embedding_model, normalize=True):
+      tokens_weights = processed_query.get('tokens_with_weights', [])
+      dim = embedding_model.get_dimension()
+      if not tokens_weights:
+          logger.warning('vectorize: нет токенов')
+          return np.zeros(dim, dtype=np.float32)
+      weighted_sum = np.zeros(dim, dtype=np.float64)
+      for token, weight in tokens_weights:
+          # валидация weight ...
+          vec = embedding_model.get_phrase_vector(token)
+          # NaN-проверка vec ...
+          weighted_sum += weight * vec.astype(np.float64)
+      # NaN-проверка weighted_sum ...
+      if normalize:
+          norm = np.linalg.norm(weighted_sum)
+          if norm > 1e-9:
+              weighted_sum /= norm
+          else:
+              logger.warning('vectorize: нулевой вектор')
+      return weighted_sum.astype(np.float32)
+
+ПРОВЕРКА (ожидаемые числа)
+--------------------------
+Mock: get_phrase_vector('a') = [1,0,0,...300], get_phrase_vector('b') = [0,1,0,...300].
+
+Тест 1 — без нормализации:
+  [('a', 1.0)] -> [1.0, 0.0, ...]
+
+Тест 2 — нормализация:
+  [('a', 0.7), ('b', 0.3)]
+  weighted_sum = [0.7, 0.3, 0...]
+  norm = sqrt(0.49 + 0.09) = sqrt(0.58) ≈ 0.76158
+  result ≈ [0.919, 0.394, 0.0, ...]
+  np.linalg.norm(result) ≈ 1.0
+
+Тест 3 — инвариантность к масштабу:
+  [('a', 1.4), ('b', 0.6)] -> тот же нормализованный вектор что [('a', 0.7), ('b', 0.3)].
+
+Тест 4 — пустой список -> np.zeros(300) + WARNING.
+
+Тест 5 — NaN-вес пропускается с WARNING.
+
+Тест 6 — отрицательный вес пропускается с WARNING.
+
+--------------------------------------------------------------------------------
+ИЗМЕНЕНИЕ 13: Кэш векторов запросов (src/cache.py)
+--------------------------------------------------------------------------------
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Создать модуль src/cache.py с классом QueryVectorCache.
+
+НАЗНАЧЕНИЕ
+----------
+Кэшировать итоговый вектор запроса (результат preprocess + vectorize)
+для повторяющихся запросов. Ключ кэша учитывает параметры конфига.
+
+КЛЮЧ КЭША
+----------
+(term.lower().strip(), tuple(sorted(hints_normalized)), use_synonyms, max_synonyms_per_token)
+
+  - Нормализуем term: lower + strip (чтобы 'Ключ' == 'ключ')
+  - Hints сортируем (чтобы ['техника','вращение'] == ['вращение','техника'])
+  - Включаем use_synonyms и max_synonyms_per_token — влияют на tokens_with_weights
+  - Остальные поля конфига не включаем (они влияют на поиск, но не на вектор)
+
+ХРАНЕНИЕ
+--------
+numpy.ndarray не хешируем. Хранить как tuple(vector.tolist()),
+при чтении конвертировать: np.array(stored, dtype=float32).
+
+КЛАСС QueryVectorCache
+-----------------------
+QueryVectorCache(maxsize: int)
+  self._cache: OrderedDict
+  self._maxsize: int
+
+get(term: str, hints: list[str], config: Config) -> np.ndarray | None:
+  Построить ключ. Проверить кэш.
+  Если есть: move_to_end(key), вернуть np.array(..., float32). Лог DEBUG 'hit'.
+  Если нет: вернуть None. Лог DEBUG 'miss'.
+
+put(term: str, hints: list[str], config: Config, vector: np.ndarray) -> None:
+  Построить ключ.
+  Если len >= maxsize: popitem(last=False).
+  Сохранить tuple(vector.tolist()). Лог DEBUG 'store'.
+
+clear() -> None:
+  self._cache.clear(). Лог INFO 'Кэш очищен'.
+
+_build_key(term, hints, config) -> tuple:
+  Вспомогательный метод, используется в get и put.
+
+ИЛЛЮСТРАЦИЯ (не для копирования):
+  from collections import OrderedDict
+  import numpy as np, logging
+  logger = logging.getLogger(__name__)
+
+  class QueryVectorCache:
+      def __init__(self, maxsize: int = 100):
+          self._cache = OrderedDict()
+          self._maxsize = maxsize
+
+      def _build_key(self, term, hints, config):
+          return (
+              term.lower().strip(),
+              tuple(sorted(h.lower().strip() for h in hints)),
+              config.use_synonyms,
+              config.max_synonyms_per_token,
+          )
+
+      def get(self, term, hints, config):
+          key = self._build_key(term, hints, config)
+          if key not in self._cache:
+              logger.debug('cache miss: %r', term)
+              return None
+          self._cache.move_to_end(key)
+          logger.debug('cache hit: %r', term)
+          return np.array(self._cache[key], dtype=np.float32)
+
+      def put(self, term, hints, config, vector):
+          key = self._build_key(term, hints, config)
+          if len(self._cache) >= self._maxsize:
+              self._cache.popitem(last=False)
+          self._cache[key] = tuple(vector.tolist())
+          logger.debug('cache store: %r', term)
+
+      def clear(self):
+          self._cache.clear()
+          logger.info('QueryVectorCache очищен')
+
+ПРОВЕРКА
+--------
+tests/test_cache.py:
+  1. put + get: вектор совпадает (np.allclose).
+  2. Разный порядок hints: тот же ключ -> hit.
+  3. Изменение use_synonyms: промах (другой ключ).
+  4. LRU: maxsize=2, добавить 3 записи -> первая вытеснена.
+  5. clear() -> следующий get -> None.
+
+--------------------------------------------------------------------------------
+ИЗМЕНЕНИЕ 14: Интеграция в main.py
+--------------------------------------------------------------------------------
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Обновить main.py:
+1. Расширить _init_components: добавить FastTextWrapper и QueryVectorCache.
+2. Обновить сигнатуру run_pipeline.
+3. Добавить реальные шаги 1-2 с кэшем.
+4. Корректная структура ответа и debug_info строго по ТЗ.
+
+ОБНОВЛЕНИЕ _init_components(cfg: Config) -> tuple
+--------------------------------------------------
+Было: возвращала (synonym_dict, lemmatizer).
+Стало: возвращает (synonym_dict, lemmatizer, embedding_model, vector_cache).
+
+Порядок внутри _init_components:
+  1. lemmatizer   = Lemmatizer(cache_size=cfg.cache_lemma_size)
+  2. synonym_dict = SynonymDict(json_path=cfg.synonyms_path)
+  3. fallback_path = Path(cfg.fallback_embeddings_path) if cfg.fallback_embeddings_path else None
+     embedding_model = FastTextWrapper(
+         model_path=cfg.fasttext_model_path,
+         fallback_path=fallback_path,
+         cache_size=cfg.word_vector_cache_size,
+     )
+  4. vector_cache = QueryVectorCache(maxsize=cfg.query_cache_size)
+  5. return (synonym_dict, lemmatizer, embedding_model, vector_cache)
+
+ПРОГРЕВ МОДЕЛИ (рекомендуется)
+------------------------------
+После _init_components добавить:
+  logger.info('Прогрев fastText модели...')
+  _ = embedding_model.get_word_vector('а')
+  logger.info('Прогрев завершён.')
+Это загружает 8 ГБ модели при старте — первый запрос пользователя не тормозит.
+
+ОБНОВЛЕНИЕ СИГНАТУРЫ run_pipeline
+----------------------------------
+Было (после изм.6-10):
+  run_pipeline(term, hints, debug, min_confidence, cfg, lemmatizer=None, synonym_dict=None)
+
+Стало:
+  run_pipeline(
+      term: str,
+      hints: list[str],
+      debug: bool,
+      min_confidence: float | None,
+      cfg: Config,
+      lemmatizer: Lemmatizer | None = None,
+      synonym_dict: SynonymDict | None = None,
+      embedding_model: FastTextWrapper | None = None,
+      vector_cache: QueryVectorCache | None = None,
+  ) -> dict
+
+АЛГОРИТМ run_pipeline (шаги 1-2 реальные, 3-5 заглушки)
+---------------------------------------------------------
+Шаг 0.
+  effective_min_confidence = min_confidence if min_confidence is not None else cfg.min_confidence
+
+Шаг 1. Предобработка:
+  processed = preprocess(term, hints, cfg, synonym_dict, lemmatizer)
+  Если processed['status'] == 'error': вернуть error-ответ.
+  warnings_list = list(processed.get('warnings', []))
+
+Шаг 2. Векторизация (с кэшем):
+  query_vector = None
+  Если vector_cache is not None:
+    query_vector = vector_cache.get(term, hints, cfg)
+    Если query_vector is not None: Лог INFO 'hit кэша для term'.
+  Если query_vector is None:
+    query_vector = vectorize(processed, embedding_model)
+    Если vector_cache is not None:
+      vector_cache.put(term, hints, cfg, query_vector)
+    Лог INFO 'вычислен новый вектор для term'.
+  Если np.all(query_vector == 0):
+    warnings_list.append('Вектор запроса нулевой. '
+                        'Модель эмбеддингов недоступна. Поиск не выполнен.')
+
+Шаги 3-5 (заглушки до изм.17-20):
+  candidates          = []
+  parameters          = []
+  suggested_refinements = []
+  selected_context    = {'domain': 'не определено', 'confidence': 0.0}
+
+СТРУКТУРА ОТВЕТА (строго по ТЗ — не менять поля):
+  result = {
+      'status': 'ok',
+      'term': term,
+      'selected_context': selected_context,
+      'parameters': parameters,
+      'suggested_refinements': suggested_refinements,
+      'warnings': warnings_list,
+  }
+
+СТРУКТУРА debug_info (строго по ТЗ, проект_описание_ч.2):
+  Если debug == True: добавить:
+  result['debug_info'] = {
+      'query_vector': query_vector.tolist(),   # список 300 float
+      'candidates_raw': [],                    # заполнится в изм.17
+      'scores_distribution': [],               # заполнится в изм.18
+  }
+  ВАЖНО: debug_info — вложенный ключ, а НЕ поля на верхнем уровне result.
+  НЕВЕРНО: result['query_vector'] = ...
+  ВЕРНО:   result['debug_info']['query_vector'] = ...
+
+ОБНОВЛЕНИЕ ВЫЗОВА run_pipeline В __main__:
+  synonym_dict, lemmatizer, embedding_model, vector_cache = _init_components(cfg)
+  result = run_pipeline(
+      term=parsed['term'],
+      hints=parsed.get('hints', []),
+      debug=parsed.get('debug', False),
+      min_confidence=parsed.get('min_confidence'),
+      cfg=cfg,
+      lemmatizer=lemmatizer,
+      synonym_dict=synonym_dict,
+      embedding_model=embedding_model,
+      vector_cache=vector_cache,
+  )
+
+ПРОВЕРКА
+--------
+1. echo '{"term": "ключ", "hints": ["техника"]}' | python main.py
+   -> JSON: status, term, selected_context, parameters, suggested_refinements, warnings.
+   Нет поля debug_info.
+
+2. echo '{"term": "ключ", "debug": true}' | python main.py
+   -> Тот же JSON + 'debug_info': {'query_vector': [...300...],
+      'candidates_raw': [], 'scores_distribution': []}.
+
+3. Второй идентичный запрос -> в логе: 'hit кэша'.
+
+4. При отсутствии fastText: в 'warnings' — предупреждение о нулевом векторе.
+   status всё равно 'ok'.
+
+--------------------------------------------------------------------------------
+ИЗМЕНЕНИЕ 15: Тесты (tests/)
+--------------------------------------------------------------------------------
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Создать 4 тестовых файла. Все тесты независимы.
+Запуск: pytest tests/ -v
+
+ФАЙЛ tests/test_embeddings.py
+------------------------------
+1. Без модели + без fallback: get_word_vector('ключ') == np.zeros(300).
+2. Пустое слово: get_word_vector('') == np.zeros(300).
+3. get_phrase_vector('ключ гаечный') ≈ (vec_ключ + vec_гаечный) / 2.
+4. LRU: cache_size=2, добавить 3 слова -> первое вытеснено.
+5. WARNING в лог ровно 1 раз на слово без модели (caplog).
+6. get_dimension() без модели == 300.
+
+ФАЙЛ tests/test_vectorize.py
+-----------------------------
+MockEmbedding:
+  get_phrase_vector('a') -> [1.0, 0.0, ..., 0.0]  (300 элементов)
+  get_phrase_vector('b') -> [0.0, 1.0, ..., 0.0]
+  get_phrase_vector(другое) -> np.zeros(300)
+  get_dimension() -> 300
+
+1. [('a', 1.0)], normalize=False -> [1.0, 0.0, ...]
+2. [('a', 0.7), ('b', 0.3)], normalize=True ->
+   result[0] ≈ 0.919 (+/- 0.001)
+   result[1] ≈ 0.394 (+/- 0.001)
+   np.linalg.norm(result) ≈ 1.0 (+/- 1e-6)
+3. [('a', 1.4), ('b', 0.6)] нормализованный == [('a', 0.7), ('b', 0.3)] нормализованный.
+4. [] -> np.zeros(300) + WARNING в caplog.
+5. [('a', float('nan')), ('b', 0.3)] -> учитывается только 'b', WARNING.
+6. [('a', -0.5)] -> пропускается, WARNING.
+
+ФАЙЛ tests/test_cache.py
+-------------------------
+cfg_mock: простой объект с use_synonyms=True, max_synonyms_per_token=2.
+
+1. put('ключ', ['техника'], cfg, vector) + get('ключ', ['техника'], cfg)
+   -> np.allclose(result, vector).
+2. put(['техника','вращение']) == get(['вращение','техника']) -> hit.
+3. cfg2 с use_synonyms=False: get -> None (промах).
+4. maxsize=2: put 'а','б','в' -> get 'а' == None (вытеснен).
+5. clear() -> get -> None.
+
+ФАЙЛ tests/test_pipeline_integration.py
+-----------------------------------------
+Использовать мок FastTextWrapper с фиксированными векторами.
+
+1. run_pipeline(term='ключ', hints=['техника']) ->
+   result содержит: status, term, selected_context, parameters,
+   suggested_refinements, warnings. status == 'ok'.
+
+2. run_pipeline(..., debug=True) ->
+   'debug_info' в result.
+   result['debug_info'].keys() == {'query_vector', 'candidates_raw', 'scores_distribution'}.
+   len(result['debug_info']['query_vector']) == 300.
+
+3. Кэш: run_pipeline дважды -> vectorize вызван 1 раз (проверить через mock).
+
+4. term='' -> status='error'.
+
+5. hints=None -> не падает, статус 'ok'.
+
+ТРЕБОВАНИЯ К ТЕСТАМ
+-------------------
+  - Использовать pytest.
+  - Моки — простые классы (не unittest.mock.MagicMock если не нужно).
+  - Lemmatizer-синглтон: monkeypatch или передавать явно.
+  - Числа: np.allclose(a, b, atol=1e-3) вместо ==.
+  - Логи: pytest caplog для проверки WARNING/ERROR.
+
+================================================================================
+ИТОГ ИЗМЕНЕНИЙ 11-15
+================================================================================
+
+После выполнения всех пяти изменений у вас будет:
+
+1. src/embeddings.py — FastTextWrapper:
+   ленивая загрузка, LRU-кэш слов (OrderedDict), fallback-режим (.npy),
+   нулевые векторы при отсутствии модели (НЕ случайные).
+
+2. src/vectorize.py — vectorize:
+   взвешенная сумма по формуле ТЗ, L2-нормализация, без деления на сумму весов,
+   защита от NaN/Inf/отрицательных весов.
+
+3. src/cache.py — QueryVectorCache:
+   LRU на OrderedDict, ключ = (term, sorted_hints, use_synonyms, max_synonyms_per_token).
+
+4. main.py обновлён:
+   _init_components создаёт все 4 компонента.
+   run_pipeline: шаги 1-2 реальные, 3-5 заглушки.
+   debug_info вложен в result (строго по ТЗ).
+
+5. tests/:
+   test_embeddings.py, test_vectorize.py, test_cache.py, test_pipeline_integration.py.
+
+ИЗМЕНЕНИЯ В КОНФИГУРАЦИИ
+------------------------
+Должно быть в configs/config.json (добавить если отсутствует):
+  "fallback_embeddings_path": ""
+В src/config.py (добавить если отсутствует):
+  fallback_embeddings_path: str = ""
+
+СЛЕДУЮЩИЕ ИЗМЕНЕНИЯ
+-------------------
+Изменения 16-20 — Шаг 3 конвейера (поиск в базе знаний):
+  изм.16: SQLite-схема, src/knowledge_base.py, scripts/init_db.py, scripts/seed_db.py
+  изм.17: src/search.py — search_similar_concepts (линейный поиск + FAISS-опция)
+  изм.18: src/aggregation.py — aggregate_parameters
+  изм.19-20: src/response_builder.py — build_response, fallback/резервный режим,
+              полная интеграция run_pipeline без заглушек.
+================================================================================

@@ -1,0 +1,2499 @@
+# AI-Terminator -- полное описание алгоритма (системный промпт)
+# ФИНАЛЬНАЯ ВЕРСИЯ | 13.06.2026
+# Согласовано с планами 1-5, 6-10, 11-15, 16-19 (12.06.2026)
+# По данному файлу составляются все будущие планы реализации.
+
+================================================================================
+## 1. НАЗНАЧЕНИЕ И ЗАДАЧА СИСТЕМЫ
+================================================================================
+
+AI-Terminator -- интеллектуальное ядро, работающее строго на русском языке.
+
+Единственная задача: по введённому термину и 1-3 уточняющим словам или коротким фразам
+сформировать набор возможных параметров, характеристик и ограничений
+для формального описания этого термина в базе знаний.
+
+Пример 1:
+  term  = "ключ"
+  hints = ["техника", "вращение"]
+  -> параметры: материал, размер (мм), форма головки, момент вращения,
+                тип привода, тип крепежа
+
+Пример 2:
+  term  = "ключ"
+  hints = ["музыка"]
+  -> близкие понятия: нота, тональность, скрипичный ключ
+  -> параметры: тип, высота, символ, область применения
+
+================================================================================
+## 2. СТРУКТУРА ПАПОК ПРОЕКТА
+================================================================================
+
+Корень проекта -- папка, где лежат main.py и setup_project.py.
+
+  project_root/
+  +-- main.py                    точка входа; функции _init_components, run_pipeline
+  +-- setup_project.py           создаёт всю структуру папок одной командой
+  +-- requirements.txt           зафиксированные версии зависимостей
+  +-- .gitignore                 содержит: venv/, __pycache__/, *.pyc,
+  |                              logs/*.log, models/*.bin
+  +-- src/                       пакет Python (есть src/__init__.py)
+  |   +-- __init__.py            пустой файл, делает src пакетом
+  |   +-- config.py
+  |   +-- text_cleaner.py
+  |   +-- lemmatizer.py
+  |   +-- synonyms.py
+  |   +-- preprocess.py
+  |   +-- embeddings.py
+  |   +-- vectorize.py
+  |   +-- cache.py
+  |   +-- knowledge_base.py
+  |   +-- aggregation.py
+  |   +-- fallback.py
+  |   +-- generative.py
+  |   +-- sessions.py
+  |   +-- metrics.py
+  |   +-- utils.py            декоратор timed + вспомогательные утилиты
+  |   +-- api.py
+  +-- data/
+  |   +-- knowledge_base.db      SQLite (создаётся init_db.py)
+  |   +-- synonyms.json          словарь синонимов
+  |   +-- fallback_embeddings.npy  создаётся build_fallback.py; в .gitignore!
+  |   +-- eval_dataset.json         тестовый набор для evaluate.py
+  +-- models/
+  |   +-- cc.ru.300.bin          fastText модель (~8 ГБ, скачать отдельно)
+  +-- configs/
+  |   +-- config.json            главный конфиг
+  |   +-- domain_templates.json  шаблоны параметров для резервного режима
+  |   +-- domain_keywords.json   ключевые слова для определения домена
+  +-- scripts/                   пакет Python (есть scripts/__init__.py)
+  |   +-- __init__.py
+  |   +-- init_db.py             создаёт схему SQLite
+  |   +-- seed_data.py           загружает начальные данные
+  |   +-- update_kb.py           импорт новых понятий из JSON/CSV
+  |   +-- setup_all.py           запускает init_db + seed_data последовательно
+  |   +-- build_faiss.py         строит FAISS-индекс
+  |   +-- build_fallback.py      создаёт numpy-словарь fallback_embeddings.npy
+  |   +-- export_kb.py           экспортирует БД в JSON
+  |   +-- profile.py             профилирует производительность pipeline
+  |   +-- evaluate.py            вычисляет Precision@5 и Context Accuracy
+  |   +-- build_synonyms.py      конвертирует RuWordNet -> synonyms.json
+  |   +-- run_api.py             запускает uvicorn
+  +-- tests/                     пакет Python (есть tests/__init__.py)
+  |   +-- __init__.py
+  |   +-- test_config.py
+  |   +-- test_lemmatizer.py
+  |   +-- test_synonyms.py
+  |   +-- test_text_cleaner.py
+  |   +-- test_preprocess.py
+  |   +-- test_embeddings.py
+  |   +-- test_vectorize.py
+  |   +-- test_cache.py
+  |   +-- test_knowledge_base.py
+  |   +-- test_aggregation.py
+  |   +-- test_fallback.py
+  |   +-- test_generative.py
+  |   +-- test_sessions.py
+  |   +-- test_api.py
+  |   +-- test_metrics.py
+  |   +-- test_pipeline.py      интеграционный E2E-тест
+  +-- logs/
+      +-- ai_terminator.log      создаётся автоматически при первом запуске
+
+----------------------------------------------------------------------
+setup_project.py -- первый запуск проекта
+----------------------------------------------------------------------
+
+Запуск: python setup_project.py (из корня, один раз при развёртывании).
+
+Создаёт папки (если не существуют):
+  data/   models/   configs/   logs/
+
+Создаёт configs/config.json с дефолтными значениями (если файл отсутствует).
+Создаёт .gitignore (если отсутствует) со стандартным содержимым.
+Выводит инструкцию: "Скачайте cc.ru.300.bin и поместите в models/".
+НЕ создаёт БД (это задача init_db.py).
+НЕ устанавливает зависимости (это pip install -r requirements.txt).
+
+----------------------------------------------------------------------
+scripts/setup_all.py -- быстрый старт
+----------------------------------------------------------------------
+
+Запуск: python -m scripts.setup_all [--force]
+
+Последовательность вызовов:
+  1. python -m scripts.init_db       создать таблицы
+  2. python -m scripts.seed_data     загрузить начальные данные
+  При --force: передать --force в seed_data (очистить перед вставкой).
+
+----------------------------------------------------------------------
+ПРАВИЛА СТРУКТУРЫ:
+  - Все пути строятся ТОЛЬКО через pathlib.Path.
+    Никогда не строить пути конкатенацией строк с '/' или '\'.
+  - Импорты между модулями: from src.config import Config
+    Работает потому что есть src/__init__.py.
+  - sys.path -- ТОЛЬКО внутри if __name__ == "__main__" в скриптах.
+    В теле модулей sys.path.append запрещён.
+  - Запуск скриптов: python -m scripts.init_db (из корня проекта).
+
+================================================================================
+## 3. ЗАВИСИМОСТИ
+================================================================================
+
+Python: 3.10 и выше.
+Синтаксис: X | None (не Optional), list[str] (не List[str]).
+
+requirements.txt:
+  pymorphy3>=2.0.0          лемматизация для русского языка
+  pymorphy3-dicts-ru>=2.4.0 словари морфологии (ОБЯЗАТЕЛЬНЫЙ отдельный пакет,
+                            без него pymorphy3 не работает)
+  numpy>=1.24.0             векторные операции
+  fasttext>=0.9.2           загрузка cc.ru.300.bin
+                            (на Windows: pip install fasttext-wheel)
+  pytest>=7.0.0             тестирование
+
+  # Опциональные (закомментированы по умолчанию):
+  # faiss-cpu>=1.7.0        при use_faiss=True
+  # transformers>=4.30.0    при use_generative=True
+  # torch>=2.0.0            при use_generative=True
+  # transliterate>=1.10.2   для генеративного модуля
+  # fastapi>=0.100.0        REST API
+  # uvicorn>=0.23.0         REST API
+  # prometheus_client>=0.17.0 метрики Prometheus (при use_metrics=True)
+
+Особенности Windows:
+  fasttext требует компилятора C++ (Visual Studio Build Tools).
+  При ошибке сборки: pip install fasttext-wheel (API совместим).
+  faiss-cpu может не установиться -- при этом всегда использовать numpy.
+
+СЛОВАРЬ СИНОНИМОВ:
+  Источник: RuWordNet (ruwordnet.ru) -- pip install ruwordnet
+  Содержит синсеты, гиперонимы, гипонимы для русского языка.
+  Лицензия: Creative Commons. Предвыгрузка -> конвертация -> synonyms.json.
+
+================================================================================
+## 4. КОНФИГУРАЦИЯ (src/config.py + configs/config.json)
+================================================================================
+
+Класс Config в src/config.py.
+
+Метод Config.from_json(path: Path) -> Config:
+  Поведение при разных ситуациях:
+  - Файл существует и валиден -> загрузить, вернуть Config с этими значениями.
+  - Файл не найден (FileNotFoundError) -> WARNING "config.json не найден,
+    используются значения по умолчанию"; вернуть Config() с дефолтами.
+    НЕ бросать исключение -- система должна работать с дефолтами.
+  - Файл найден, но невалидный JSON (json.JSONDecodeError) -> ERROR с деталями;
+    вернуть Config() с дефолтами.
+  - Поле имеет неверный тип (например str вместо float) -> WARNING, использовать
+    значение по умолчанию для этого поля; остальные поля загрузить.
+  - Критическая валидация (ValueError): min_confidence вне [0,1],
+    max_candidates <= 0 -> ERROR + дефолт для этого поля.
+
+Метод Config() (конструктор без аргументов) -> Config со всеми дефолтами.
+  Все поля имеют дефолтные значения (см. список ниже).
+
+Поля хранятся как Python-типы. Пути -- как str, оборачиваются в Path при использовании.
+List-поля (api_cors_origins): data.get("api_cors_origins",["*"]). Тип: isinstance(v, list).
+Если не list -- WARNING + дефолт ["*"].
+
+Полный список параметров и их значений по умолчанию:
+
+  -- Пути к файлам --
+  fasttext_model_path           str   "models/cc.ru.300.bin"
+  fallback_embeddings_path      str   ""            пустая строка = fallback отключён
+  synonyms_path                 str   "data/synonyms.json"
+  db_path                       str   "data/knowledge_base.db"
+  domain_templates_path         str   "configs/domain_templates.json"
+  fallback_domain_keywords_path str   "configs/domain_keywords.json"
+
+  -- Логирование --
+  log_level                     str   "INFO"
+
+  -- Предобработка --
+  max_term_length               int   100       макс. длина термина после clean_text
+  max_hint_length               int   50        макс. длина одной подсказки
+  max_synonyms_per_token        int   2         синонимов на токен
+  use_synonyms                  bool  true
+
+  -- Поиск --
+  min_confidence                float 0.3
+  max_candidates                int   20
+  max_parameters                int   15
+
+  -- FAISS --
+  use_faiss                     bool  false
+  faiss_index_path              str   ""
+  faiss_threshold               int   10000
+
+  -- Кэши --
+  query_cache_size              int   100       QueryVectorCache
+  word_vector_cache_size        int   10000     FastTextWrapper._word_cache
+  cache_lemma_size              int   1000      Lemmatizer._cache
+  search_cache_size             int   100       KnowledgeBase search LRU
+  search_cache_ttl_seconds      int   300       0 = без TTL
+
+  -- Оптимизация --
+  use_matrix_search             bool  true      матричный поиск numpy
+  matrix_search_min_concepts    int   100
+
+  -- Генеративный модуль --
+  use_generative                bool  false
+  generative_model_name         str   "rugpt3small_based_on_gpt2"
+  generative_max_new_params     int   3
+  generative_timeout_seconds    int   2         таймаут генерации (с)
+  min_parameters_for_generative int   5
+  generative_keywords           list  ["материал","размер","тип","скорость",
+                                        "мощность","вес","длина","цвет",
+                                        "напряжение","ёмкость","частота",
+                                        "температура","давление","форма",
+                                        "покрытие","привод","источник энергии"]
+                                        Строки из генерации без этих слов игнорируются.
+
+  -- Сессии --
+  use_sessions                  bool  false
+  session_ttl_seconds           int   3600
+
+  -- REST API --
+  api_host                      str   "0.0.0.0"
+  api_port                      int   8000
+  api_cors_origins              list  ["*"]
+
+================================================================================
+## 5. ВХОДНЫЕ ДАННЫЕ run_pipeline
+================================================================================
+
+Функция run_pipeline принимает:
+
+  term           str            анализируемый термин (может быть составным)
+  hints          list[str]      0-3 уточняющих слова; None трактуется как []
+  debug          bool           True -- добавить debug_info в ответ
+  min_confidence float | None   порог; None -- взять из Config
+  session_id     str | None     ID сессии (опционально)
+  selected_domain str | None    явный выбор домена при неоднозначности
+
+Конвенция: JSON может прислать null вместо [] или пустого поля -- нормально.
+
+================================================================================
+## 6. ВЫХОДНЫЕ ДАННЫЕ run_pipeline
+================================================================================
+
+Всегда возвращается словарь Python, сериализуемый в JSON:
+
+  {
+    "status": "ok" | "error" | "ambiguous",
+    "term": str,
+    "selected_context": {
+    "selected_context": {
+        // СТРУКТУРА ЗАВИСИТ ОТ STATUS!
+        // При status="ok": {"domain": str, "confidence": float}
+        // При status="ambiguous": {"domain_candidates": [{"domain": str, "confidence": float, "example_term": str}, ...]}
+        // Клиент ОБЯЗАН проверять status перед обращением к selected_context.domain!
+        "domain": str,        # например "слесарный инструмент" (только при ok)
+        "confidence": float  # (только при ok)
+    },
+    "parameters": [
+      {
+        "name": str,          # snake_case, английское
+        "label_ru": str,
+        "type": str,          # string | integer | float | boolean | enum
+        "description": str,
+        "confidence": float,  # 0.0-1.0
+        "source": str         # "knowledge_base" | "generative" | "template"
+      }
+    ],
+    "suggested_refinements": [str, ...],
+    "warnings": [str, ...]
+  }
+
+При debug=True -- добавляется вложенный ключ "debug_info":
+  "debug_info": {
+    "query_vector": list,          # все 300 значений (float)
+    "candidates_raw": list,        # полный список кандидатов до фильтрации
+    "scores_distribution": list    # скоры параметров до нормировки
+  }
+  ВАЖНО: debug_info -- вложенный ключ, не поля на верхнем уровне.
+  НЕВЕРНО: result["query_vector"] = ...
+  ВЕРНО:   result["debug_info"]["query_vector"] = ...
+
+"error": {"status": "error", "message": str} -- ошибка на входе.
+"ambiguous": термин многозначен, нет hints/selected_domain.
+  selected_context содержит список доменов-кандидатов.
+  parameters пуст -- пользователь должен передать selected_domain.
+
+================================================================================
+## 7. АРХИТЕКТУРА КОНВЕЙЕРА
+================================================================================
+
+Конвейер из пяти шагов. Каждый шаг -- отдельный модуль.
+
+  Шаг 1  Предобработка    preprocess()              src/preprocess.py
+  Шаг 2  Векторизация     vectorize()               src/vectorize.py
+  Шаг 3  Поиск в БД       KnowledgeBase.search      src/knowledge_base.py
+  Шаг 4  Агрегация        aggregate_parameters()    src/aggregation.py
+  Шаг 4b Генерация        GenerativeHelper          src/generative.py
+  Шаг 5  Ответ            inline в run_pipeline     main.py
+          (НЕТ отдельной функции build_response(). Логика сборки ответа
+           расположена непосредственно в конце run_pipeline, описана в разделе 13)
+
+Все компоненты-синглтоны создаются в _init_components() ОДИН РАЗ при старте.
+Передаются в run_pipeline как параметры.
+Никогда не создавать их внутри run_pipeline -- катастрофически медленно.
+
+_init_components(cfg: Config) -> tuple:
+  Порядок инициализации:
+    1. lemmatizer     = Lemmatizer(cache_size=cfg.cache_lemma_size)
+    2. synonym_dict   = SynonymDict(json_path=cfg.synonyms_path)
+    3. fp_str = cfg.fallback_embeddings_path
+       fallback_path = Path(fp_str) if fp_str else None
+       (НЕЛЬЗЯ Path("") -- это текущая директория, а не None. Проверка fp_str - единственный надёжный способ)
+       embedding_model = FastTextWrapper(
+           model_path=Path(cfg.fasttext_model_path),
+           fallback_path=fallback_path,
+           cache_size=cfg.word_vector_cache_size
+       )
+    4. vector_cache   = QueryVectorCache(maxsize=cfg.query_cache_size)
+    5. kb             = KnowledgeBase(cfg, embedding_model, synonym_dict)
+    6. metrics        = Metrics()              всегда (счётчики в памяти)
+    7. generative     = GenerativeHelper(cfg)  (если cfg.use_generative)
+    8. sessions       = SessionManager(cfg)    (если cfg.use_sessions)
+  Возврат: (lemmatizer, synonym_dict, embedding_model, vector_cache, kb,
+            metrics, generative, sessions)
+  Все компоненты передаются в run_pipeline явно -- не через глобальные переменные.
+
+ТОЧНАЯ СИГНАТУРА run_pipeline:
+  run_pipeline(
+      term:            str,
+      hints:           list[str] | None,
+      debug:           bool,
+      min_confidence:  float | None,
+      session_id:      str | None,
+      selected_domain: str | None,
+      cfg:             Config,
+      lemmatizer:      Lemmatizer,
+      synonym_dict:    SynonymDict,
+      embedding_model: FastTextWrapper,
+      vector_cache:    QueryVectorCache,
+      kb:              KnowledgeBase,
+      metrics:         Metrics,
+      generative:      GenerativeHelper | None,
+      sessions:        SessionManager | None,
+  ) -> dict
+
+ПРОГРЕВ МОДЕЛИ (warm-up):
+  После _init_components, но до первого запроса пользователя:
+    _ = embedding_model.get_word_vector('а')
+  Это инициирует ленивую загрузку 8 ГБ модели.
+  Без прогрева первый запрос пользователя ждёт загрузку.
+
+СИНГЛТОН LEMMATIZER И ПАРАМЕТР cache_size:
+  Первый вызов Lemmatizer(cache_size=N) создаёт экземпляр с N.
+  Каждый последующий Lemmatizer(cache_size=M) возвращает ТОТЖЕ объект,
+  параметр M молча игнорируется.
+  ВАЖНО: KnowledgeBase внутри также вызывает Lemmatizer().
+  Чтобы не возникало путаницы -- KnowledgeBase должен вызывать
+  Lemmatizer() БЕЗ аргументов (брать уже созданный экземпляр).
+  Реальный cache_size задаётся ТОЛЬКО в _init_components через первый вызов.
+
+----------------------------------------------------------------------
+7.1. РЕЖИМ STANDALONE (main.py без REST API)
+----------------------------------------------------------------------
+
+Когда запускается как: python main.py [--config path] [--debug]
+
+Ввод данных: через STDIN как JSON-строка (одна строка).
+  Пользователь вводит или программа пишет в stdin: {"term":"...","hints":[...]}
+  Программа читает: line = sys.stdin.readline().strip()
+  Затем: data = json.loads(line)
+
+Аргументы командной строки (argparse):
+  --config PATH   путь к config.json (по умолчанию "configs/config.json")
+  --debug         включить debug=True для всех запросов
+  --once          обработать один запрос и выйти (без цикла)
+
+Режим работы по умолчанию (без --once): ЦИКЛ.
+  Программа читает строки из stdin в бесконечном цикле.
+  Каждая строка = один JSON-запрос.
+  После обработки: вывести результат в stdout как JSON + '\n'.
+  Пустая строка: игнорировать.
+  'exit' или 'quit': завершить.
+  При json.JSONDecodeError: вывести {"status":"error","message":"Неверный JSON"}.
+
+Вывод: json.dumps(result, ensure_ascii=False) + '\n' в stdout.
+
+Структура if __name__ == "__main__":
+  parser = argparse.ArgumentParser()
+  ... (add_argument)
+  args = parser.parse_args()
+  cfg = Config.from_json(Path(args.config))
+  components = _init_components(cfg)
+  warm-up
+  if args.once:
+      line = sys.stdin.readline()
+      data = json.loads(line)
+      result = run_pipeline(data['term'], data.get('hints',[]), ..., *components)
+      print(json.dumps(result, ensure_ascii=False))
+  else:
+      while True:
+          line = sys.stdin.readline()
+          if not line: break
+          line = line.strip()
+          if not line: continue
+          if line in ('exit','quit'): break
+          ...обработка и вывод...
+
+================================================================================
+## 8. ШАГ 1: ПРЕДОБРАБОТКА (src/preprocess.py)
+================================================================================
+
+Модуль src/preprocess.py содержит ДВЕ функции:
+
+  preprocess_base(term, hints, config, lemmatizer) -> dict
+    Без синонимов. Для изолированного тестирования.
+
+  preprocess_full(term, hints, config, synonym_dict, lemmatizer) -> dict
+    С синонимами и весами. Основная функция.
+
+  preprocess = preprocess_full   # псевдоним для удобства
+
+Конвейер run_pipeline всегда вызывает preprocess() (= preprocess_full).
+
+----------------------------------------------------------------------
+8.1. ОЧИСТКА ТЕКСТА (src/text_cleaner.py)
+----------------------------------------------------------------------
+
+Функция: clean_text(text: str) -> str
+
+ВАЖНО: внутренние дефисы в словах СОХРАНЯЮТСЯ.
+"ключ-гаечный" остаётся "ключ-гаечный", а не "ключ гаечный".
+Разбить на слова -- задача lemmatize_phrase, а не clean_text.
+Удаляются ТОЛЬКО изолированные дефисы (без буквы с одной стороны).
+
+Алгоритм (7 шагов):
+
+  Шаг 1. Если text не str или None -- вернуть ''.
+
+  Шаг 2. Привести к нижнему регистру: text.lower()
+
+  Шаг 3. Заменить все символы кроме [а-яёa-z0-9 пробел дефис] на ПРОБЕЛ
+    (не удалять -- иначе "ключ!гаечный" слипнется в "ключгаечный"):
+    паттерн: [^\w\s-] (с учётом кириллицы через \w)
+    Флаг re.IGNORECASE не нужен (регистр уже нижний).
+
+  Шаг 4. Схлопнуть множественные пробелы в один: re.sub(r' +', ' ', text)
+
+  Шаг 5. Убрать пробелы и дефисы с краёв строки: text.strip(' -')
+
+  Шаг 6. Убрать изолированные дефисы (без буквы-не-пробела с одной стороны):
+    pattern = r'(?<!\S)-|-(?!\S)'
+    text = re.sub(pattern, ' ', text)
+    Затем снова: схлопнуть пробелы + strip.
+    Этот шаг ОБЯЗАТЕЛЕН. Без него "ключ - гаечный" -> "ключ -  гаечный",
+    а "-3-болт" -> "-3 болт" с дефисом в начале.
+
+  Шаг 7. Вернуть результат. Если пустой -- вернуть ''.
+
+Примеры:
+  '  -Ключ-гаечный! (размер 12)  ' -> 'ключ-гаечный размер 12'
+  'USB-ключ'                        -> 'usb-ключ'
+  'ключ - гаечный'                  -> 'ключ гаечный'
+  '-3-болт'                         -> '3 болт'
+  '!!!'                             -> ''
+  None                              -> ''
+  'Ключ!!!Гаечный'                  -> 'ключ гаечный'
+
+clean_text применяется к term и к каждому hints отдельно.
+
+----------------------------------------------------------------------
+8.2. ЛЕММАТИЗАТОР (src/lemmatizer.py)
+----------------------------------------------------------------------
+
+Класс: Lemmatizer -- СИНГЛТОН через паттерн __new__.
+Библиотека: pymorphy3 + pymorphy3-dicts-ru (оба обязательны).
+
+Почему синглтон: pymorphy3.MorphAnalyzer() загружает словарь в память.
+Тяжёлая операция, выполняется ОДИН РАЗ за всё время работы.
+Повторные Lemmatizer() возвращают тот же объект, не пересоздают.
+
+LRU-кэш через collections.OrderedDict:
+  Потокобезопасность: внутренний _cache_lock: threading.Lock защищает OrderedDict.
+  Все операции (get, move_to_end, popitem) выполняются под with self._cache_lock.
+  Без лока при параллельных FastAPI-запросах возможна гонка на OrderedDict.
+  Размер: Config.cache_lemma_size (по умолчанию 1000).
+  Дефолтный параметр cache_size=1000 в конструкторе Lemmatizer. При Lemmatizer() без аргументов
+  (из KnowledgeBase) синглтон возвращает уже существующий экземпляр; cache_size не меняется.
+  При добавлении: если len >= cache_size -> popitem(last=False).
+  При обращении к существующему: move_to_end(key).
+
+Метод lemmatize_word(word: str) -> str:
+  1. Пусто -> "".
+  2. Проверить LRU-кэш -> если есть: move_to_end, вернуть. Лог DEBUG.
+  3. morph.parse(word) -> список разборов pymorphy3.
+  4. Если список не пуст -> parse[0].normal_form.  # pymorphy3 уже отсортирован; parse[0]=лучший разбор; O(1)
+  5. Если список пуст (цифры, неизвестные слова) -> word.lower().
+  6. При любом исключении -> word.lower() + WARNING.
+  7. Записать в LRU-кэш, вернуть.
+
+Особые случаи:
+  только цифры ("123") -> pymorphy3 даёт [], возвращаем как есть.
+  латиница ("usb")     -> pymorphy3 не лемматизирует, word.lower().
+  смешанные ("usb-ключ") -> дефис сохранён в clean_text;
+    lemmatize_phrase заменит дефис на пробел и обработает отдельно.
+
+Метод lemmatize_phrase(phrase: str) -> list[str]:
+  1. Пусто -> [].
+  2. Заменить все дефисы на пробелы: phrase.replace('-', ' ')
+  3. split() по пробелам.
+  4. lemmatize_word для каждого непустого слова.
+  5. Отбросить пустые результаты, вернуть список.
+
+----------------------------------------------------------------------
+8.3. СЛОВАРЬ СИНОНИМОВ (src/synonyms.py)
+----------------------------------------------------------------------
+
+Класс: SynonymDict
+Данные: data/synonyms.json
+
+Формат файла:
+  {
+    "ключ": [
+      {"word": "инструмент", "weight": 0.8},
+      {"word": "отмычка",    "weight": 0.4}
+    ],
+    "техника": [
+      {"word": "механизм", "weight": 0.7}
+    ]
+  }
+
+Ключи -- ТОЛЬКО леммы (нормальные формы после pymorphy3).
+Значения "word" -- тоже леммы.
+"weight" -- вес РЕЛЕВАНТНОСТИ (0.0-1.0). Если отсутствует -> 0.5.
+
+КРИТИЧЕСКИ ВАЖНО -- два разных веса не путать:
+  1. weight в файле -- вес РЕЛЕВАНТНОСТИ синонима.
+     Используется ТОЛЬКО для ранжирования: выбрать ТОП-N наиболее
+     релевантных синонимов из списка.
+     Пример: у "ключ" три синонима с весами 0.8, 0.4, 0.2.
+     При max_synonyms=2 берём топ-2 по weight: 0.8 и 0.4.
+  2. Вес ДЛЯ ВЕКТОРИЗАЦИИ (0.1/M) -- вычисляется в preprocess.py.
+     Зависит от итогового числа всех уникальных синонимов M.
+     Не имеет отношения к weight в файле.
+
+get_synonyms(lemma: str, max_synonyms: int = 2) -> list[str]:
+  Если лемма не найдена -> [].
+  Отсортировать синонимы по убыванию weight.
+  Взять первые max_synonyms.
+  Вернуть список строк (НЕ кортежей).
+
+Обработка ошибок загрузки:
+  FileNotFoundError  -> WARNING + self._data = {}
+  json.JSONDecodeError -> ERROR + self._data = {}
+  Успех -> INFO 'Загружено N словарных статей'.
+
+Валидация каждого элемента: если "word" отсутствует или пуст -> WARNING, пропустить.
+
+----------------------------------------------------------------------
+8.4. ФУНКЦИЯ preprocess_base
+----------------------------------------------------------------------
+
+Сигнатура:
+  preprocess_base(term: str, hints: list[str] | None,
+                  config: Config, lemmatizer: Lemmatizer) -> dict
+
+Без синонимов. Используется для изолированного тестирования.
+
+Выходной словарь при успехе:
+  {
+    "status": "ok",
+    "original_term":  str,           сырой term до очистки
+    "original_hints": list[str],     сырые hints до очистки
+    "clean_term":     str,           после clean_text
+    "clean_hints":    list[str],     после clean_text (пустые отброшены)
+    "term_lemmas":    list[str],     леммы слов термина
+    "hints_lemmas":   list[list[str]], леммы каждой подсказки отдельно
+    "all_lemmas":     list[str],     term_lemmas + все hints_lemmas плоско
+    "warnings":       list[str]
+  }
+При ошибке: {"status": "error", "message": str}
+
+Алгоритм:
+  Шаг 1. Нормализация входа:
+    Если hints is None -> hints = [].
+    Если term is None -> error "Термин не передан".
+    Сохранить original_term и original_hints.
+
+  Шаг 2. Очистка термина:
+    clean_term = clean_text(term)
+    Если clean_term == '' -> error "Термин пуст после очистки".
+    Если len(clean_term) > config.max_term_length -> error "Термин слишком длинный".
+
+  Шаг 3. Очистка подсказок:
+    a. Если hints содержит более 3 элементов:
+       Взять первые 3, остальные отбросить.
+       WARNING: "Передано N подсказок, использованы первые 3."
+    b. clean_text для каждой из (максимум 3).
+    c. Отбросить пустые после очистки. Если отброшено -- WARNING.
+    d. Проверить длину: > max_hint_length -> error.
+    e. Удалить дубликаты сохраняя порядок: list(dict.fromkeys(clean_hints))
+       Если были дубликаты -- WARNING.
+
+  Шаг 4. Лемматизация:
+    term_lemmas = lemmatizer.lemmatize_phrase(clean_term)
+    Если term_lemmas == [] -> error "Термин не содержит значимых слов".
+    hints_lemmas = [lemmatizer.lemmatize_phrase(h) for h in clean_hints]
+    Если какая-то подсказка дала [] -> WARNING (не error).
+
+  Шаг 5. Сборка all_lemmas:
+    all_lemmas = term_lemmas + [l for sub in hints_lemmas for l in sub]
+
+  Шаг 6. Вернуть словарь.
+
+----------------------------------------------------------------------
+8.5. ФУНКЦИЯ preprocess_full (= preprocess)
+----------------------------------------------------------------------
+
+Сигнатура:
+  preprocess_full(term: str, hints: list[str] | None,
+                  config: Config, synonym_dict: SynonymDict | None,
+                  lemmatizer: Lemmatizer) -> dict
+
+Расширяет preprocess_base синонимами и добавляет tokens_with_weights.
+
+Алгоритм:
+  Шаг 1. Вызвать preprocess_base. Если status == "error" -> вернуть как есть.
+
+  Шаг 2. Расширение синонимами (если use_synonyms=True и synonym_dict не None):
+    Итерировать по ВСЕМ леммам: и term_lemmas и hints_lemmas (плоско).
+    Для каждой леммы:
+      syns = synonym_dict.get_synonyms(lemma, max_synonyms=max_synonyms_per_token)
+    Пример: term="ключ гаечный" -> term_lemmas=["ключ","гаечный"]
+            hints=["техника"] -> hints_lemmas=[["техника"]]
+            Всего лемм: ["ключ","гаечный","техника"] -> синонимы ищутся для каждой.
+            При max_synonyms_per_token=2: до 3×2=6 синонимов до дедупликации.
+    Собрать все синонимы в flat list.
+    Дедупликация: если одно слово появилось как синоним нескольких лемм -- учитывается
+    только один раз (dict.fromkeys для сохранения порядка).
+    Исключить синонимы совпадающие с любой леммой в term_lemmas или hints_flat
+    (нет смысла добавлять вектор слова которое уже есть).
+    M = количество уникальных синонимов после дедупликации и исключения.
+
+  Шаг 3. Назначение весов -- ФОРМУЛА ВЕСОВ (не менять):
+
+    V = 0.7 * V_term + sum(0.3/N * V_hint_i) + sum(0.1/M * V_syn_j)
+
+    Где:
+      V_term:   суммарный вес всех слов термина = 0.7.
+                Делится РАВНОМЕРНО по СЛОВАМ термина (не по подсказкам).
+                Если термин "ключ гаечный" (2 слова) -> каждое слово получает 0.7/2 = 0.35.
+      V_hint_i: суммарный вес всех hints = 0.3.
+                Делится РАВНОМЕРНО по СЛОВАМ ВСЕХ hints вместе взятых.
+                N = суммарное количество слов во ВСЕХ подсказках (не число подсказок!).
+                Пример: hints=["техника", "металлический ключ"] -> N=3 слова.
+                Каждое слово получает 0.3/3 = 0.1 независимо от того в какой
+                подсказке оно находится.
+                ВАЖНО: N -- это количество СЛОВ, а не количество подсказок.
+      V_syn_j:  суммарный вес всех синонимов = 0.1 (равномерно по всем M синонимам).
+
+    Если hints пусты -- слагаемое 0.3 не используется.
+    Если синонимов нет -- слагаемое 0.1 не используется.
+
+    Сумма весов при наличии всех компонентов = 1.1.
+    Это НОРМАЛЬНО -- L2-нормализация в vectorize устранит масштаб.
+    Нормализовывать веса в preprocess НЕ нужно.
+
+    Пример для term="ключ гаечный", hints=["техника"], 2 синонима:
+      term имеет 2 слова -> вес каждого = 0.7/2 = 0.35
+      1 hint, 1 слово    -> вес = 0.3/1 = 0.3
+      2 синонима (M=2)   -> вес каждого = 0.1/2 = 0.05
+
+      tokens_with_weights = [
+        ("ключ",       0.35),
+        ("гаечный",    0.35),
+        ("техника",    0.30),
+        ("инструмент", 0.05),
+        ("отмычка",    0.05),
+      ]
+
+  Шаг 4. Добавить в выходной словарь поле:
+    "tokens_with_weights": list[tuple[str, float]]
+
+  Шаг 5. Вернуть расширенный словарь.
+
+================================================================================
+## 9. ШАГ 2: ВЕКТОРИЗАЦИЯ (src/vectorize.py + src/embeddings.py + src/cache.py)
+================================================================================
+
+----------------------------------------------------------------------
+9.1. FastTextWrapper (src/embeddings.py)
+----------------------------------------------------------------------
+
+Класс: FastTextWrapper
+Единственная точка доступа к эмбеддингам во всём проекте.
+
+Модель: cc.ru.300.bin
+  Размерность: 300. Алгоритм: skipgram. OOV через char n-граммы (3-6).
+  Размер: ~8 ГБ. Скачать: fasttext.cc/docs/en/crawl-vectors.html.
+
+Конструктор: FastTextWrapper(model_path: Path, fallback_path: Path | None,
+                              cache_size: int)
+Внутренние атрибуты:
+  _model          = None       fastText-модель
+  _fallback       = None       dict {слово: np.ndarray} или None
+  _model_loaded   = False      флаг: модель уже загружена (True после первой загрузки)
+  _load_lock      = threading.Lock()  защита от двойной загрузки в параллельных потоках
+  _fallback_loaded = False
+  _dim            = 300        уточняется при загрузке
+  _word_cache     = OrderedDict()
+  _cache_maxsize  = cache_size
+  _warned_words   = set()      слова, о которых уже выводили WARNING
+
+ЛЕНИВАЯ ЗАГРУЗКА -- _ensure_model():
+  Вызывается в начале каждого get_word_vector. Если _model_loaded -> выйти.
+
+  1. Double-checked locking: если _model_loaded: return. with self._load_lock: если _model_loaded: return. self._model_loaded = True.
+  2. Если model_path.exists():
+       self._model = fasttext.load_model(str(model_path))
+       НЕ использовать mmap='r' -- API не поддерживает.
+       _dim = len(self._model.get_word_vector('а'))
+       Лог INFO: "FastText загружена, размерность N".
+  3. Если файл не найден или ошибка:
+       Лог ERROR. Вызвать _load_fallback().
+  4. Если и _model, и _fallback = None:
+       Лог WARNING: "Ни fastText, ни fallback не загружены.
+                     Все векторы нулевые. Поиск не работает."
+
+_load_fallback():
+  1. if _fallback_loaded: return.
+  2. _fallback_loaded = True.
+  3. Если path None или не существует: WARNING + return.
+     ВАЖНО: fallback_path = None если Config.fallback_embeddings_path == "".
+     FastTextWrapper конструктор: если path_str == "" -> self._fallback_path = None.
+     Path("") технически существует (текущая папка) -- поэтому нужна проверка
+     именно на None ДО exists(), а не после.
+  4. np.load(path, allow_pickle=True).item()
+     (allow_pickle только для файлов из своего репозитория)
+  5. Валидация: dict, непустой. Ошибка -> WARNING + return.
+  6. _dim = len(первого вектора). _fallback = data.
+  7. INFO "Fallback загружен: N слов, размерность D".
+
+КАК СОЗДАТЬ fallback_embeddings файл:
+  Fallback -- это numpy-словарь {слово: np.ndarray(300, float32)}.
+  Создаётся скриптом scripts/build_fallback.py:
+
+  Алгоритм build_fallback.py:
+    1. Загрузить fastText модель (cc.ru.300.bin).
+    2. Загрузить список слов: из synonyms.json + domain_keywords.json
+       + список частотных русских слов (можно использовать OpenCorpora).
+    3. Для каждого слова: vector = model.get_word_vector(word).astype(float32).
+       Нормализовать: vector / np.linalg.norm(vector).
+    4. Собрать dict: {word: vector}.
+    5. np.save(output_path, fallback_dict, allow_pickle=True)
+       Файл: data/fallback_embeddings.npy
+  Размер файла: ~3000 слов × 300 × 4 байта ≈ 3.6 МБ (против 8 ГБ fastText).
+  Назначение: позволяет системе работать без полной fastText модели в тестах.
+
+get_word_vector(word: str) -> np.ndarray:
+  1. word.lower().strip(). Пустой -> np.zeros(_dim, float32).
+  2. _ensure_model().
+  3. Проверить LRU-кэш -> если есть: move_to_end, вернуть. Лог DEBUG.
+  4. Вычислить вектор:
+     а. _model -> _model.get_word_vector(word)  [OOV обрабатывает n-граммы]
+        При исключении -> WARNING, перейти к б.
+     б. _fallback -> _fallback.get(word, np.zeros(_dim, float32))
+     в. Нет ни того ни другого -> np.zeros + WARNING (один раз через _warned_words).
+  5. Привести к np.ndarray float32.
+  6. LRU-запись: если len >= _cache_maxsize -> popitem(last=False).
+     _word_cache[word] = vec.
+  7. Вернуть vec.
+
+get_phrase_vector(phrase: str) -> np.ndarray:
+  Назначение: единый вектор для фразы (слова или словосочетания). Используется в vectorize.py
+  для каждого token, а также для hints_coherence в разделе 16.
+  Алгоритм: 1) phrase.lower().strip(). 2) tokens=phrase.split().
+  3) vecs=[get_word_vector(t) for t in tokens]. 4) np.mean(vecs, axis=0).astype(float32).
+  Нормализация НЕ применяется (это делает vectorize.py после).
+  Если tokens=[] -> np.zeros(_dim, float32).
+  Если слов нет -> np.zeros(_dim, float32).
+
+get_dimension() -> int: _ensure_model(), вернуть _dim.
+
+----------------------------------------------------------------------
+9.2. vectorize (src/vectorize.py)
+----------------------------------------------------------------------
+
+Сигнатура:
+  vectorize(processed_query: dict, embedding_model: FastTextWrapper,
+            normalize: bool = True) -> np.ndarray
+
+Принимает словарь из preprocess_full.
+Использует только поле "tokens_with_weights": list[tuple[str, float]].
+Каждый токен -- может быть фразой, обрабатывается через get_phrase_vector.
+
+Алгоритм:
+
+  1. tokens_weights = processed_query.get("tokens_with_weights", [])
+  2. Если пусто: WARNING; return np.zeros(dim, float32).
+  3. dim = embedding_model.get_dimension()
+  4. weighted_sum = np.zeros(dim, dtype=float64)   <- FLOAT64 для точности!
+
+  5. Для каждого (token, weight) в tokens_weights:
+     Валидация weight:
+       если не float/int -> WARNING + skip
+       если math.isnan(weight) или math.isinf(weight) -> WARNING + skip
+       если weight < 0 -> WARNING + skip
+       weight == 0 -> РАЗРЕШЁН (нулевой вклад, не пропускать)
+     vec = embedding_model.get_phrase_vector(token)  # float32
+     Если np.any(np.isnan(vec) | np.isinf(vec)) -> ERROR + skip.
+     weighted_sum += weight * vec.astype(float64)
+
+  6. Проверка: если np.any(np.isnan(weighted_sum)):
+       ERROR; weighted_sum = np.zeros(dim, float64).
+
+  7. Если normalize=True:
+       norm = np.linalg.norm(weighted_sum)
+       Если norm > 1e-9: weighted_sum /= norm
+       Иначе: WARNING "нулевой вектор"
+
+  8. return weighted_sum.astype(float32)   <- обратно в float32
+
+ПОЧЕМУ float64 внутри:
+  Суммирование множества float32 накапливает погрешность.
+  float64 устраняет ошибки округления в сумме. Результат конвертируется в float32.
+
+ПОЧЕМУ нет деления на сумму весов:
+  Формула ТЗ -- взвешенная СУММА, не среднее.
+  Деления на sum(weights) нет. L2-нормализация устраняет масштаб.
+
+----------------------------------------------------------------------
+9.3. QueryVectorCache (src/cache.py)
+----------------------------------------------------------------------
+
+Класс: QueryVectorCache(maxsize: int)
+Назначение: при повторных одинаковых запросах не пересчитывать вектор.
+
+КЛЮЧ КЭША:
+  (term.lower().strip(),
+   tuple(sorted(h.lower().strip() for h in hints)),
+   config.use_synonyms,
+   config.max_synonyms_per_token)
+
+  Сортировка hints: ["техника","вращение"] == ["вращение","техника"].
+  Включены use_synonyms и max_synonyms_per_token потому что они
+  влияют на tokens_with_weights и значит на итоговый вектор.
+
+ХРАНЕНИЕ:
+  numpy.ndarray не хешируем. Хранить как tuple(vector.tolist()).
+  При чтении: np.array(stored, dtype=float32).
+
+Потокобезопасность:
+  Внутренний _lock: threading.Lock защищает все операции с OrderedDict.
+  Без _lock при параллельных запросах возможна гонка при popitem + move_to_end.
+
+Методы:
+  get(term, hints, config) -> np.ndarray | None
+    with self._lock:
+      Построить ключ. Проверить кэш.
+      Если есть: move_to_end, вернуть np.array(..., float32). DEBUG "hit".
+      Если нет: вернуть None. DEBUG "miss".
+
+  put(term, hints, config, vector) -> None
+    with self._lock:
+      Построить ключ.
+      Если len >= maxsize: popitem(last=False).
+      Сохранить tuple(vector.tolist()). DEBUG "store".
+
+  clear() -> None:
+    with self._lock: self._cache.clear(). INFO "Кэш очищен".
+
+  _build_key(term, hints, config) -> tuple: вспомогательный метод (вне лока).
+
+================================================================================
+## 10. ШАГ 3: ПОИСК В БАЗЕ ЗНАНИЙ (src/knowledge_base.py)
+================================================================================
+
+----------------------------------------------------------------------
+10.1. Схема SQLite (версия 2)
+----------------------------------------------------------------------
+
+Файл: data/knowledge_base.db (путь из Config.db_path).
+Создаётся: python -m scripts.init_db (идемпотентен, CREATE IF NOT EXISTS).
+Заполняется: python -m scripts.seed_data [--force].
+
+PRAGMA foreign_keys = ON при каждом подключении.
+
+Таблица CONCEPTS:
+  id         TEXT PRIMARY KEY
+  term       TEXT NOT NULL
+  domain     TEXT
+  embedding  BLOB   предвычисленный нормализованный вектор np.ndarray float32.
+                    Сохраняется: vector.astype('<f4').tobytes()
+                    Восстанавливается: np.frombuffer(blob, dtype='<f4').copy()
+                    '<f4' = little-endian float32, кроссплатформенный порядок байт.
+                    .copy() обязателен -- без него изменение вектора может
+                    повредить буфер SQLite.
+                    Если fastText не загружен -- сохраняются нулевые векторы
+                    (деградация, не падение). Пересчитать позже через update_all_embeddings.
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+
+Таблица PARAMETERS:
+  id          INTEGER PRIMARY KEY AUTOINCREMENT
+  concept_id  TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE
+  name        TEXT NOT NULL   snake_case, английское. NOT NULL -- обязательно.
+  label_ru    TEXT NOT NULL   русское название. NOT NULL -- обязательно.
+  type        TEXT CHECK(type IN ('string','integer','float','boolean','enum'))
+  description TEXT
+  unit        TEXT            единица измерения (мм, кг, °C и т.д.)
+  enum_values TEXT            значения enum, хранятся как JSON-список строк
+  confidence  REAL DEFAULT 1.0
+
+Таблица RELATIONS:
+  id                INTEGER PRIMARY KEY AUTOINCREMENT
+  source_concept_id TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE
+  target_concept_id TEXT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE
+  relation_type     TEXT NOT NULL CHECK(
+                        relation_type IN ('is_a','part_of','related_to','synonym'))
+  confidence        REAL DEFAULT 1.0
+  created_at        DATETIME DEFAULT CURRENT_TIMESTAMP
+  UNIQUE(source_concept_id, target_concept_id, relation_type)
+
+Таблица METADATA:
+  key TEXT PRIMARY KEY, value TEXT
+  Хранит: schema_version = '2'
+
+Индексы:
+  idx_concepts_domain        ON concepts(domain)
+  idx_parameters_concept_id  ON parameters(concept_id)
+  idx_relations_source       ON relations(source_concept_id)
+  idx_relations_target       ON relations(target_concept_id)
+
+----------------------------------------------------------------------
+10.2. Класс KnowledgeBase
+----------------------------------------------------------------------
+
+Конструктор:
+  __init__(self, config: Config,
+           embedding_model: FastTextWrapper | None = None,
+           synonym_dict: SynonymDict | None = None) -> None
+
+  Создаёт подключение к БД. Singleton Lemmatizer внутри для вычисления
+  эмбеддингов понятий (отдельный от run_pipeline, но тот же экземпляр).
+
+Контекстный менеджер:
+  def __enter__(self) -> "KnowledgeBase": return self
+  def __exit__(self, *args) -> None:      self.close()
+  def close(self) -> None:               self._conn.close()
+  Использование: with KnowledgeBase(cfg) as kb: ...
+
+Внутренние атрибуты:
+  _conn: sqlite3.Connection         с row_factory = sqlite3.Row
+  _concepts_cache: list[dict] | None  кэш всех понятий с параметрами
+  _faiss_index: object | None
+  _faiss_lock: threading.Lock         защита от параллельной замены индекса
+  _embeddings_matrix: np.ndarray | None  матрица (N, 300) для numpy-поиска
+  _matrix_concept_ids: list[str] | None  параллельный список concept_id;
+                                          позиция i в матрице = concept_id[i]
+                                          ОБЯЗАТЕЛЕН: без него результат поиска
+                                          нельзя сопоставить с понятиями
+  _matrix_lock: threading.RLock       защита при инвалидации/перестройке матрицы
+  _search_cache: OrderedDict          LRU кэш результатов поиска
+  _search_cache_lock: threading.Lock  защита кэша поиска
+
+_blob_to_vector(blob: bytes | None) -> np.ndarray:
+  None -> np.zeros(300, float32).
+  np.frombuffer(blob, dtype='<f4').copy()
+  Если len(vec) != 300 -> WARNING + np.zeros(300, float32).
+
+_vector_to_blob(vector: np.ndarray) -> bytes:
+  vector.astype('<f4').tobytes()
+
+_parse_enum(value: str | None) -> list[str] | None:
+  Если None или пусто -> None.
+  json.loads(value). При ошибке -> WARNING + None.
+
+----------------------------------------------------------------------
+10.3. Получение данных из БД
+----------------------------------------------------------------------
+
+get_all_concepts(use_cache: bool = True) -> list[dict]:
+  Если use_cache и _concepts_cache not None -> вернуть из кэша.
+
+  SQL с LEFT JOIN (один запрос, без N+1 проблемы):
+    SELECT c.id, c.term, c.domain, c.embedding,
+           p.name, p.label_ru, p.type, p.description,
+           p.unit, p.enum_values, p.confidence
+    FROM concepts c
+    LEFT JOIN parameters p ON c.id = p.concept_id
+    ORDER BY c.id, p.id
+
+  Из результата собрать список понятий, каждое с вложенным "parameters".
+  Embedding: _blob_to_vector(row['embedding']).
+  enum_values: _parse_enum(row['enum_values']).
+  Сохранить в _concepts_cache. Вернуть.
+  Thread safety _concepts_cache: CPython GIL защищает от corruption.
+  Двойная загрузка возможна но не критична (результат идентичен).
+  При PyPy или будущей миграции -- добавить threading.Lock.
+
+----------------------------------------------------------------------
+10.4. Вычисление эмбеддинга понятия
+----------------------------------------------------------------------
+
+compute_concept_embedding(term: str) -> np.ndarray:
+  Вызывает preprocess_base (НЕ preprocess_full!) с hints=[].
+  КРИТИЧЕСКИ ВАЖНО: синонимы НЕ используются при вычислении вектора понятия.
+  Причина: если бы синонимы добавлялись к понятию, вектор понятия смещался бы
+  в сторону синонимов его термина. Запрос пользователя тоже расширен синонимами.
+  Это нарушило бы симметрию: одни синонимы компенсировали бы другие случайным
+  образом и ухудшали бы точность косинусного сходства.
+  Схема: понятие = чистый вектор термина; запрос = взвешенный вектор с синонимами.
+  Это намеренная асимметрия: синонимы помогают НАЙТИ понятие, но не меняют ЧТО
+  это понятие представляет в векторном пространстве.
+  normalize=True. Размерность 300. float32.
+  Если embedding_model None -> WARNING + np.zeros(300, float32).
+
+update_all_embeddings() -> int:
+  Пересчитывает эмбеддинги всех понятий в БД (если модель доступна).
+  Для каждого понятия: compute_concept_embedding(term).
+  Сохраняет BLOB в concepts.embedding.
+  После пересчёта: _concepts_cache = None (инвалидация кэша понятий).
+  Возвращает количество обновлённых понятий.
+
+----------------------------------------------------------------------
+10.5. Сохранение нового понятия
+----------------------------------------------------------------------
+
+save_concept(term, domain, parameters, relations=None,
+             concept_id: str | None = None) -> str:
+  Если concept_id не передан -> генерировать: str(uuid4()).
+  Если concept_id передан (например из seed_data.py "concept_001") -> использовать.
+  ПРАВИЛО: seed_data.py использует человекочитаемые ID ("concept_001", "concept_002")
+  для предсказуемости и удобства отладки. API /save_concept всегда генерирует UUID.
+  embedding = compute_concept_embedding(term) -> _vector_to_blob().
+  INSERT OR IGNORE INTO concepts.
+  INSERT OR IGNORE INTO parameters для каждого параметра.
+  IGNORE: если concept/parameter уже есть -- ничего НЕ обновляется. Для обновления -- update_kb.py --force.
+  IGNORE означает: если concept с этим id уже есть -- ни термин, ни параметры НЕ обновляются.
+  Для обновления -- использовать update_kb.py с --force.
+  INSERT OR IGNORE INTO relations (если переданы).
+  commit().
+  Инвалидировать кэш: _concepts_cache = None + очистить кэш поиска.
+  Вернуть concept_id.
+
+----------------------------------------------------------------------
+10.6. Алгоритм поиска
+----------------------------------------------------------------------
+
+search_similar(query_vector, min_confidence, max_candidates, domain_filter) -> list[dict]:
+
+  Параметры:
+    query_vector   np.ndarray   нормализованный вектор из Шага 2
+    min_confidence float        порог сходства
+    max_candidates int          из Config.max_candidates (умолч. 20)
+    domain_filter  str | None   фильтр по домену
+
+  Шаг 1. Проверить кэш поиска (LRU, ключ описан в 10.7).
+
+  Шаг 2. Загрузить понятия: concepts = get_all_concepts().
+
+  Шаг 3. Если domain_filter задан:
+    Отфильтровать concepts: оставить только с domain == domain_filter.
+    ВАЖНО: концепты с domain=NULL всегда исключаются при domain_filter
+    (NULL == 'что-угодно' = NULL (ложь) в SQLite). Это намеренное поведение.
+
+  Шаг 4. Если понятий == 0:
+    Если domain_filter был задан:
+      WARNING: "Домен '{domain_filter}' не найден или не содержит понятий."
+      Повторить поиск БЕЗ domain_filter (полный поиск).
+      Если и без фильтра пусто -> вернуть [].
+    Иначе (domain_filter не задан): вернуть [].
+
+  Шаг 5. Выбор метода поиска:
+
+    ЕСЛИ use_faiss=False ИЛИ len(concepts) < faiss_threshold:
+      -> Линейный / матричный поиск numpy:
+         Собрать embeddings_matrix: np.vstack([c['embedding'] for c in concepts])
+         Форма: (N, 300), все векторы нормализованы.
+         similarities = np.dot(embeddings_matrix, query_vector)
+         Скалярное произведение нормализованных = косинусное сходство.
+         Использовать матрицу из кэша если _embeddings_matrix не None.
+
+    ЕСЛИ use_faiss=True И len(concepts) >= faiss_threshold:
+      -> FAISS:
+         ВАЖНО: FAISS + domain_filter требуют особой логики.
+         FAISS не знает о доменах -- он ищет по ВСЕМ концептам.
+         Поэтому при domain_filter нужно запросить БОЛЬШЕ кандидатов:
+           k_faiss = max_candidates * 10
+           (запас, чтобы после фильтрации по домену осталось достаточно)
+         with self._faiss_lock: index = self._faiss_index
+         scores, indices = index.search(query_vector.reshape(1,-1), k=k_faiss)
+         Затем: отфильтровать по domain через _matrix_concept_ids,
+         применить порог min_confidence, взять первые max_candidates.
+         Если файл не найден -> WARNING + переключение на numpy.
+         Если после фильтрации domain_filter результатов < 3 -- понижать
+         порог до 0.2 и повторять с numpy (не с FAISS, для точности).
+
+  Шаг 6. Применить порог:
+    Отобрать индексы с similarity >= min_confidence.
+    Если результатов < 3 -> снизить порог до 0.2 и расширить.
+
+  Шаг 7. Сортировка по убыванию similarity. Взять первые max_candidates.
+
+  Шаг 8. Сформировать список кандидатов:
+    [{"concept_id", "term", "domain", "similarity", "parameters":[...]}]
+
+  Шаг 9. Сохранить в кэш поиска. Вернуть список.
+
+  Если ничего не найдено при пороге 0.2 -> активировать РЕЗЕРВНЫЙ РЕЖИМ.
+
+----------------------------------------------------------------------
+10.7. Кэш результатов поиска
+----------------------------------------------------------------------
+
+Встроен в KnowledgeBase. LRU через OrderedDict.
+Ключ: (hash(query_vector.tobytes()), min_confidence, max_candidates, domain_filter)
+Размер: Config.search_cache_size (умолч. 100).
+TTL: Config.search_cache_ttl_seconds (умолч. 300с, 0 = без TTL).
+Инвалидация: при save_concept или update_all_embeddings -> очистить весь кэш.
+DEBUG при cache hit; INFO при cache miss.
+
+----------------------------------------------------------------------
+10.8. Резервный режим (src/fallback.py)
+----------------------------------------------------------------------
+
+Активируется когда: ничего не найдено при пороге 0.2.
+
+Файлы:
+  configs/domain_keywords.json:
+    {"техника": ["инструмент","механизм","деталь","привод",...], "музыка":[...]}
+  configs/domain_templates.json:
+    {"техника": [{"name":"material","label_ru":"Материал","type":"string",...},...],
+     "general":  [...общий шаблон...]}
+
+Алгоритм:
+  1. Определить домен: сравнить all_lemmas из processed_query с domain_keywords.
+     Домен с наибольшим числом совпадений побеждает.
+  2. Загрузить шаблон из domain_templates для найденного домена.
+     Если домен не определён -> шаблон "general".
+  3. Для каждого параметра из шаблона:
+     - source = "template"
+     - confidence = 0.4  (хардкод в fallback.py, не из шаблонного файла)
+     - Если param["type"] == "enum" и param["enum_values"] является list:
+       param["enum_values"] = json.dumps(param["enum_values"], ensure_ascii=False)
+       (конвертация из list в JSON-строку перед вставкой в БД или передачей дальше)
+  4. WARNING: "Термин не найден в базе знаний, параметры по шаблону домена."
+  5. Если use_generative=True -> дополнительно запустить Шаг 4-бис.
+
+----------------------------------------------------------------------
+10.9. Начальные данные (scripts/seed_data.py)
+----------------------------------------------------------------------
+
+Скрипт: python -m scripts.seed_data [--force]
+  --force  очистить таблицы перед вставкой
+
+Без --force: если таблица concepts непуста -> INFO и выход без изменений.
+
+Порядок заполнения:
+  1. Подключиться к БД.
+  2. Инициализировать Lemmatizer, SynonymDict, FastTextWrapper, KnowledgeBase.
+  3. Для каждого понятия: compute_concept_embedding(term) -> blob.
+     INSERT OR IGNORE INTO concepts + parameters + relations.
+  4. commit(). INFO "Вставлено N понятий".
+
+Пример минимального набора начальных данных:
+  concept_001: term="ключ гаечный", domain="слесарный инструмент"
+    параметры: size_mm(float,мм), material(string), torque_nm(float,Н·м)
+  concept_002: term="ключ разводной", domain="слесарный инструмент"
+    параметры: size_range_mm(string), material(string)
+  concept_003: term="ключ скрипичный", domain="музыка"
+    параметры: clef_type(enum, enum_values='["скрипичный","басовый","альтовый"]'),
+               staff_position(integer)
+
+ФОРМАТ enum_values в SQLite:
+  Хранится как JSON-строка: '["значение1","значение2","значение3"]'
+  Никогда не "значение1,значение2" (запятая без JSON) -- _parse_enum не поймёт.
+  При сохранении: json.dumps(enum_values_list, ensure_ascii=False)
+  При чтении:     json.loads(row['enum_values'])  в _parse_enum
+
+================================================================================
+## 11. ШАГ 4: АГРЕГАЦИЯ ПАРАМЕТРОВ (src/aggregation.py)
+================================================================================
+
+Функция: aggregate_parameters(candidates: list[dict],
+                               processed_query: dict,
+                               lemmatizer: Lemmatizer | None = None) -> list[dict]
+
+  lemmatizer нужен для лемматизации label_ru и description при hint_match.
+  Если lemmatizer is None -> hint_match вычисляется через простое строковое
+  вхождение (без лемматизации). Это допустимо для тестов и деградации.
+  В production run_pipeline всегда передаёт lemmatizer.
+
+Шаг 1. СБОР:
+  Для каждого кандидата извлечь parameters. Пометить каждый параметр
+  полем _similarity = similarity кандидата. Собрать в плоский список.
+
+Шаг 2. ГРУППИРОВКА по полю name (уникальный snake_case ключ):
+  freq        = кол-во кандидатов, содержащих параметр
+  similarities = список similarity этих кандидатов
+  avg_sim     = среднее арифметическое similarities
+
+Шаг 3. СКОРИНГ:
+  score = 0.6 * freq_norm + 0.3 * avg_similarity + 0.1 * hint_match
+
+  freq_norm  = freq / max_freq по всем параметрам
+  avg_sim    = среднее косинусное сходство кандидатов содержащих этот параметр
+               (НЕ сходство запроса с параметром напрямую; это avg similarity
+               тех понятий из БД, у которых есть данный параметр)
+  hint_match = доля лемм ТОЛЬКО из hints_lemmas (плоский список: все слова
+               всех подсказок без term_lemmas!), встречающихся в label_ru
+               или description параметра (лемматизированное вхождение).
+               Если hints пусты -> hint_match = 0.
+               ВАЖНО: term_lemmas в hint_match НЕ участвуют. Термин уже
+               учтён в avg_sim через косинусное сходство. Двойной учёт
+               завышал бы score параметров совпадающих с самим термином.
+
+  Пример вычисления hint_match:
+    hints_lemmas = [["техника"], ["вращение"]]
+    hints_flat   = ["техника", "вращение"]  # плоский список
+    label_ru     = "Момент вращения (Н·м)"
+    lemmas_in_label = ["момент", "вращение", "н·м"]  # после лемматизации
+    совпадений: "вращение" в lemmas_in_label -> 1
+    hint_match = 1 / len(hints_flat) = 1 / 2 = 0.5
+
+Шаг 4. Сортировка по убыванию score. Взять первые Config.max_parameters (15).
+
+Шаг 5. Защита от деления на ноль:
+  max_score = max(scores) если scores непуст иначе 1.0
+  confidence = score / max_score если max_score > 0 else 0.0
+  source = "knowledge_base".
+
+Шаг 6. Если параметров < 5 И use_generative=True И GenerativeHelper доступен:
+  запустить Шаг 4-бис.
+
+================================================================================
+## 12. ШАГ 4-БИС (ОПЦИОНАЛЬНО): ГЕНЕРАТИВНОЕ ДОСТРАИВАНИЕ (src/generative.py)
+================================================================================
+
+Класс: GenerativeHelper(config: Config)
+Библиотеки: transformers, torch
+
+----------------------------------------------------------------------
+12.1. Условия включения
+----------------------------------------------------------------------
+
+Запускается только если все три:
+  - Config.use_generative = True
+  - параметров после агрегации < Config.min_parameters_for_generative (5)
+  - self.is_available() == True
+
+Если use_generative=False: create объекта проходит, но generate_suggestions()
+немедленно возвращает ([], []) без загрузки модели.
+
+----------------------------------------------------------------------
+12.2. Загрузка модели (один раз при старте в _init_components)
+----------------------------------------------------------------------
+
+Модель: rugpt3small_based_on_gpt2 (SberDevices, Hugging Face).
+Требования: CPU, не более 500 МБ.
+  AutoTokenizer.from_pretrained(config.generative_model_name)
+  AutoModelForCausalLM.from_pretrained(config.generative_model_name)
+  model.eval()
+
+Ошибка импорта transformers/torch -> _available=False, ERROR.
+Ошибка загрузки (нет сети, нет памяти, повреждён файл) -> _available=False, ERROR.
+
+----------------------------------------------------------------------
+12.3. Промпт
+----------------------------------------------------------------------
+
+С hints:
+  "Термин: {term}. Контекст: {', '.join(hints)}.
+   Перечисли важные параметры, характеристики и ограничения для
+   формального описания этого понятия в виде короткого списка,
+   каждый пункт с новой строки. Не добавляй лишнего текста."
+
+Без hints:
+  "Термин: {term}. Перечисли важные параметры..."
+
+Защита: оставить только буквы, цифры, пробелы, дефисы, точки.
+Длина не более 500 символов (обрезать по словам).
+
+----------------------------------------------------------------------
+12.4. Генерация
+----------------------------------------------------------------------
+
+max_new_tokens=100, temperature=0.7, do_sample=True, num_return_sequences=3.
+В отдельном потоке с таймаутом Config.generative_timeout_seconds (2с).
+Таймаут -> WARNING, вернуть ([], []).
+
+----------------------------------------------------------------------
+12.5. Постобработка
+----------------------------------------------------------------------
+
+Из каждого из 3 текстов:
+  1. Разбить по \n, точке+пробел, точке с запятой.
+  2. Очистить маркеры: -, *, •, цифра+точка.
+  3. Строка без ключевых слов -> игнорировать.
+     Ключевые слова (из Config.generative_keywords):
+       материал, размер, тип, скорость, мощность, вес, длина, цвет,
+       напряжение, ёмкость, частота, температура, давление, форма,
+       покрытие, привод, источник энергии.
+
+ПОЛНЫЙ СЛОВАРЬ МАППИНГА (встроен в generative.py, не из конфига):
+  {
+    "материал":          "material",
+    "размер":            "size",
+    "тип":               "type",
+    "вес":               "weight",
+    "масса":             "mass",
+    "длина":             "length",
+    "ширина":            "width",
+    "высота":            "height",
+    "диаметр":           "diameter",
+    "мощность":          "power",
+    "скорость":          "speed",
+    "напряжение":        "voltage",
+    "ток":               "current",
+    "частота":           "frequency",
+    "температура":       "temperature",
+    "давление":          "pressure",
+    "ёмкость":           "capacity",
+    "форма":             "shape",
+    "цвет":              "color",
+    "покрытие":          "coating",
+    "привод":            "drive",
+    "источник энергии":  "energy_source",
+    "точность":          "accuracy",
+    "прочность":         "strength",
+    "твёрдость":         "hardness",
+    "класс точности":    "precision_class",
+    "стандарт":          "standard",
+    "производитель":     "manufacturer",
+    "срок службы":       "service_life",
+    "гарантия":          "warranty",
+  }
+  Алгоритм поиска в словаре:
+    1. Привести label_ru к нижнему регистру.
+    2. Полное совпадение -> взять из словаря.
+    3. Если слово из label_ru содержится как подстрока ключа (или наоборот) -> взять.
+    4. Если совпадений нет: transliterate(label_ru) через библиотеку transliterate.
+    5. Если transliterate недоступен: "param_" + hashlib.md5(label_ru.encode()).hexdigest()[:8]  # стабилен при PYTHONHASHSEED.
+
+Для каждой строки-кандидата:
+  label_ru:   очищенная строка.
+  name:       по словарю маппинга выше | transliterate | "param_"+hash.
+  type:       эвристика:
+              мм/см/м/кг/г/т/°C/сек/В/А/Вт/Гц -> float
+              да/нет/есть/нет/включено/выключено -> boolean
+              перечисление через / или список     -> enum (enum_values заполнить)
+              иначе                               -> string
+  confidence: 0.5 (фиксировано).
+  source:     "generative".
+
+Объединение 3 вариантов: при дублях по name -> взять с наибольшим description.
+Исключить параметры уже в existing_params (по name, case-insensitive).
+Взять не более Config.generative_max_new_params (3).
+
+suggested_refinements: строки с "рекоменду/желательно/следует/
+  необходимо/уточните/обратите внимание" -> до 3 уникальных.
+
+Возврат: (list[dict], list[str]) -- новые параметры + refinements.
+
+================================================================================
+## 13. ШАГ 5: ФОРМИРОВАНИЕ ОТВЕТА (run_pipeline в main.py)
+================================================================================
+
+Выполняется в конце run_pipeline после всех шагов.
+
+  1. effective_min_confidence = min_confidence if min_confidence is not None else cfg.min_confidence.
+
+  2. Шаги 1-4 выполнены. Собрать итоговые parameters, suggested_refinements.
+
+  3. КОНТЕКСТ: если кандидаты найдены -> домен с макс. суммой similarity.
+     selected_context = {"domain": str, "confidence": float}
+     Если резервный режим -> domain из domain_keywords, confidence=0.3.
+
+  4. WARNINGS (проверяются по условиям):
+     параметров < 3      -> "Слишком мало параметров. Уточните контекст."
+     кандидатов 0        -> "Понятие не найдено в БД, параметры предположительны."
+     нулевой вектор      -> "Модель эмбеддингов недоступна, поиск не работает."
+     hints несвязны      -> "Подсказки имеют низкую семантическую связность."
+       Алгоритм детектирования несвязных hints:
+         Если len(hints) >= 2:
+           Для каждой пары подсказок (i, j): вычислить косинусное сходство
+           между их векторами (get_phrase_vector каждой).
+           avg_pair_sim = среднее по всем парам.
+           Если avg_pair_sim < Config.hints_coherence_threshold (по умолч. 0.2):
+             добавить warning "Подсказки имеют низкую семантическую связность..."
+         При len(hints) == 1: проверка не делается (нечего сравнивать).
+         При len(hints) == 0: проверка не делается.
+       Дополнительный параметр конфига:
+         hints_coherence_threshold  float  0.2
+     параметры-шаблоны   -> "Параметры предложены по шаблону домена."
+
+  5. Статус "ambiguous": если нет hints и нет selected_domain и термин
+     встретился в нескольких доменах с близкой confidence.
+     В этом случае: parameters=[], selected_context содержит список доменов.
+
+  6. Сборка result dict (строго по формату Раздела 6).
+
+  7. Если debug=True -> result["debug_info"] = {...}.
+
+================================================================================
+## 14. УПРАВЛЕНИЕ СЕССИЯМИ (src/sessions.py)
+================================================================================
+
+Класс: SessionManager(config: Config)
+Флаг: Config.use_sessions. Если False -> create/get возвращают None.
+
+Структура сессии:
+  session_id:           str (UUID)
+  term:                 str
+  accumulated_hints:    list[str]   все подсказки за все шаги (дедуплицированы)
+  selected_domain:      str | None
+  interaction_history:  list[dict]  история взаимодействий, каждый элемент:
+    {
+      "step":           int,        порядковый номер шага (1, 2, 3, ...)
+      "hints_added":    list[str],  подсказки переданные на этом шаге
+      "selected_domain":str | None, домен выбранный на этом шаге (или None)
+      "status":         str,        статус ответа ("ok"/"ambiguous"/"error")
+      "n_parameters":   int,        количество возвращённых параметров
+      "timestamp":      str         ISO-8601 (datetime.utcnow().isoformat() + 'Z')
+    }
+    Полный ответ НЕ сохраняется (слишком большой). Только мета-данные.
+  created_at:           datetime
+  updated_at:           datetime
+  ttl_seconds:          int (Config.session_ttl_seconds = 3600)
+
+Методы:
+  create_session(term, hints) -> str      вернуть session_id (UUID)
+  get_session(session_id) -> dict | None  вернуть сессию или None если истекла
+  update_session(session_id, new_hints, selected_domain, response) -> None
+  delete_session(session_id) -> None
+  cleanup_expired() -> int               удалить истёкшие, вернуть кол-во
+
+Хранилище: in-memory OrderedDict.
+cleanup_expired вызывается автоматически при каждом входящем запросе.
+
+Интеграция в run_pipeline:
+  Если session_id передан -> get_session -> объединить accumulated_hints
+  с новыми hints (дедупликация, порядок: старые + новые).
+  После получения ответа -> update_session.
+
+================================================================================
+## 15. REST API (src/api.py)
+================================================================================
+
+Библиотека: fastapi + uvicorn.
+Запуск: python -m scripts.run_api (из корня).
+
+Событие startup: вызвать _init_components() + warm-up.
+Событие shutdown: закрыть соединения КБ.
+
+Эндпоинты:
+
+  POST /process
+    Тело: {term, hints?, session_id?, selected_domain?, debug?}
+    Логика: если session_id -> объединить hints с накопленными.
+    Ответ: стандартный выходной словарь.
+
+  POST /save_concept
+    Тело: {term, domain, parameters:[...], relations?:[...]}
+    Ответ: {concept_id: str}
+    После: инвалидировать кэш поиска.
+
+  POST /feedback
+    Тело: {session_id, concept_id, rating: int 1-5, comment?}
+    Хранить в таблице feedback (отдельная, создаётся в init_db) или лог-файл.
+
+  GET /health
+    Ответ: {status:"ok", model_loaded:bool, db_connected:bool}
+
+HTTP статус-коды:
+  200 -- любой ответ (в том числе status="error" и status="ambiguous") -- подстатус в JSON теле.
+  422 -- неверный формат запроса (Pydantic валидация FastAPI): term не передан, hints не list.
+  500 -- неожиданное исключение (не перехваченное в run_pipeline).
+  Аутентификация: не предусмотрена (открытый API).
+  Rate limiting: не предусмотрено (в текущей версии).
+
+  GET /metrics
+    Метрики Prometheus (если Config.use_metrics=True).
+
+CORS: Config.api_cors_origins (по умолчанию ["*"]).
+Swagger: /docs (генерируется FastAPI автоматически).
+
+================================================================================
+## 16. ПОЛНАЯ ОБРАБОТКА ОШИБОК И ГРАНИЧНЫЕ СЛУЧАИ
+================================================================================
+
+  Ситуация                              | Статус   | Поведение
+  --------------------------------------|----------|-------------------------------
+  term is None                          | error    | "Термин не передан."
+  term пуст после clean_text            | error    | "Термин пуст после очистки."
+  term > max_term_length                | error    | "Термин слишком длинный."
+  term_lemmas пуст                      | error    | "Термин не содержит значимых слов."
+  hint > max_hint_length                | error    | "Подсказка слишком длинная."
+  fastText нет, fallback нет            | ok       | нулевой вектор + WARNING
+  fastText нет, fallback есть           | ok       | работает на fallback
+  БД пуста или не найдена               | ok       | резервный режим
+  БД повреждена                         | ok       | резервный режим + ERROR в лог
+  hints пусты, термин однозначен        | ok       | параметры с меньшей точностью
+  hints пусты, термин многозначен       | ambiguous| список доменов для выбора
+  Генеративная модель недоступна        | ok       | Шаг 4-бис пропускается
+  Генерация: таймаут                    | ok       | WARNING + пустые параметры
+  Параметров < 3 в ответе               | ok       | WARNING в ответе
+  NaN/Inf в весах токенов               | ok       | токен пропускается + WARNING
+  NaN в векторе слова                   | ok       | токен пропускается + ERROR
+  FAISS файл не найден                  | ok       | переключение на numpy + WARNING
+  hints дублируются                     | ok       | дубликаты удалены + WARNING
+
+================================================================================
+## 17. ЛОГИРОВАНИЕ
+================================================================================
+
+logging.getLogger(__name__) в каждом модуле.
+Файл: logs/ai_terminator.log (папка создаётся автоматически при старте).
+Формат: JSON-lines (для машинного парсинга).
+Уровень: из Config.log_level.
+
+  DEBUG  -- кэш-хиты/промахи, промежуточные данные (первые 10 значений вектора)
+  INFO   -- старт/завершение каждого шага, время выполнения, загрузка компонентов
+  WARNING -- деградация (fallback, нулевой вектор, таймаут генерации)
+  ERROR  -- критические сбои (повреждение БД, ошибка загрузки модели, NaN)
+
+================================================================================
+## 18. ОБЩИЕ ТРЕБОВАНИЯ К КОДУ
+================================================================================
+
+  - Python 3.10+: X | None, list[str], dict[K,V] -- не Optional/List/Dict.
+  - Все пути -- только через pathlib.Path. Никаких + "/" или "\".
+  - Type hints на всех параметрах и возвращаемых значениях.
+  - Docstring в стиле Google (Args:, Returns:, Raises:).
+  - try/except на всех внешних вызовах (файл, модель, БД).
+  - Пользователь видит понятное сообщение, не traceback.
+  - Система деградирует при ошибках, не падает.
+  - sys.path -- только внутри if __name__ == "__main__" в скриптах.
+  - Все синглтоны создаются в _init_components, передаются как параметры.
+  - После каждого изменения запускается pytest.
+
+================================================================================
+## 19. АЛГОРИТМ ДЕТЕКТИРОВАНИЯ НЕОДНОЗНАЧНОСТИ ("ambiguous")
+================================================================================
+
+Статус "ambiguous" возникает когда система не может уверенно выбрать
+один контекст для термина без дополнительной информации от пользователя.
+
+----------------------------------------------------------------------
+19.1. Условия срабатывания
+----------------------------------------------------------------------
+
+"ambiguous" срабатывает если выполнены ВСЕ три условия:
+  1. selected_domain NOT передан (None).
+  2. hints пусты ИЛИ hints не дают достаточно уверенного результата.
+  3. В результатах поиска есть кандидаты из НЕСКОЛЬКИХ доменов,
+     и разница confidence между топ-доменами менее Config.ambiguity_threshold
+     (по умолчанию 0.15).
+
+Пример: term="ключ", hints=[]
+  Найдено: "слесарный инструмент" (avg_sim=0.72), "музыка" (avg_sim=0.65)
+  Разница: 0.72 - 0.65 = 0.07 < 0.15 -> "ambiguous"
+
+Пример: term="ключ", hints=["техника"]
+  Найдено: "слесарный инструмент" (avg_sim=0.88), "музыка" (avg_sim=0.41)
+  Разница: 0.88 - 0.41 = 0.47 > 0.15 -> "ok", выбирается "слесарный инструмент"
+
+----------------------------------------------------------------------
+19.2. Формат ответа при "ambiguous"
+----------------------------------------------------------------------
+
+  {
+    "status": "ambiguous",
+    "term": str,
+    "selected_context": {
+        "domain_candidates": [
+            {"domain": "слесарный инструмент", "confidence": 0.72,
+             "example_term": "ключ гаечный"},
+            {"domain": "музыка", "confidence": 0.65,
+             "example_term": "ключ скрипичный"}
+        ]
+    },
+    "parameters": [],
+    "suggested_refinements": [
+        "Уточните контекст: 'техника' (инструмент), 'музыка' (нота)"
+    ],
+    "warnings": []
+  }
+
+----------------------------------------------------------------------
+19.3. Разрешение неоднозначности
+----------------------------------------------------------------------
+
+Пользователь передаёт selected_domain в следующем запросе.
+run_pipeline передаёт selected_domain как domain_filter в search_similar.
+Поиск выполняется только по этому домену.
+
+Дополнительный параметр конфига:
+  ambiguity_threshold  float  0.15  порог разницы confidence для "ambiguous"
+
+================================================================================
+## 20. ГРАФ ОТНОШЕНИЙ И ЕГО ИСПОЛЬЗОВАНИЕ В ПОИСКЕ
+================================================================================
+
+----------------------------------------------------------------------
+20.1. Типы отношений
+----------------------------------------------------------------------
+
+Таблица RELATIONS хранит 4 типа:
+  is_a         "ключ гаечный" is_a "ключ" -- иерархия (гипоним/гипероним)
+  part_of      "рукоятка" part_of "ключ гаечный" -- часть целого
+  related_to   "ключ" related_to "гайка" -- семантическая близость
+  synonym      "разводной ключ" synonym "разводной" -- синонимы понятий
+
+----------------------------------------------------------------------
+20.2. Использование в поиске (расширенный режим)
+----------------------------------------------------------------------
+
+Флаг конфига: use_relations (bool, по умолчанию false).
+Если use_relations=True:
+
+  1. После основного поиска (search_similar) получить список кандидатов.
+  2. Для каждого кандидата: загрузить связанные понятия через RELATIONS.
+     Приоритет: is_a (родительские концепты), related_to (смежные).
+  3. Добавить параметры связанных понятий в пул агрегации.
+     Параметры из связанных понятий получают confidence = оригинальный * 0.7.
+     (Снижение потому что параметр не прямой, а унаследованный.)
+  4. Агрегация работает как обычно по объединённому пулу.
+
+Пример: "ключ гаечный" is_a "ключ".
+  Если пользователь ищет "ключ гаечный", в пул добавятся параметры "ключ"
+  с пониженным весом -> более полный список.
+
+----------------------------------------------------------------------
+20.3. Обход графа (graph traversal)
+----------------------------------------------------------------------
+
+Метод KnowledgeBase.get_related_concepts(concept_id, relation_types, depth) -> list[dict]:
+  Параметры:
+    concept_id     str           ID исходного понятия
+    relation_types list[str]     какие типы включить, например ["is_a","related_to"]
+    depth          int           глубина обхода (1 = прямые соседи, 2 = соседи соседей)
+                                 Максимум 3 во избежание бесконечных циклов.
+
+  Алгоритм BFS:
+    queue = [concept_id], visited = {concept_id}, result = []
+    Для каждого уровня depth:
+      Для каждого id в queue:
+        SELECT target_concept_id WHERE source_concept_id=id AND relation_type IN types
+        Добавить новые (не в visited) в result и queue следующего уровня.
+    Вернуть result (без исходного понятия).
+
+================================================================================
+## 21. УПРАВЛЕНИЕ FAISS ИНДЕКСОМ
+================================================================================
+
+----------------------------------------------------------------------
+21.1. Когда использовать FAISS
+----------------------------------------------------------------------
+
+Config.use_faiss=True и количество понятий >= Config.faiss_threshold (10000).
+Для малых баз (< 10000 понятий) numpy матричный поиск достаточно быстр.
+FAISS даёт ускорение на миллионах понятий.
+
+----------------------------------------------------------------------
+21.2. Построение индекса (scripts/build_faiss.py)
+----------------------------------------------------------------------
+
+Отдельный скрипт: python -m scripts.build_faiss [--config path] [--output path]
+По умолчанию сохраняет в Config.faiss_index_path.
+
+Алгоритм:
+  1. Загрузить все понятия из БД через get_all_concepts().
+  2. Извлечь все эмбеддинги в матрицу (N, 300) float32.
+  3. Выбор типа индекса в зависимости от N:
+
+     N < 100 000 -- IndexFlatIP(300):
+       Точный поиск. Скалярное произведение нормализованных = косинусное сходство.
+       Без аппроксимаций. Приемлемо быстр для < 100K.
+       faiss.normalize_L2(embeddings_matrix)  # на случай если не нормализованы
+       index = faiss.IndexFlatIP(300)
+       index.add(embeddings_matrix)
+
+     N >= 100 000 -- IVF + PQ (приближённый, быстрый):
+       nlist = min(4096, max(256, int(N ** 0.5)))  # число кластеров Voronoi
+       quantizer = faiss.IndexFlatIP(300)
+       index = faiss.IndexIVFPQ(quantizer, 300, nlist, 64, 8)
+       Параметры: 64 sub-vectors по 8 бит каждый (PQ компрессия).
+       index.train(embeddings_matrix)   # ОБЯЗАТЕЛЕН этап обучения
+       index.add(embeddings_matrix)
+       index.nprobe = 32                # число кластеров для поиска (точность/скорость)
+
+     ВАЖНО: N определяется в момент построения. При росте базы выше 100K
+     индекс пересобирается как IVF+PQ. Это штатное поведение.
+
+  4. faiss.write_index(index, str(output_path))
+  5. Сохранить маппинг: индекс позиции -> concept_id.
+     Файл: Path(faiss_index_path).with_suffix('.map.json')
+     (Не конкатенация строк! .with_suffix() для замены расширения.)
+     Формат: {"0": "concept_001", "1": "concept_002", ...}
+     Без маппинга результат поиска нельзя сопоставить с понятиями.
+  6. INFO: "Индекс построен: N векторов, тип: {тип}, путь: ..."
+
+----------------------------------------------------------------------
+21.3. Пересборка индекса
+----------------------------------------------------------------------
+
+Автоматическая: при save_concept или update_all_embeddings,
+  если use_faiss=True и количество понятий >= faiss_threshold.
+  Запускается в отдельном фоновом потоке (не блокирует ответ).
+  Во время пересборки используется СТАРЫЙ индекс (copy-on-write подход):
+    1. Построить новый индекс в памяти (не трогая self._faiss_index).
+    2. Когда готов: with self._faiss_lock: self._faiss_index = new_index
+    3. Только после замены под _faiss_lock старый индекс освобождается GC.
+  Параллельные поисковые запросы используют старый индекс без блокировок.
+
+Ручная: python -m scripts.build_faiss --force
+
+----------------------------------------------------------------------
+21.4. Загрузка индекса при старте
+----------------------------------------------------------------------
+
+В _init_components если use_faiss=True:
+  Попытаться загрузить: faiss.read_index(str(faiss_index_path))
+  Если файл не найден -> WARNING + use_faiss_runtime=False (numpy fallback).
+  Если load успешен -> хранить в KnowledgeBase._faiss_index.
+
+================================================================================
+## 22. МАТРИЦА ЭМБЕДДИНГОВ (_embeddings_matrix) — ЖИЗНЕННЫЙ ЦИКЛ
+================================================================================
+
+Матрица используется для линейного поиска через numpy.
+Хранится в атрибуте KnowledgeBase._embeddings_matrix (np.ndarray | None).
+
+----------------------------------------------------------------------
+22.1. Когда строится
+----------------------------------------------------------------------
+
+При первом вызове search_similar (ленивая инициализация):
+  1. Загрузить все понятия через get_all_concepts().
+  2. Отфильтровать: только понятия с ненулевыми эмбеддингами.
+  3. Собрать: np.vstack([c['embedding'] for c in valid_concepts]).astype(float32)
+  4. Сохранить в self._embeddings_matrix.
+  5. Сохранить параллельный список self._matrix_concept_ids: list[str]
+     (маппинг: позиция в матрице -> concept_id)
+  6. Лог INFO: "Матрица эмбеддингов построена: N x 300"
+
+Если use_matrix_search=False или понятий < matrix_search_min_concepts:
+  Поиск по циклу (медленнее, но без предварительной загрузки в память).
+
+----------------------------------------------------------------------
+22.2. Когда инвалидируется
+----------------------------------------------------------------------
+
+Инвалидация под _matrix_lock (threading.RLock):
+  with self._matrix_lock:
+      self._embeddings_matrix = None
+      self._matrix_concept_ids = None
+
+При:
+  - save_concept (добавлено новое понятие)
+  - update_all_embeddings (пересчитаны векторы)
+При следующем вызове search_similar матрица строится заново под _matrix_lock.
+Параллельные читатели ждут окончания перестройки.
+
+----------------------------------------------------------------------
+22.3. Поиск через матрицу (потокобезопасный)
+----------------------------------------------------------------------
+
+  with self._matrix_lock:
+      matrix = self._embeddings_matrix      # читаем под локом
+      ids    = self._matrix_concept_ids
+
+  Если matrix None: перейти к построению (снова под _matrix_lock).
+
+  # После получения ссылки лок можно отпустить -- numpy-операции thread-safe
+  similarities = np.dot(matrix, query_vector)
+  Форма: (N,). Отсортировать: np.argsort(similarities)[::-1]
+  Топ-K: idx_top = sorted_indices[:max_candidates]
+  Порог: mask = similarities[idx_top] >= min_confidence; idx_top = idx_top[mask]
+  Для каждого индекса i: concept_id = ids[i], similarity = similarities[i]
+
+================================================================================
+## 23. ИМПОРТ ЗНАНИЙ (scripts/update_kb.py)
+================================================================================
+
+Скрипт для пакетного добавления понятий из внешних файлов.
+Запуск: python -m scripts.update_kb --input path [--format json|csv] [--force]
+
+----------------------------------------------------------------------
+23.1. Поддерживаемые форматы входных файлов
+----------------------------------------------------------------------
+
+ФОРМАТ JSON (рекомендуемый):
+  [
+    {
+      "term": "ключ торцевой",
+      "domain": "слесарный инструмент",
+      "parameters": [
+        {"name": "size_mm", "label_ru": "Размер (мм)", "type": "float",
+         "unit": "мм", "description": "Внутренний диаметр головки"},
+        {"name": "material", "label_ru": "Материал", "type": "string"}
+      ],
+      "relations": [
+        {"target_term": "ключ гаечный", "relation_type": "is_a", "confidence": 0.9}
+      ]
+    }
+  ]
+
+ФОРМАТ CSV (упрощённый, без отношений):
+  Заголовок: term,domain,param_name,param_label_ru,param_type,param_unit,param_description
+  Строки: "ключ торцевой","слесарный инструмент","size_mm","Размер (мм)","float","мм","..."
+  Несколько строк с одним term -> объединяются в одно понятие.
+
+----------------------------------------------------------------------
+23.2. Алгоритм импорта
+----------------------------------------------------------------------
+
+  1. Загрузить и распарсить входной файл.
+  2. Для каждого понятия:
+     а. Проверить обязательные поля: term (не пусто), domain.
+     б. Проверить параметры: name (snake_case), label_ru (не пусто), type (из списка).
+     в. Вызвать kb.save_concept(term, domain, parameters, relations).
+        save_concept вычислит эмбеддинг и сохранит в БД.
+     г. При ошибке одного понятия: логировать ERROR, продолжить следующее.
+  3. После всех: INFO "Импортировано N понятий, ошибок M".
+  4. Если use_faiss=True: запустить пересборку индекса.
+
+----------------------------------------------------------------------
+23.3. Валидация перед импортом
+----------------------------------------------------------------------
+
+  - term: не пустой после clean_text, длина <= max_term_length.
+  - domain: непустая строка.
+  - param.name: соответствует snake_case: re.match(r'^[a-z][a-z0-9_]*
+  - param.type: в ('string','integer','float','boolean','enum').
+  - Если type=enum и enum_values пусты: WARNING (enum без значений бессмысленен).
+  - Дубликаты term+domain: при --force перезаписать, без --force пропустить с WARNING.
+
+================================================================================
+## 24. СИСТЕМА ОБРАТНОЙ СВЯЗИ (FEEDBACK)
+================================================================================
+
+----------------------------------------------------------------------
+24.1. Таблица FEEDBACK в SQLite
+----------------------------------------------------------------------
+
+Создаётся в scripts/init_db.py вместе с остальными таблицами.
+
+  CREATE TABLE IF NOT EXISTS feedback (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id  TEXT,
+      concept_id  TEXT,           -- может быть NULL (если пользователь отказал)
+      term        TEXT NOT NULL,
+      rating      INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
+      comment     TEXT,
+      created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (concept_id) REFERENCES concepts(id) ON DELETE SET NULL
+  )
+
+  CREATE INDEX idx_feedback_term ON feedback(term);
+  CREATE INDEX idx_feedback_rating ON feedback(rating);
+
+----------------------------------------------------------------------
+24.2. API для записи обратной связи
+----------------------------------------------------------------------
+
+POST /feedback:
+  Тело: {session_id?, concept_id?, term, rating: 1-5, comment?}
+  term обязателен. concept_id -- если пользователь принял предложенные параметры.
+  rating: 1 = плохо, 3 = приемлемо, 5 = отлично.
+
+----------------------------------------------------------------------
+24.3. Как feedback влияет на будущие результаты
+----------------------------------------------------------------------
+
+Прямого обучения нет (нет дообучения модели в реальном времени).
+Обратная связь используется статистически:
+
+  1. Агрегация оценок: для каждого concept_id вычислить avg_rating.
+  2. Confidence коррекция: при поиске similarity кандидата умножается на
+     (1 + (avg_rating - 3) * Config.feedback_weight)
+     где feedback_weight = 0.1 (из конфига).
+     avg_rating=5 -> умножитель 1.2, avg_rating=1 -> умножитель 0.8.
+  3. Корректировка применяется ПОСЛЕ основного поиска (постфильтрация).
+
+Если у понятия < Config.feedback_min_votes (минимум 3 оценки) -- коррекция
+не применяется (статистически ненадёжно).
+
+Дополнительный параметр конфига:
+  use_feedback_correction  bool   false   включить коррекцию по feedback
+  feedback_weight          float  0.1     сила коррекции
+  feedback_min_votes       int    3       мин. число оценок для коррекции
+
+======================================================================
+## 25. ПРОИЗВОДИТЕЛЬНОСТЬ И ПРОФИЛИРОВАНИЕ
+================================================================================
+
+----------------------------------------------------------------------
+25.1. Скрипт профилирования (scripts/profile.py)
+----------------------------------------------------------------------
+
+Запуск: python -m scripts.profile [--n 10] [--terms path_to_json]
+
+Алгоритм:
+  1. Загрузить список тестовых запросов (из файла или использовать встроенные).
+  2. Инициализировать все компоненты через _init_components.
+  3. Для каждого запроса: запустить run_pipeline, замерить время.
+  4. Подсчитать: среднее время, p50, p95, p99.
+  5. Использовать cProfile для построчного анализа:
+     python -m cProfile -o logs/profile.prof -m scripts.profile
+  6. Сохранить отчёт: logs/profile_<timestamp>.txt
+
+Целевые показатели производительности:
+  - Предобработка (Шаг 1): < 5 мс
+  - Векторизация (Шаг 2): < 50 мс (первый запрос), < 1 мс (кэш-хит)
+  - Поиск numpy (Шаг 3): < 20 мс (1000 понятий), < 200 мс (10000 понятий)
+  - Поиск FAISS (Шаг 3): < 10 мс (100000 понятий)
+  - Агрегация (Шаг 4): < 10 мс
+  - Генерация (Шаг 4-бис): < 2000 мс (с таймаутом)
+  - Весь pipeline: < 300 мс (без генерации, кэш-промах)
+  - Весь pipeline: < 5 мс (полный кэш-хит)
+
+----------------------------------------------------------------------
+25.2. Декоратор замера времени
+----------------------------------------------------------------------
+
+В src/ создать вспомогательную утилиту timed:
+
+  def timed(func):
+      """Декоратор: логирует время выполнения функции на уровне DEBUG."""
+      def wrapper(*args, **kwargs):
+          start = time.perf_counter()
+          result = func(*args, **kwargs)
+          elapsed = (time.perf_counter() - start) * 1000
+          logging.getLogger(func.__module__).debug(
+              "%s завершена за %.2f мс", func.__name__, elapsed
+          )
+          return result
+      return wrapper
+
+Применять к: run_pipeline, preprocess, vectorize, search_similar, aggregate_parameters.
+
+----------------------------------------------------------------------
+25.3. Асинхронная обработка (для REST API)
+----------------------------------------------------------------------
+
+Так как fasttext и sqlite3 -- синхронные библиотеки:
+  Все вызовы run_pipeline из FastAPI-эндпоинтов выполнять через
+  asyncio.to_thread(run_pipeline, ...) или loop.run_in_executor(None, ...).
+  Это предотвращает блокировку event loop FastAPI.
+
+Потокобезопасность:
+  - Lemmatizer (pymorphy3.MorphAnalyzer): потокобезопасен для чтения.
+  - FastTextWrapper: потокобезопасен (только чтение модели).
+  - KnowledgeBase: SQLite соединение НЕ потокобезопасно.
+    Решение: создавать отдельное соединение для каждого потока.
+    Вариант 1: threading.local() для хранения соединения на поток.
+    Вариант 2: connection pool (sqlite3 check_same_thread=False + Lock).
+  - QueryVectorCache, SearchCache: защитить threading.Lock при параллельных записях.
+
+================================================================================
+## 26. СИСТЕМА МЕТРИК И МОНИТОРИНГ
+================================================================================
+
+----------------------------------------------------------------------
+26.1. Внутренние метрики (в памяти)
+----------------------------------------------------------------------
+
+Класс Metrics (src/metrics.py) собирает статистику за время жизни процесса:
+
+  requests_total          int     всего запросов обработано
+  requests_ok             int     успешных (status=ok)
+  requests_error          int     ошибочных (status=error)
+  requests_ambiguous      int     неоднозначных (status=ambiguous)
+  avg_pipeline_ms         float   среднее время pipeline (скользящее)
+  cache_hits_vector       int     хитов QueryVectorCache
+  cache_misses_vector     int
+  cache_hits_search       int     хитов SearchCache
+  generative_calls        int     сколько раз запускался Шаг 4-бис
+  generative_timeouts     int     таймаутов генерации
+  fallback_activations    int     активаций резервного режима
+
+Метод Metrics.record_request(status, elapsed_ms) -> None
+Метод Metrics.snapshot() -> dict   экспорт всех метрик в JSON-совместимый словарь
+
+----------------------------------------------------------------------
+26.2. Prometheus-метрики (опционально)
+----------------------------------------------------------------------
+
+Флаг конфига: use_metrics (bool, по умолчанию false).
+Библиотека: prometheus_client (опциональная, закомментирована в requirements).
+
+Экспортируемые метрики:
+  ai_terminator_requests_total{status="ok|error|ambiguous"} Counter
+  ai_terminator_pipeline_duration_seconds                   Histogram
+  ai_terminator_cache_hits_total{cache="vector|search"}     Counter
+  ai_terminator_fallback_total                              Counter
+  ai_terminator_generative_total                            Counter
+
+Эндпоинт: GET /metrics (текстовый формат Prometheus).
+Скрейпинг: Prometheus сервер подключается к /metrics каждые N секунд.
+
+----------------------------------------------------------------------
+26.3. Качество системы -- Precision@K
+----------------------------------------------------------------------
+
+Метрика Precision@5: из первых 5 предложенных параметров, сколько
+действительно релевантны для данного термина.
+
+Вычисление (скрипт scripts/evaluate.py):
+  1. Загрузить тестовый набор: JSON с парами {term, hints, expected_params}.
+  2. Для каждой пары запустить run_pipeline.
+  3. Взять первые 5 параметров из ответа.
+  4. Сравнить с expected_params (по полю name): count совпадений / 5.
+  5. Усреднить по всему набору.
+
+Целевое значение: Precision@5 >= 0.7 для релиза.
+
+Context Accuracy: процент запросов, где определён верный домен.
+Целевое значение: Context Accuracy >= 0.7.
+
+======================================================================
+## 27. ФОРМАТ ФАЙЛОВ КОНФИГУРАЦИИ
+================================================================================
+
+----------------------------------------------------------------------
+27.1. configs/domain_keywords.json
+----------------------------------------------------------------------
+
+Ключи -- названия доменов. Значения -- списки ключевых слов (леммы).
+Система выбирает домен с наибольшим числом совпадений с all_lemmas запроса.
+
+  {
+    "слесарный инструмент": [
+      "ключ", "инструмент", "гайка", "болт", "вращение",
+      "крепёж", "металл", "механизм", "резьба", "привод"
+    ],
+    "музыка": [
+      "нота", "тональность", "аккорд", "мелодия", "ритм",
+      "звук", "музыка", "клавиша", "инструмент", "партитура"
+    ],
+    "информатика": [
+      "данные", "алгоритм", "код", "программа", "функция",
+      "переменная", "массив", "шифр", "пароль", "доступ"
+    ],
+    "электротехника": [
+      "ток", "напряжение", "сопротивление", "цепь", "мощность",
+      "провод", "контакт", "реле", "трансформатор", "фаза"
+    ],
+    "general": []
+  }
+
+  "general" -- специальный домен-заглушка. Всегда доступен.
+  Конкурс доменов: если у "слесарный инструмент" 4 совпадения,
+  а у "музыка" 1 совпадение -- выбирается "слесарный инструмент".
+  Если совпадений нет ни у кого -- "general".
+
+----------------------------------------------------------------------
+27.2. configs/domain_templates.json
+----------------------------------------------------------------------
+
+Шаблоны параметров для каждого домена в резервном режиме.
+
+  {
+    "слесарный инструмент": [
+      {
+        "name": "material",
+        "label_ru": "Материал",
+        "type": "string",
+        "description": "Материал изготовления инструмента",
+        "unit": null,
+        "enum_values": null
+      },
+      {
+        "name": "size_mm",
+        "label_ru": "Размер (мм)",
+        "type": "float",
+        "description": "Ключевой размер инструмента",
+        "unit": "мм",
+        "enum_values": null
+      },
+      {
+        "name": "drive_type",
+        "label_ru": "Тип привода",
+        "type": "enum",
+        "description": "Способ приведения инструмента в действие",
+        "unit": null,
+        "enum_values": ["ручной", "механический", "электрический", "пневматический"]
+      }
+    ],
+    "музыка": [
+      {
+        "name": "music_type",
+        "label_ru": "Тип",
+        "type": "string",
+        "description": "Тип музыкального понятия",
+        "unit": null,
+        "enum_values": null
+      }
+    ],
+    "general": [
+      {
+        "name": "name",
+        "label_ru": "Наименование",
+        "type": "string",
+        "description": "Официальное наименование",
+        "unit": null,
+        "enum_values": null
+      },
+      {
+        "name": "description",
+        "label_ru": "Описание",
+        "type": "string",
+        "description": "Краткое описание понятия",
+        "unit": null,
+        "enum_values": null
+      },
+      {
+        "name": "category",
+        "label_ru": "Категория",
+        "type": "string",
+        "description": "Категория или тип понятия",
+        "unit": null,
+        "enum_values": null
+      }
+    ]
+  }
+
+----------------------------------------------------------------------
+27.3. Формат JSON-lines в логах
+----------------------------------------------------------------------
+
+Каждая строка лога -- валидный JSON-объект:
+  {"ts": "2026-06-13T19:52:31.123Z", "level": "INFO", "logger": "src.knowledge_base",
+   "msg": "Матрица эмбеддингов построена", "n_concepts": 42, "elapsed_ms": 12.4}
+
+  {"ts": ..., "level": "WARNING", "logger": "src.embeddings",
+   "msg": "FastText не загружен, используется fallback", "path": "models/cc.ru.300.bin"}
+
+  {"ts": ..., "level": "DEBUG", "logger": "src.cache",
+   "msg": "cache hit", "term": "ключ", "hints": ["техника"]}
+
+Поля всегда присутствуют: ts, level, logger, msg.
+Дополнительные поля -- зависят от контекста (elapsed_ms, term, path, n_concepts и т.д.).
+
+----------------------------------------------------------------------
+27.4. Валидация конфига при загрузке
+----------------------------------------------------------------------
+
+Config.from_json проверяет:
+  - Тип каждого поля (float там где float, bool там где bool).
+  - min_confidence в [0.0, 1.0]. Иначе: ValueError.
+  - max_candidates, max_parameters > 0.
+  - faiss_threshold >= matrix_search_min_concepts.
+  - Если use_faiss=True и faiss_index_path пуст: WARNING (индекс нужно построить).
+  - Если use_generative=True: проверить что transformers и torch установлены.
+    Если нет: WARNING (use_generative принудительно False).
+
+При любой ошибке в JSON (json.JSONDecodeError): ERROR + использовать дефолтный Config().
+
+================================================================================
+## 28. ПАКЕТНАЯ ОБРАБОТКА
+================================================================================
+
+----------------------------------------------------------------------
+28.1. API для пакетных запросов
+----------------------------------------------------------------------
+
+POST /process_batch
+  Тело: {
+    "requests": [
+      {"term": str, "hints": [str, ...], "session_id": str|null},
+      ...
+    ],
+    "debug": bool,
+    "max_batch_size": int
+  }
+  Ограничение: не более Config.max_batch_size запросов за раз (по умолчанию 10).
+  Ответ: {"results": [<стандартный ответ>, ...]}
+
+Обработка: каждый запрос в пакете обрабатывается независимо через run_pipeline.
+Если один запрос ошибочен -- остальные продолжают обрабатываться.
+
+----------------------------------------------------------------------
+28.2. Параметр конфига
+----------------------------------------------------------------------
+
+  max_batch_size  int  10   максимум запросов в одном batch
+
+================================================================================
+## 29. ЭКСПОРТ И ИМПОРТ БАЗЫ ЗНАНИЙ
+================================================================================
+
+----------------------------------------------------------------------
+29.1. Экспорт (scripts/export_kb.py)
+----------------------------------------------------------------------
+
+Запуск: python -m scripts.export_kb --output path.json [--format json|csv]
+
+Формат JSON (полный):
+  Экспортирует все таблицы concepts + parameters + relations.
+  Эмбеддинги исключаются (могут быть пересчитаны).
+  Формат совместим с update_kb.py для обратного импорта.
+
+----------------------------------------------------------------------
+29.2. Импорт (scripts/update_kb.py, уже описан в разделе 23)
+----------------------------------------------------------------------
+
+Позволяет вносить понятия из экспортированного файла другой инсталляции.
+При импорте concept_id генерируются заново (UUID), старые не сохраняются.
+
+================================================================================
+## 30. ПЕРСИСТЕНТНОЕ ХРАНЕНИЕ СЕССИЙ (опционально)
+================================================================================
+
+По умолчанию сессии хранятся в памяти (in-memory OrderedDict).
+При перезапуске сервера -- сессии теряются.
+
+Для персистентности: Config.session_storage = "sqlite" (по умолчанию "memory").
+
+Таблица SESSIONS в knowledge_base.db:
+  id           TEXT PRIMARY KEY          session_id (UUID)
+  term         TEXT NOT NULL
+  hints        TEXT                      JSON-список подсказок
+  domain       TEXT
+  history      TEXT                      JSON-список взаимодействий
+  created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+  updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+               ВАЖНО: DEFAULT работает только при INSERT.
+               При UPDATE нужно явно: SET updated_at = datetime('now') в update_session().
+               SQLite НЕ обновляет это поле автоматически.
+  expires_at   DATETIME                  created_at + ttl_seconds
+
+При get_session: проверить expires_at < NOW(). Если истекла -- удалить + None.
+cleanup_expired: DELETE WHERE expires_at < NOW().
+
+Дополнительный параметр конфига:
+  session_storage  str  "memory"   "memory" | "sqlite"
+
+================================================================================
+## 31. ПОЛНЫЙ СПИСОК ПАРАМЕТРОВ КОНФИГУРАЦИИ (дополнение к разделу 4)
+================================================================================
+
+Параметры добавленные в разделах 19-30:
+
+  ambiguity_threshold       float  0.15    порог разницы confidence для "ambiguous"
+  hints_coherence_threshold float  0.2     порог для детектирования несвязных hints
+  use_relations             bool   false   использовать граф отношений в поиске
+  relation_confidence_mult  float  0.7     снижение confidence для унаследованных параметров
+  use_feedback_correction   bool   false   коррекция результатов по feedback
+  feedback_weight           float  0.1     сила feedback-коррекции
+  feedback_min_votes        int    3       мин. число оценок для коррекции
+  use_metrics               bool   false   экспорт Prometheus метрик
+  max_batch_size            int    10      максимум запросов в batch
+, name).
+  - param.type: в ('string','integer','float','boolean','enum').
+================================================================================
+
+Параметры добавленные в разделах 19-30:
+
+  ambiguity_threshold       float  0.15    порог разницы confidence для "ambiguous"
+  hints_coherence_threshold float  0.2     порог для детектирования несвязных hints
+  use_relations             bool   false   использовать граф отношений в поиске
+  relation_confidence_mult  float  0.7     снижение confidence для унаследованных параметров
+  use_feedback_correction   bool   false   коррекция результатов по feedback
+  feedback_weight           float  0.1     сила feedback-коррекции
+  feedback_min_votes        int    3       мин. число оценок для коррекции
+  use_metrics               bool   false   экспорт Prometheus метрик
+  max_batch_size            int    10      максимум запросов в batch
+  session_storage           str    "memory" "memory" | "sqlite"
+
+================================================================================
+================================================================================
+## 32. ДОПОЛНЕНИЯ И УТОЧНЕНИЯ
+================================================================================
+
+----------------------------------------------------------------------
+32.1. Интеграция Metrics в run_pipeline (G-4)
+----------------------------------------------------------------------
+
+run_pipeline вызывает metrics в двух точках:
+  В начале: start_time = time.perf_counter()
+  Перед return (всегда, даже при error):
+    elapsed_ms = (time.perf_counter() - start_time) * 1000
+    metrics.record_request(status=result["status"], elapsed_ms=elapsed_ms)
+
+  record_request(status, elapsed_ms) -> None:
+    requests_total += 1
+    if status == "ok": requests_ok += 1 (и т.д.)
+    avg_pipeline_ms = 0.9 * avg_pipeline_ms + 0.1 * elapsed_ms  (EMA alpha=0.1)
+
+  cache_hits_vector: run_pipeline проверяет результат vector_cache.get():
+    if cached: metrics.cache_hits_vector += 1
+    else:      metrics.cache_misses_vector += 1
+
+  Metrics.snapshot() -> dict возвращает все счётчики:
+    {"requests_total", "requests_ok", "requests_error", "requests_ambiguous",
+     "avg_pipeline_ms", "cache_hits_vector", "cache_misses_vector",
+     "cache_hits_search", "generative_calls", "generative_timeouts",
+     "fallback_activations"}
+
+----------------------------------------------------------------------
+32.2. update_all_embeddings -- thread safety и поведение при ошибке (G-5)
+----------------------------------------------------------------------
+
+update_all_embeddings() -> int:
+  1. Получить все concept_id из БД.
+  2. Для каждого: compute_concept_embedding(term) -> UPDATE.
+     commit() после КАЖДОГО (partial save при прерывании, не rollback всего).
+     При ошибке одного: ERROR + continue.
+  3. В конце: инвалидировать _concepts_cache и _embeddings_matrix под _matrix_lock.
+  4. Вернуть количество успешно обновлённых.
+
+  Thread safety:
+    _matrix_lock захватывается ТОЛЬКО для инвалидации в конце (не на всё время).
+    Параллельные search_similar читают СТАРУЮ матрицу (eventual consistency).
+    SQLite: использует threading.local() соединение.
+
+----------------------------------------------------------------------
+32.3. run_api.py -- содержимое (G-6)
+----------------------------------------------------------------------
+
+  import uvicorn
+  from pathlib import Path
+  from src.config import Config
+
+  if __name__ == "__main__":
+      import argparse
+      parser = argparse.ArgumentParser()
+      parser.add_argument('--config', default='configs/config.json')
+      parser.add_argument('--reload', action='store_true')
+      parser.add_argument('--workers', type=int, default=1)
+      args = parser.parse_args()
+      cfg = Config.from_json(Path(args.config))
+      uvicorn.run("src.api:app", host=cfg.api_host, port=cfg.api_port,
+                  workers=args.workers, reload=args.reload)
+
+  ВАЖНО: при workers > 1 компоненты инициализируются в каждом worker
+  через FastAPI lifespan/startup event. Shared state невозможен.
+
+----------------------------------------------------------------------
+32.4. CSV update_kb.py -- одинаковый term, разные domain (G-7)
+----------------------------------------------------------------------
+
+Ключ понятия = (term, domain). Разные domain => разные понятия.
+"ключ","музыка" и "ключ","техника" -> два отдельных save_concept вызова.
+Одинаковый term+domain в нескольких строках -> параметры объединяются.
+
+----------------------------------------------------------------------
+32.5. export_kb.py -- CSV формат (G-8)
+----------------------------------------------------------------------
+
+Заголовок CSV:
+  concept_id,term,domain,param_name,param_label_ru,param_type,
+  param_unit,param_description,param_enum_values
+Одна строка на параметр. enum_values: JSON-строка в CSV-кавычках.
+Понятие без параметров: одна строка с пустыми param_* полями.
+
+----------------------------------------------------------------------
+32.6. evaluate.py -- формат тестового набора (G-9)
+----------------------------------------------------------------------
+
+Файл data/eval_dataset.json:
+  (данные хранятся в data/, не в tests/ который для Python-файлов)
+  [
+    {
+      "term": "ключ гаечный",
+      "hints": ["техника"],
+      "expected_domain": "слесарный инструмент",
+      "expected_params": ["material", "size_mm", "torque_nm"]
+    }
+  ]
+expected_params: список snake_case имён параметров (поле name в ответе).
+Precision@5: |первые_5 ∩ expected_params| / 5.
+
+----------------------------------------------------------------------
+32.7. build_synonyms.py -- алгоритм конвертации RuWordNet (G-15)
+----------------------------------------------------------------------
+
+Запуск: python -m scripts.build_synonyms [--output data/synonyms.json]
+pip install ruwordnet
+
+Алгоритм:
+  from ruwordnet import RuWordNet; wn = RuWordNet()
+  Для каждого synset: синонимы (weight=0.8), гиперонимы (weight=0.5).
+  Лемматизировать все слова через Lemmatizer().
+  Сохранить в формате раздела 8.3.
+URL: https://ruwordnet.ru/ | Лицензия: CC BY 4.0
+Альтернатива без RuWordNet: вручную заполнить synonyms.json для ключевых доменов.
+
+----------------------------------------------------------------------
+32.8. SearchCache -- использование _search_cache_lock (G-11)
+----------------------------------------------------------------------
+
+Чтение:
+  with self._search_cache_lock:
+      cached = self._search_cache.get(key)
+      if cached: self._search_cache.move_to_end(key)
+  Если cached и TTL не истёк: вернуть.
+
+Запись:
+  with self._search_cache_lock:
+      if len >= search_cache_size: self._search_cache.popitem(last=False)
+      self._search_cache[key] = (result, time.time())
+
+----------------------------------------------------------------------
+32.9. SessionManager.create_session -- коллизия UUID (G-13)
+----------------------------------------------------------------------
+
+При INSERT: использовать INSERT OR IGNORE.
+Если INSERT проигнорирован (коллизия UUID): сгенерировать новый UUID и повторить.
+Максимум 3 попытки. При неудаче: RuntimeError (практически невозможно).
+
+----------------------------------------------------------------------
+32.10. FAISS train() -- нехватка данных (G-14)
+----------------------------------------------------------------------
+
+При IndexIVFPQ: nlist = min(4096, max(64, int(N ** 0.5))).
+Минимум данных для train: nlist * 39 векторов.
+Если N < nlist * 39: автоматически уменьшить nlist:
+    nlist = max(1, N // 39)
+Если N < 256: использовать IndexFlatIP вместо IVF (данных мало, скорость несущественна).
+
+----------------------------------------------------------------------
+32.11. Мелкие исправления (M-1, M-6, M-7, M-8, M-10, M-11, M-12, M-13, M-14, M-15)
+----------------------------------------------------------------------
+
+M-1. Feedback: similarity = min(similarity * multiplier, 1.0).
+
+M-6. lemmatize_word: вместо max(parse, key=...) использовать parse[0]
+     (pymorphy3 возвращает список отсортированным по убыванию score).
+
+M-7. Хэш для param name:
+     "param_" + hashlib.md5(label_ru.encode()).hexdigest()[:8]
+     (ВМЕСТО hashlib.md5(label_ru.encode()).hexdigest()[:8]  # стабилен при PYTHONHASHSEED -- hash нестабилен между запусками).
+
+M-8. OpenCorpora: https://opencorpora.org/ | формат XML.
+     Альтернатива: слова из synonyms.json + domain_keywords.json достаточны.
+
+M-10. SynonymDict: при weight < 0 или weight > 1 -> WARNING + установить 0.5.
+
+M-11. Термин в сессии неизменяем. Смена термина = новая сессия.
+
+M-12. pymorphy3: thread-safe на практике (read-only словари), не гарантировано
+      официально. При проблемах: threading.local() для MorphAnalyzer.
+
+M-13. re.UNICODE -- дефолт Python 3. Флаг явно не нужен. \w включает кириллицу.
+
+M-14. hash(vector.tobytes()): нестабилен между процессами. Для in-memory кэша
+      безопасно. При персистентном кэше: hashlib.sha256(...).hexdigest()[:16].
+
+M-15. Декоратор timed: использовать try/finally для гарантированного логирования.
+
+M-2. domain=NULL в концептах: намеренно исключается при domain_filter.
+     При seed_data всегда задавать domain.
+
+M-4. При 100K концептов _concepts_cache занимает ~120 МБ.
+     Будущая оптимизация: отдельные матрицы по доменам + SQL WHERE domain.
+
+================================================================================
+КОНЕЦ ФАЙЛА -- описание_проекта_ФИНАЛ.txt | AI-Terminator | 13.06.2026
+================================================================================
+
