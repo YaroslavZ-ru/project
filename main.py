@@ -18,6 +18,8 @@ import logging
 import sys
 from pathlib import Path
 
+from src.config import Config
+
 # ---------------------------------------------------------------------------
 # Константы
 # ---------------------------------------------------------------------------
@@ -208,8 +210,13 @@ def main() -> None:
     args = parser.parse_args()
 
     # --- Загрузка конфига ---
-    # TODO изменение 5: заменить None на Config.from_json(PROJECT_ROOT)
-    cfg = None
+    try:
+        cfg = Config.from_json("configs/config.json", project_root=PROJECT_ROOT)
+        logger.info("Конфигурация загружена: log_level=%s", cfg.log_level)
+    except (FileNotFoundError, ValueError) as exc:
+        logger.error("Ошибка загрузки конфига: %s", exc)
+        print(json.dumps({"status": "error", "message": str(exc)}, ensure_ascii=False))
+        sys.exit(1)
 
     # --- Чтение входа ---
     try:
