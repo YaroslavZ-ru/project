@@ -4,6 +4,8 @@ PYTHON = python
 .PHONY: help setup test test-fast run api eval profile health
         build-fallback build-faiss build-synonyms build-centroids export-kb clean lint
         docker-build docker-run docker-stop
+        compose-up compose-down compose-dev compose-logs
+        pre-commit-install pre-commit-run pre-commit-update
 
 help:
 	@echo ""
@@ -18,6 +20,9 @@ help:
 	@echo "  make docker-build   -- сборка Docker-образа"
 	@echo "  make docker-run     -- запуск в Docker на порту 8000"
 	@echo "  make docker-stop    -- остановка контейнера"
+	@echo "  make compose-up     -- docker compose up -d"
+	@echo "  make compose-dev    -- запуск в режиме hot-reload"
+	@echo "  make pre-commit-install -- установка git-хуков"
 	@echo "  make profile        -- профилирование производительности"
 	@echo "  make build-fallback -- сборка fallback эмбеддингов"
 	@echo "  make build-faiss    -- сборка FAISS-индекса"
@@ -88,3 +93,27 @@ docker-run:
 
 docker-stop:
 	docker stop $$(docker ps -q --filter ancestor=ai-terminator) 2>/dev/null || true
+
+compose-up:
+	docker compose up -d
+
+compose-down:
+	docker compose down
+
+compose-dev:
+	docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+compose-logs:
+	docker compose logs -f api
+
+pre-commit-install:
+	pip install pre-commit
+	pre-commit install
+	pre-commit install --hook-type commit-msg
+	@echo "pre-commit установлен. Хуки активны."
+
+pre-commit-run:
+	pre-commit run --all-files
+
+pre-commit-update:
+	pre-commit autoupdate

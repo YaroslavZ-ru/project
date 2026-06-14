@@ -87,3 +87,6 @@ credentials.json
 # ============================================================
 .github/workflows/secrets.env
 .actrc
+
+# pre-commit кэш
+.pre-commit-cache/

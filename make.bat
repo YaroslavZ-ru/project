@@ -121,5 +121,31 @@ GOTO end
 FOR /F "tokens=*" %%i IN ('docker ps -q --filter ancestor=ai-terminator') DO docker stop %%i
 GOTO end
 
+:compose-up
+docker compose up -d
+GOTO end
+
+:compose-down
+docker compose down
+GOTO end
+
+:compose-dev
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+GOTO end
+
+:compose-logs
+docker compose logs -f api
+GOTO end
+
+:pre-commit-install
+pip install pre-commit
+pre-commit install
+echo pre-commit установлен.
+GOTO end
+
+:pre-commit-run
+pre-commit run --all-files
+GOTO end
+
 :end
 EXIT /B 0
