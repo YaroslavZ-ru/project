@@ -1,10 +1,12 @@
 import json
-import pytest
 from pathlib import Path
+
+import pytest
+
 from src.config import Config
 from src.lemmatizer import Lemmatizer
-from src.synonyms import SynonymDict
 from src.preprocess import preprocess_full
+from src.synonyms import SynonymDict
 
 PROJECT_ROOT = Path(__file__).parent.parent
 

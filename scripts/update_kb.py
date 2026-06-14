@@ -5,11 +5,12 @@
 Запуск: python -m scripts.update_kb --file <path>
 """
 
+import contextlib
 import csv
 import json
 import logging
-import sqlite3
 from pathlib import Path
+import sqlite3
 
 from src.config import Config
 from src.embeddings import FastTextWrapper
@@ -35,9 +36,7 @@ def validate_concept(concept: dict) -> list[str]:
     # id
     cid = concept.get("id")
     if not cid or not isinstance(cid, str) or cid != cid.strip():
-        errors.append(
-            "Поле 'id' обязательно, должно быть непустой строкой без пробелов по краям"
-        )
+        errors.append("Поле 'id' обязательно, должно быть непустой строкой без пробелов по краям")
 
     # term
     term = concept.get("term")
@@ -52,13 +51,9 @@ def validate_concept(concept: dict) -> list[str]:
         else:
             for i, p in enumerate(params):
                 if not p.get("name") or not str(p["name"]).strip():
-                    errors.append(
-                        f"Параметр [{i}]: 'name' обязателен и не должен быть пустым"
-                    )
+                    errors.append(f"Параметр [{i}]: 'name' обязателен и не должен быть пустым")
                 if not p.get("label_ru") or not str(p["label_ru"]).strip():
-                    errors.append(
-                        f"Параметр [{i}]: 'label_ru' обязателен и не должен быть пустым"
-                    )
+                    errors.append(f"Параметр [{i}]: 'label_ru' обязателен и не должен быть пустым")
                 ptype = p.get("type")
                 if ptype is not None and ptype not in _VALID_PARAM_TYPES:
                     errors.append(
@@ -93,9 +88,7 @@ def load_concepts_from_json(path: Path) -> list[dict]:
         return []
 
     if not isinstance(data, list):
-        logger.error(
-            "Корневой элемент JSON должен быть списком, получен %s", type(data).__name__
-        )
+        logger.error("Корневой элемент JSON должен быть списком, получен %s", type(data).__name__)
         return []
 
     return data
@@ -137,8 +130,7 @@ def load_concepts_from_csv(path: Path) -> list[dict]:
                             "name": param_name,
                             "label_ru": row.get("param_label_ru", "").strip(),
                             "type": row.get("param_type", "string").strip() or "string",
-                            "description": row.get("param_description", "").strip()
-                            or None,
+                            "description": row.get("param_description", "").strip() or None,
                             "unit": row.get("param_unit", "").strip() or None,
                             "enum_values": None,
                         }
@@ -171,9 +163,7 @@ def update_from_concepts(
     # Инициализация компонентов для эмбеддингов
     Lemmatizer(cache_size=config.cache_lemma_size)
     synonym_dict = SynonymDict(json_path=config.synonyms_path)
-    fallback_path = (
-        config.fallback_embeddings_path if config.fallback_embeddings_path else None
-    )
+    fallback_path = config.fallback_embeddings_path if config.fallback_embeddings_path else None
     embedding_model = FastTextWrapper(
         model_path=config.fasttext_model_path,
         fallback_path=fallback_path,
@@ -269,10 +259,8 @@ def update_from_concepts(
         # Сброс кэша концептов в KnowledgeBase
         if hasattr(kb, "_concepts_cache"):
             kb._concepts_cache = None
-        try:
+        with contextlib.suppress(Exception):
             kb.close()
-        except Exception:  # noqa: BLE001
-            pass
         conn.close()
 
     logger.info(
@@ -287,8 +275,8 @@ def update_from_concepts(
 
 if __name__ == "__main__":
     import argparse
-    import sys
     from pathlib import Path as _Path
+    import sys
 
     _root = _Path(__file__).parent.parent
     if str(_root) not in sys.path:
@@ -306,9 +294,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--file", required=True, help="Путь к файлу для импорта")
     parser.add_argument("--force", action="store_true", help="Обновлять существующие")
-    parser.add_argument(
-        "--config", default="configs/config.json", help="Путь к конфигу"
-    )
+    parser.add_argument("--config", default="configs/config.json", help="Путь к конфигу")
     args = parser.parse_args()
 
     from src.config import Config as _Config

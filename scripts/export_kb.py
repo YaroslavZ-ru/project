@@ -7,11 +7,12 @@
     python -m scripts.export_kb --output data/backup.json
 """
 
+import contextlib
 import json
 import logging
+from pathlib import Path
 import sqlite3
 import sys
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +35,7 @@ def export_kb(config, output_path: Path) -> dict:
         conn = sqlite3.connect(str(config.db_path))
         conn.row_factory = sqlite3.Row
 
-        concept_rows = conn.execute(
-            "SELECT id, term, domain FROM concepts ORDER BY id"
-        ).fetchall()
+        concept_rows = conn.execute("SELECT id, term, domain FROM concepts ORDER BY id").fetchall()
 
         concepts_list = []
         total_params = 0
@@ -53,10 +52,8 @@ def export_kb(config, output_path: Path) -> dict:
             for pr in param_rows:
                 enum_val = pr["enum_values"]
                 if enum_val:
-                    try:
+                    with contextlib.suppress(json.JSONDecodeError, TypeError):
                         enum_val = json.loads(enum_val)
-                    except (json.JSONDecodeError, TypeError):
-                        pass  # Оставить строкой если не JSON
                 else:
                     enum_val = None
 

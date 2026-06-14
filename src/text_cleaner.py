@@ -8,8 +8,8 @@
     clean_text('ключ - гаечный')                      # -> 'ключ гаечный'
 """
 
-import re
 import logging
+import re
 
 logger = logging.getLogger("ai_terminator.text_cleaner")
 

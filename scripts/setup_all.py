@@ -1,6 +1,6 @@
 import logging
-import sys
 from pathlib import Path
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -8,10 +8,10 @@ logger = logging.getLogger(__name__)
 def setup_all(config, force: bool = False) -> None:
     from scripts.init_db import init_db
     from scripts.seed_data import seed
-    from src.lemmatizer import Lemmatizer
-    from src.synonyms import SynonymDict
     from src.embeddings import FastTextWrapper
     from src.knowledge_base import KnowledgeBase
+    from src.lemmatizer import Lemmatizer
+    from src.synonyms import SynonymDict
 
     init_db(str(config.db_path))
     logger.info("Шаг 1/3: схема создана.")
@@ -22,9 +22,7 @@ def setup_all(config, force: bool = False) -> None:
     Lemmatizer(cache_size=config.cache_lemma_size)
     synonym_dict = SynonymDict(config.synonyms_path)
     fallback_path = (
-        Path(config.fallback_embeddings_path)
-        if config.fallback_embeddings_path
-        else None
+        Path(config.fallback_embeddings_path) if config.fallback_embeddings_path else None
     )
     embedding_model = FastTextWrapper(
         model_path=Path(config.fasttext_model_path),
@@ -40,8 +38,9 @@ if __name__ == "__main__":
     _root = Path(__file__).parent.parent
     if str(_root) not in sys.path:
         sys.path.insert(0, str(_root))
-    from src.config import Config
     import argparse
+
+    from src.config import Config
 
     logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser(description="Полная инициализация системы")

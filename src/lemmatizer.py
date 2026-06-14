@@ -73,7 +73,7 @@ class Lemmatizer:
             self._cache.popitem(last=False)
         self._cache[word] = lemma
         logger.debug("Лемматизация: %r -> %r", word, lemma)
-        return lemma
+        return str(lemma)
 
     def lemmatize_phrase(self, phrase: str) -> list[str]:
         """Разбить фразу на слова и лемматизировать каждое.
@@ -89,10 +89,4 @@ class Lemmatizer:
         if not phrase:
             return []
         phrase = phrase.replace("-", " ")
-        return [
-            lemma
-            for w in phrase.split()
-            if w
-            for lemma in [self.lemmatize_word(w)]
-            if lemma
-        ]
+        return [lemma for w in phrase.split() if w for lemma in [self.lemmatize_word(w)] if lemma]

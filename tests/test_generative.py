@@ -4,9 +4,9 @@
 Использует unittest.mock для подмены pipeline.
 """
 
-import sys
-from pathlib import Path
 from concurrent.futures import TimeoutError as FuturesTimeoutError
+from pathlib import Path
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -27,9 +27,7 @@ def cfg():
     c = Config.from_json(str(config_path), project_root=_ROOT)
     # Переопределяем поля для тестов
     object.__setattr__(c, "use_generative", True)
-    object.__setattr__(
-        c, "generative_keywords", ["материал", "размер", "тип", "форма", "цвет"]
-    )
+    object.__setattr__(c, "generative_keywords", ["материал", "размер", "тип", "форма", "цвет"])
     object.__setattr__(c, "generative_max_new_params", 5)
     object.__setattr__(c, "generative_timeout_seconds", 30.0)
     return c

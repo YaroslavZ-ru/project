@@ -4,10 +4,10 @@
 Использует только stdlib: logging, functools, time.
 """
 
+from collections.abc import Callable
 import functools
 import logging
 import time
-from collections.abc import Callable
 from typing import Any
 
 

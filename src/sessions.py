@@ -5,10 +5,10 @@
 -- TTL-кэш, потокобезопасный, авто-очистка по времени и по размеру
 """
 
+from dataclasses import dataclass
 import logging
 import threading
 import time
-from dataclasses import dataclass
 
 from src.config import Config
 
@@ -97,9 +97,7 @@ class SessionManager:
             term:       последний термин запроса.
         """
         if not session_id:
-            logger.warning(
-                "SessionManager.update_session: пустой session_id, игнорируем."
-            )
+            logger.warning("SessionManager.update_session: пустой session_id, игнорируем.")
             return
 
         with self._lock:
@@ -170,9 +168,7 @@ class SessionManager:
             Количество удалённых сессий.
         """
         now = time.monotonic()
-        expired = [
-            sid for sid, e in self._sessions.items() if now - e.updated_at > self._ttl
-        ]
+        expired = [sid for sid, e in self._sessions.items() if now - e.updated_at > self._ttl]
         for sid in expired:
             del self._sessions[sid]
         if expired:

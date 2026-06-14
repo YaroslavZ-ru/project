@@ -1,10 +1,12 @@
-import sqlite3
 from collections import deque
 import json
 import logging
-import time
-import numpy as np
 from pathlib import Path
+import sqlite3
+import time
+
+import numpy as np
+
 from src.lemmatizer import Lemmatizer
 
 logger = logging.getLogger(__name__)
@@ -39,14 +41,10 @@ class KnowledgeBase:
         try:
             vec = np.frombuffer(blob, dtype="<f4").copy()
         except ValueError:
-            self.logger.warning(
-                "Некорректный BLOB: %d байт (ожидалось 1200)", len(blob)
-            )
+            self.logger.warning("Некорректный BLOB: %d байт (ожидалось 1200)", len(blob))
             return np.zeros(300, dtype=np.float32)
         if len(vec) != 300:
-            self.logger.warning(
-                "Некорректный BLOB: %d байт (ожидалось 1200)", len(blob)
-            )
+            self.logger.warning("Некорректный BLOB: %d байт (ожидалось 1200)", len(blob))
             return np.zeros(300, dtype=np.float32)
         return vec
 
@@ -143,9 +141,7 @@ class KnowledgeBase:
         updated = 0
         for row in rows:
             blob = self._vector_to_blob(self.compute_concept_embedding(row["term"]))
-            self._conn.execute(
-                "UPDATE concepts SET embedding=? WHERE id=?", (blob, row["id"])
-            )
+            self._conn.execute("UPDATE concepts SET embedding=? WHERE id=?", (blob, row["id"]))
             updated += 1
         self._conn.commit()
         self._faiss_index = None
@@ -171,9 +167,7 @@ class KnowledgeBase:
             return {}
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            result = {
-                domain: np.array(vec, dtype=np.float32) for domain, vec in data.items()
-            }
+            result = {domain: np.array(vec, dtype=np.float32) for domain, vec in data.items()}
             self.logger.info("Загружено %d центроидов доменов", len(result))
             return result
         except Exception as exc:
@@ -277,9 +271,7 @@ class KnowledgeBase:
         extended = list(direct_results)
         seen_ids = {c["concept_id"] for c in extended if "concept_id" in c}
         for c in direct_results:
-            relations = self.get_concept_relations(
-                c.get("concept_id", ""), max_depth=max_depth
-            )
+            relations = self.get_concept_relations(c.get("concept_id", ""), max_depth=max_depth)
             for rel in relations:
                 rel_id = rel["concept_id"]
                 if rel_id in seen_ids:
@@ -400,9 +392,7 @@ class KnowledgeBase:
         results.sort(key=lambda x: x["similarity"], reverse=True)
         return results[:max_cand]
 
-    def search_similar_concepts(
-        self, query_vector, min_confidence=None, max_candidates=None
-    ):
+    def search_similar_concepts(self, query_vector, min_confidence=None, max_candidates=None):
         if min_confidence is None:
             min_confidence = self._config.min_confidence
         if max_candidates is None:
@@ -418,9 +408,8 @@ class KnowledgeBase:
             self.logger.warning("База пуста, поиск невозможен")
             return []
         if self._config.use_faiss and len(concepts) > self._config.faiss_threshold:
-            if self._faiss_index is None:
-                if not self._load_faiss_index_from_disk():
-                    self._build_faiss_index(concepts)
+            if self._faiss_index is None and not self._load_faiss_index_from_disk():
+                self._build_faiss_index(concepts)
             if self._faiss_index is not None:
                 D, indices = self._faiss_index["index"].search(
                     query_vector.reshape(1, -1), max_candidates
@@ -434,7 +423,7 @@ class KnowledgeBase:
                         "similarity": float(d),
                         "parameters": fc[idx]["parameters"],
                     }
-                    for d, idx in zip(D[0], indices[0])
+                    for d, idx in zip(D[0], indices[0], strict=False)
                     if idx != -1 and float(d) >= min_confidence
                 ]
             else:
@@ -442,17 +431,11 @@ class KnowledgeBase:
                     query_vector, concepts, min_confidence, max_candidates
                 )
         else:
-            results = self._linear_search(
-                query_vector, concepts, min_confidence, max_candidates
-            )
+            results = self._linear_search(query_vector, concepts, min_confidence, max_candidates)
         if len(results) < 3 and min_confidence > 0.2:
-            self.logger.info(
-                "Расширяем поиск: %d кандидатов -> порог 0.2", len(results)
-            )
+            self.logger.info("Расширяем поиск: %d кандидатов -> порог 0.2", len(results))
             results = self._linear_search(query_vector, concepts, 0.2, max_candidates)
-        self.logger.debug(
-            "search: %d кандидатов за %.3fс", len(results), time.monotonic() - t0
-        )
+        self.logger.debug("search: %d кандидатов за %.3fс", len(results), time.monotonic() - t0)
         if getattr(self._config, "use_relations", False) and results:
             results = self._search_with_relations(
                 query_vector, results, min_confidence, max_candidates

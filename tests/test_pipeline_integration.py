@@ -1,11 +1,13 @@
+from pathlib import Path
+
 import numpy as np
 import pytest
-from pathlib import Path
+
+from main import run_pipeline
+from src.cache import QueryVectorCache
 from src.config import Config
 from src.lemmatizer import Lemmatizer
 from src.synonyms import SynonymDict
-from src.cache import QueryVectorCache
-from main import run_pipeline
 
 PROJECT_ROOT = Path(__file__).parent.parent
 
@@ -93,14 +95,8 @@ def test_cache_hit(cfg, lm, syn, emb, vcache):
 
 
 def test_empty_term_error(cfg, lm, syn, emb, vcache):
-    assert (
-        run_pipeline("!!!", [], False, None, cfg, lm, syn, emb, vcache)["status"]
-        == "error"
-    )
+    assert run_pipeline("!!!", [], False, None, cfg, lm, syn, emb, vcache)["status"] == "error"
 
 
 def test_none_hints_ok(cfg, lm, syn, emb, vcache):
-    assert (
-        run_pipeline("ключ", None, False, None, cfg, lm, syn, emb, vcache)["status"]
-        == "ok"
-    )
+    assert run_pipeline("ключ", None, False, None, cfg, lm, syn, emb, vcache)["status"] == "ok"

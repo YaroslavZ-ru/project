@@ -1,5 +1,6 @@
-import logging
 from collections import OrderedDict
+import logging
+
 import numpy as np
 
 logger = logging.getLogger("ai_terminator.cache")

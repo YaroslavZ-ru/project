@@ -5,9 +5,10 @@
 Никогда не бросает исключений наружу -- все ошибки логируются.
 """
 
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 import logging
 import re
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 from src.config import Config
 from src.utils import safe_truncate
@@ -96,9 +97,7 @@ class GenerativeExpander:
         Returns:
             Готовый промпт, усечённый до 512 символов.
         """
-        params_str = ", ".join(
-            p.get("label_ru", p.get("name", "")) for p in existing_params
-        )
+        params_str = ", ".join(p.get("label_ru", p.get("name", "")) for p in existing_params)
         hints_str = ", ".join(hints) if hints else "нет"
         prompt = (
             f"Термин: {term}\n"
@@ -142,9 +141,7 @@ class GenerativeExpander:
         """
         # Берём подстроку после последнего ':'
         colon_pos = response_text.rfind(":")
-        text_to_parse = (
-            response_text[colon_pos + 1 :] if colon_pos >= 0 else response_text
-        )
+        text_to_parse = response_text[colon_pos + 1 :] if colon_pos >= 0 else response_text
 
         # Разбиваем по запятым, точке с запятой, переносам строк
         candidates_raw = re.split(r"[,;\n]", text_to_parse)
@@ -216,9 +213,7 @@ class GenerativeExpander:
             with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(self._pipe, prompt)
                 try:
-                    result = future.result(
-                        timeout=active_cfg.generative_timeout_seconds
-                    )
+                    result = future.result(timeout=active_cfg.generative_timeout_seconds)
                 except FuturesTimeoutError:
                     logger.warning(
                         "GenerativeExpander: таймаут (%ss)",

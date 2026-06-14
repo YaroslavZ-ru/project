@@ -1,7 +1,7 @@
-import sqlite3
 import logging
-import sys
 from pathlib import Path
+import sqlite3
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -64,9 +64,7 @@ def init_db(db_path: str) -> None:
     try:
         for stmt in ddl_statements:
             conn.execute(stmt)
-        conn.execute(
-            "INSERT OR IGNORE INTO metadata (key,value) VALUES ('schema_version','2')"
-        )
+        conn.execute("INSERT OR IGNORE INTO metadata (key,value) VALUES ('schema_version','2')")
         conn.commit()
     except sqlite3.Error as exc:
         logger.error("Ошибка создания схемы: %s", exc)
@@ -81,8 +79,9 @@ if __name__ == "__main__":
     _root = Path(__file__).parent.parent
     if str(_root) not in sys.path:
         sys.path.insert(0, str(_root))
-    from src.config import Config
     import argparse
+
+    from src.config import Config
 
     logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser(description="Создание схемы БД")

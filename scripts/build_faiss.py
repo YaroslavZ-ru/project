@@ -51,9 +51,7 @@ def build_faiss_index(config) -> dict:
         kb.close()
 
         if not concepts:
-            logger.error(
-                "База концептов пуста. Сначала выполните seed_data или update_kb."
-            )
+            logger.error("База концептов пуста. Сначала выполните seed_data или update_kb.")
             return {"error": "empty_database"}
 
         valid = [c for c in concepts if not np.all(c["embedding"] == 0)]
@@ -71,9 +69,7 @@ def build_faiss_index(config) -> dict:
         dim = matrix.shape[1]
         index = faiss.IndexFlatIP(dim)
         index.add(matrix)
-        logger.info(
-            "FAISS индекс построен: %d векторов, размерность %d", index.ntotal, dim
-        )
+        logger.info("FAISS индекс построен: %d векторов, размерность %d", index.ntotal, dim)
 
         id_map_path = output_path.with_suffix(".ids.json")
         id_map = [c["id"] for c in valid]
@@ -121,6 +117,4 @@ if __name__ == "__main__":
     if "error" in result:
         print(f"ERROR: {result['error']}", file=sys.stderr)
         sys.exit(1)
-    print(
-        f"FAISS индекс готов: {result['vectors_count']} векторов -> {result['index_path']}"
-    )
+    print(f"FAISS индекс готов: {result['vectors_count']} векторов -> {result['index_path']}")

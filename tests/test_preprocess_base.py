@@ -1,5 +1,7 @@
-import pytest
 from pathlib import Path
+
+import pytest
+
 from src.config import Config
 from src.lemmatizer import Lemmatizer
 from src.preprocess import preprocess_base

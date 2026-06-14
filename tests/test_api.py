@@ -4,17 +4,19 @@
 Если fastapi/httpx не установлены -- тесты скипаются автоматически.
 """
 
-import pytest
-from unittest.mock import MagicMock
 from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
 
 # Пропуск если fastapi/httpx недоступны
 fastapi_mod = pytest.importorskip("fastapi", reason="fastapi не установлен")
 httpx_mod = pytest.importorskip("httpx", reason="httpx не установлен")
 
 from fastapi.testclient import TestClient  # noqa: E402
-from src.metrics import MetricsCollector  # noqa: E402
+
 import src.api as api_module  # noqa: E402
+from src.metrics import MetricsCollector  # noqa: E402
 
 
 @pytest.fixture(scope="module")

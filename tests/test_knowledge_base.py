@@ -1,11 +1,13 @@
+from pathlib import Path
 import sqlite3
+
 import numpy as np
 import pytest
-from pathlib import Path
-from src.config import Config
-from src.lemmatizer import Lemmatizer
-from src.knowledge_base import KnowledgeBase
+
 from scripts.init_db import init_db
+from src.config import Config
+from src.knowledge_base import KnowledgeBase
+from src.lemmatizer import Lemmatizer
 
 PROJECT_ROOT = Path(__file__).parent.parent
 
@@ -44,9 +46,7 @@ def test_init_db_creates_tables(tmp_path):
     p = str(tmp_path / "t.db")
     init_db(p)
     conn = sqlite3.connect(p)
-    tables = {
-        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    }
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"concepts", "parameters", "relations", "metadata"} <= tables
     conn.close()
 
@@ -64,9 +64,7 @@ def test_schema_version(tmp_path):
     p = str(tmp_path / "t.db")
     init_db(p)
     conn = sqlite3.connect(p)
-    row = conn.execute(
-        "SELECT value FROM metadata WHERE key='schema_version'"
-    ).fetchone()
+    row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
     assert row[0] == "2"
     conn.close()
 
@@ -144,26 +142,24 @@ class MockEmbedding:
 
 def test_compute_embedding_norm(db_path, cfg):
     from dataclasses import replace
+
     from src.synonyms import SynonymDict
 
     cfg2 = replace(cfg, db_path=db_path)
     syn = SynonymDict(PROJECT_ROOT / "data" / "synonyms.json")
-    with KnowledgeBase(
-        config=cfg2, embedding_model=MockEmbedding(), synonym_dict=syn
-    ) as kb2:
+    with KnowledgeBase(config=cfg2, embedding_model=MockEmbedding(), synonym_dict=syn) as kb2:
         vec = kb2.compute_concept_embedding("ключ гаечный")
         assert abs(np.linalg.norm(vec) - 1.0) < 1e-4
 
 
 def test_compute_embedding_empty(db_path, cfg):
     from dataclasses import replace
+
     from src.synonyms import SynonymDict
 
     cfg2 = replace(cfg, db_path=db_path)
     syn = SynonymDict(PROJECT_ROOT / "data" / "synonyms.json")
-    with KnowledgeBase(
-        config=cfg2, embedding_model=MockEmbedding(), synonym_dict=syn
-    ) as kb2:
+    with KnowledgeBase(config=cfg2, embedding_model=MockEmbedding(), synonym_dict=syn) as kb2:
         vec = kb2.compute_concept_embedding("")
         assert np.all(vec == 0)
 
@@ -172,9 +168,8 @@ def test_compute_embedding_no_model(db_path, cfg):
     from dataclasses import replace
 
     cfg2 = replace(cfg, db_path=db_path)
-    with KnowledgeBase(config=cfg2) as kb2:
-        with pytest.raises(RuntimeError):
-            kb2.compute_concept_embedding("ключ")
+    with KnowledgeBase(config=cfg2) as kb2, pytest.raises(RuntimeError):
+        kb2.compute_concept_embedding("ключ")
 
 
 def test_search_similar_zero_vector(db_path, cfg):
@@ -220,8 +215,8 @@ def test_get_concept_relations_empty(cfg, db_path):
 
 def test_get_concept_relations_after_insert(cfg, db_path):
     """Отношение находится после вставки в БД."""
-    import sqlite3
     from dataclasses import replace
+    import sqlite3
 
     cfg2 = replace(cfg, db_path=db_path)
     emb = np.zeros(300, dtype=np.float32).tobytes()

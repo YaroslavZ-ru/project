@@ -8,12 +8,12 @@
 """
 
 import argparse
+from dataclasses import dataclass
 import json
 import logging
+from pathlib import Path
 import sys
 import time
-from dataclasses import dataclass
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -235,13 +235,13 @@ def print_report(results: list) -> None:
 
 
 if __name__ == "__main__":
-    import sys
     from pathlib import Path
+    import sys
 
     sys.path.insert(0, str(Path(__file__).parent.parent))
 
-    from src.config import Config
     from main import _init_components
+    from src.config import Config
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
 

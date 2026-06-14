@@ -103,14 +103,10 @@ def build_from_ruwordnet(output_path: Path, lemmatizer, max_synonyms: int = 10) 
                     synonyms_dict[word] = set()
                 synonyms_dict[word].update(s for s in senses_lemmas if s != word)
 
-        result = {
-            w: list(syns)[:max_synonyms] for w, syns in synonyms_dict.items() if syns
-        }
+        result = {w: list(syns)[:max_synonyms] for w, syns in synonyms_dict.items() if syns}
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(
-            json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
 
         avg_syns = sum(len(v) for v in result.values()) / max(1, len(result))
         logger.info("Словарь синонимов: %d слов, avg %.1f", len(result), avg_syns)
@@ -142,12 +138,8 @@ def build_minimal_fallback(output_path: Path) -> dict:
             json.dumps(_FALLBACK_SYNONYMS, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        logger.info(
-            "Минимальный словарь: %d слов -> %s", len(_FALLBACK_SYNONYMS), output_path
-        )
-        print(
-            f"Создан минимальный словарь: {len(_FALLBACK_SYNONYMS)} слов -> {output_path}"
-        )
+        logger.info("Минимальный словарь: %d слов -> %s", len(_FALLBACK_SYNONYMS), output_path)
+        print(f"Создан минимальный словарь: {len(_FALLBACK_SYNONYMS)} слов -> {output_path}")
         return {"words_count": len(_FALLBACK_SYNONYMS), "source": "fallback"}
     except Exception as exc:
         logger.error("Ошибка build_minimal_fallback: %s", exc)
@@ -167,9 +159,7 @@ if __name__ == "__main__":
     parser.add_argument("--config", default="configs/config.json")
     parser.add_argument("--output", default=None)
     parser.add_argument("--max-synonyms", type=int, default=10)
-    parser.add_argument(
-        "--fallback", action="store_true", help="Использовать встроенный словарь"
-    )
+    parser.add_argument("--fallback", action="store_true", help="Использовать встроенный словарь")
     args = parser.parse_args()
 
     try:

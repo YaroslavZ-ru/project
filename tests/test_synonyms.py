@@ -1,5 +1,7 @@
 import json
+
 import pytest
+
 from src.synonyms import SynonymDict
 
 

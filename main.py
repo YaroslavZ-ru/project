@@ -15,30 +15,30 @@ CURRENT STATE: run_pipeline полностью реализован (Измен�
 import argparse
 import json
 import logging
-import sys
-from pathlib import Path
-
 import os
+from pathlib import Path
+import sys
 import time
+
 import numpy as np
 
-from src.config import Config
-from src.lemmatizer import Lemmatizer
-from src.synonyms import SynonymDict
-from src.preprocess import preprocess
-from src.embeddings import FastTextWrapper
-from src.vectorize import vectorize
-from src.cache import QueryVectorCache
-from src.knowledge_base import KnowledgeBase
 from src.aggregation import (
     aggregate_parameters,
-    determine_context,
     detect_ambiguity,
+    determine_context,
     generate_clarification_questions,
 )
+from src.cache import QueryVectorCache
+from src.config import Config
+from src.embeddings import FastTextWrapper
 from src.fallback import fallback_response
 from src.generative import GenerativeExpander
+from src.knowledge_base import KnowledgeBase
+from src.lemmatizer import Lemmatizer
+from src.preprocess import preprocess
 from src.sessions import SessionManager
+from src.synonyms import SynonymDict
+from src.vectorize import vectorize
 
 # ---------------------------------------------------------------------------
 # Константы
@@ -219,9 +219,7 @@ def run_pipeline(
         saved_domain = session_manager.get_domain(session_id)
         if saved_domain:
             logger.debug("Использую домен из сессии %r: %s", session_id, saved_domain)
-    effective_min_confidence = (
-        min_confidence if min_confidence is not None else cfg.min_confidence
-    )
+    effective_min_confidence = min_confidence if min_confidence is not None else cfg.min_confidence
 
     # Шаг 1: предобработка
     processed = preprocess(term, hints, cfg, synonym_dict, lemmatizer)
@@ -259,9 +257,7 @@ def run_pipeline(
                 )
                 session_hint_domain = closest
             elif closest == session_hint_domain:
-                logger.debug(
-                    "Запрос %r подтверждает домен сессии %r", term, session_hint_domain
-                )
+                logger.debug("Запрос %r подтверждает домен сессии %r", term, session_hint_domain)
 
     # --- Шаг 3: Поиск кандидатов ---
     candidates: list = []
@@ -272,9 +268,7 @@ def run_pipeline(
             min_confidence=effective_min_confidence,
             max_candidates=cfg.max_candidates,
         )
-        logger.info(
-            "Поиск: %d кандидатов за %.3fс", len(candidates), time.monotonic() - t0
-        )
+        logger.info("Поиск: %d кандидатов за %.3fс", len(candidates), time.monotonic() - t0)
     elif kb is None:
         warnings_list.append("KnowledgeBase не инициализирован. Поиск пропущен.")
 
@@ -312,9 +306,7 @@ def run_pipeline(
         )
         needs_clarification: bool = ambiguity_info["is_ambiguous"]
         if needs_clarification:
-            clarification_questions = generate_clarification_questions(
-                ambiguity_info, term
-            )
+            clarification_questions = generate_clarification_questions(ambiguity_info, term)
             suggested_refinements = clarification_questions
             warnings_list.append(
                 f"Термин неоднозначен: возможны домены "
@@ -361,10 +353,11 @@ def run_pipeline(
     if session_manager and session_id:
         result_status = result.get("status", "")
         result_domain = result.get("selected_context", {}).get("domain")
-        if result_status == "ok" and cfg.auto_save_domain_on_ok and result_domain:
-            session_manager.update_session(session_id, result_domain, term)
-        elif (
-            result_status == "ok" and cfg.auto_save_domain_on_fallback and result_domain
+        if (
+            result_status == "ok"
+            and cfg.auto_save_domain_on_ok
+            and result_domain
+            or (result_status == "ok" and cfg.auto_save_domain_on_fallback and result_domain)
         ):
             session_manager.update_session(session_id, result_domain, term)
 
@@ -380,9 +373,7 @@ def run_pipeline(
 def _init_components(cfg):
     lemmatizer = Lemmatizer(cache_size=cfg.cache_lemma_size)
     synonym_dict = SynonymDict(json_path=cfg.synonyms_path)
-    fallback_path = (
-        cfg.fallback_embeddings_path if cfg.fallback_embeddings_path else None
-    )
+    fallback_path = cfg.fallback_embeddings_path if cfg.fallback_embeddings_path else None
     embedding_model = FastTextWrapper(
         model_path=cfg.fasttext_model_path,
         fallback_path=fallback_path,
@@ -450,9 +441,7 @@ def main() -> None:
             raw = sys.stdin.read()
 
         if not raw.strip():
-            raise ValueError(
-                "Входные данные пустые. Передайте JSON через --input или stdin."
-            )
+            raise ValueError("Входные данные пустые. Передайте JSON через --input или stdin.")
 
         parsed = parse_input(raw)
         (

@@ -1,5 +1,6 @@
 import logging
 import math
+
 import numpy as np
 
 logger = logging.getLogger("ai_terminator.vectorize")
@@ -20,9 +21,7 @@ def vectorize(processed_query, embedding_model, normalize=True):
             logger.warning("vectorize: NaN/Inf вес для %r, пропущен", token)
             continue
         if weight < 0:
-            logger.warning(
-                "vectorize: отрицательный вес %r для %r, пропущен", weight, token
-            )
+            logger.warning("vectorize: отрицательный вес %r для %r, пропущен", weight, token)
             continue
         vec = embedding_model.get_phrase_vector(token)
         if np.any(np.isnan(vec) | np.isinf(vec)):

@@ -8,24 +8,24 @@
 """
 
 import logging
-import time
 from pathlib import Path
+import time
 
 import numpy as np
 
-from src.config import Config
-from src.metrics import MetricsCollector
-from src.lemmatizer import Lemmatizer
-from src.synonyms import SynonymDict
-from src.embeddings import FastTextWrapper
-from src.cache import QueryVectorCache
-from src.knowledge_base import KnowledgeBase
-from src.generative import GenerativeExpander
-from src.sessions import SessionManager
-from src.preprocess import preprocess
-from src.vectorize import vectorize
 from src.aggregation import aggregate_parameters, determine_context
+from src.cache import QueryVectorCache
+from src.config import Config
+from src.embeddings import FastTextWrapper
 from src.fallback import fallback_response
+from src.generative import GenerativeExpander
+from src.knowledge_base import KnowledgeBase
+from src.lemmatizer import Lemmatizer
+from src.metrics import MetricsCollector
+from src.preprocess import preprocess
+from src.sessions import SessionManager
+from src.synonyms import SynonymDict
+from src.vectorize import vectorize
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 _FASTAPI_AVAILABLE = True
 try:
     from contextlib import asynccontextmanager
+
     from fastapi import FastAPI, HTTPException
     from fastapi.responses import JSONResponse, PlainTextResponse
     from pydantic import BaseModel, Field
@@ -66,17 +67,11 @@ if _FASTAPI_AVAILABLE:
     class QueryRequest(BaseModel):
         """Схема входящего запроса к API."""
 
-        term: str = Field(
-            ..., min_length=1, max_length=200, description="Термин для анализа"
-        )
-        hints: list[str] = Field(
-            default_factory=list, description="Уточняющие слова (до 3)"
-        )
+        term: str = Field(..., min_length=1, max_length=200, description="Термин для анализа")
+        hints: list[str] = Field(default_factory=list, description="Уточняющие слова (до 3)")
         session_id: str | None = Field(None, description="ID сессии (опционально)")
         debug: bool = Field(False, description="Включить debug_info в ответ")
-        min_confidence: float | None = Field(
-            None, ge=0.0, le=1.0, description="Порог уверенности"
-        )
+        min_confidence: float | None = Field(None, ge=0.0, le=1.0, description="Порог уверенности")
 
 
 # ---------------------------------------------------------------------------
@@ -100,18 +95,14 @@ def _api_init_components(cfg: Config) -> tuple:
     """
     lemmatizer = Lemmatizer(cache_size=cfg.cache_lemma_size)
     synonym_dict = SynonymDict(json_path=cfg.synonyms_path)
-    fallback_path = (
-        cfg.fallback_embeddings_path if cfg.fallback_embeddings_path else None
-    )
+    fallback_path = cfg.fallback_embeddings_path if cfg.fallback_embeddings_path else None
     embedding_model = FastTextWrapper(
         model_path=cfg.fasttext_model_path,
         fallback_path=fallback_path,
         cache_size=cfg.word_vector_cache_size,
     )
     vector_cache = QueryVectorCache(maxsize=cfg.query_cache_size)
-    kb = KnowledgeBase(
-        config=cfg, embedding_model=embedding_model, synonym_dict=synonym_dict
-    )
+    kb = KnowledgeBase(config=cfg, embedding_model=embedding_model, synonym_dict=synonym_dict)
     generative_expander = GenerativeExpander(config=cfg)
     session_manager = SessionManager(config=cfg)
     return (
@@ -219,9 +210,7 @@ def _api_run_pipeline(
         # Шаг 4: агрегация или fallback
         if candidates:
             hints_lemmas = processed.get("hints_lemmas", [])
-            parameters = aggregate_parameters(
-                candidates, hints_lemmas, cfg.max_parameters
-            )
+            parameters = aggregate_parameters(candidates, hints_lemmas, cfg.max_parameters)
             selected_context = determine_context(candidates)
             suggested_refinements: list = []
 
@@ -238,9 +227,7 @@ def _api_run_pipeline(
                     )
 
             if len(parameters) < 3:
-                warnings_list.append(
-                    "Найдено мало параметров. Рекомендуется уточнить запрос."
-                )
+                warnings_list.append("Найдено мало параметров. Рекомендуется уточнить запрос.")
 
             result = {
                 "status": "ok",
@@ -265,12 +252,11 @@ def _api_run_pipeline(
             sc = result.get("selected_context")
             if isinstance(sc, dict):
                 domain = sc.get("domain")
-            if result.get("status") == "ok" and cfg.auto_save_domain_on_ok and domain:
-                session_manager.update_session(session_id, domain, term)
-            elif (
+            if (
                 result.get("status") == "ok"
-                and cfg.auto_save_domain_on_fallback
+                and cfg.auto_save_domain_on_ok
                 and domain
+                or (result.get("status") == "ok" and cfg.auto_save_domain_on_fallback and domain)
             ):
                 session_manager.update_session(session_id, domain, term)
 
@@ -300,9 +286,9 @@ def _configure_api_logging(log_level: str, project_root) -> None:
         project_root: корень проекта.
     """
     import logging
-    import sys
-    from pathlib import Path
     from logging.handlers import RotatingFileHandler
+    from pathlib import Path
+    import sys
 
     FORMAT = "[%(asctime)s] %(levelname)s %(name)s: %(message)s"
     root_logger = logging.getLogger()
@@ -430,10 +416,10 @@ else:
                 metrics=_metrics,
             )
         except ValueError as exc:
-            raise HTTPException(400, detail=str(exc))
+            raise HTTPException(400, detail=str(exc)) from exc
         except Exception as exc:
             logger.exception("Необработанная ошибка в /query: %s", exc)
-            raise HTTPException(500, detail="Внутренняя ошибка сервера")
+            raise HTTPException(500, detail="Внутренняя ошибка сервера") from None
 
         return JSONResponse(result)
 
@@ -443,9 +429,7 @@ else:
         if _cfg is None:
             return JSONResponse({"status": "starting"})
 
-        model_loaded = bool(
-            _embedding_model is not None and _embedding_model._model_loaded
-        )
+        model_loaded = bool(_embedding_model is not None and _embedding_model._model_loaded)
         db_available = bool(_kb is not None and _kb._conn)
 
         return JSONResponse(
@@ -489,4 +473,4 @@ else:
             )
         except Exception as exc:
             logger.error("Ошибка в /kb/stats: %s", exc)
-            raise HTTPException(500, detail="Ошибка получения статистики БД")
+            raise HTTPException(500, detail="Ошибка получения статистики БД") from exc

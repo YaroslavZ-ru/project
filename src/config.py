@@ -8,9 +8,9 @@
     cfg = Config.from_json("configs/config.json", project_root=Path(__file__).parent.parent)
 """
 
+from dataclasses import dataclass
 import json
 import logging
-from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger("ai_terminator.config")
@@ -126,9 +126,7 @@ class Config:
         # 2. Преобразование обязательных _path-полей в abs Path
         for key in _AUTO_PATH_FIELDS:
             if key not in data:
-                raise ValueError(
-                    f"Обязательное поле отсутствует в config.json: {key!r}"
-                )
+                raise ValueError(f"Обязательное поле отсутствует в config.json: {key!r}")
             data[key] = (project_root / data[key]).resolve()
 
         # 3. fallback_embeddings_path: пустая строка = нет fallback
@@ -169,9 +167,7 @@ class Config:
         # min_confidence: float в [0.0, 1.0]
         v = data.get("min_confidence")
         if not isinstance(v, (int, float)) or not (0.0 <= float(v) <= 1.0):
-            raise ValueError(
-                f"Ошибка: min_confidence должен быть от 0 до 1, получено: {v!r}"
-            )
+            raise ValueError(f"Ошибка: min_confidence должен быть от 0 до 1, получено: {v!r}")
 
         # Положительные целые int > 0
         positive_ints = [
@@ -216,9 +212,7 @@ class Config:
 
         # use_generative: если true -- generative_model не пуста
         if data.get("use_generative") and not data.get("generative_model", "").strip():
-            raise ValueError(
-                "Генеративная модель не задана: заполните generative_model"
-            )
+            raise ValueError("Генеративная модель не задана: заполните generative_model")
 
         # generative_keywords: list[непустых str]
         kws = data.get("generative_keywords", [])
@@ -226,9 +220,7 @@ class Config:
             raise ValueError("generative_keywords должен быть списком")
         for i, kw in enumerate(kws):
             if not isinstance(kw, str) or not kw.strip():
-                raise ValueError(
-                    f"generative_keywords[{i}] должен быть непустой строкой"
-                )
+                raise ValueError(f"generative_keywords[{i}] должен быть непустой строкой")
 
         # generative_temperature: float в (0.0, 2.0]
         gt = data.get("generative_temperature")
@@ -248,9 +240,7 @@ class Config:
             if val is None:
                 continue  # опциональные, будет дефолт
             if not isinstance(val, (int, float)) or not (0.0 <= float(val) <= 1.0):
-                raise ValueError(
-                    f"{key!r} должно быть float в [0.0, 1.0], получено: {val!r}"
-                )
+                raise ValueError(f"{key!r} должно быть float в [0.0, 1.0], получено: {val!r}")
 
         # bool-поля
         for key in (
@@ -266,9 +256,7 @@ class Config:
             if val is None:
                 continue
             if not isinstance(val, bool):
-                raise ValueError(
-                    f"{key!r} должно быть true или false, получено: {val!r}"
-                )
+                raise ValueError(f"{key!r} должно быть true или false, получено: {val!r}")
 
         # api_host: непустая строка
         host = data.get("api_host")
@@ -277,14 +265,9 @@ class Config:
 
         # api_port: целое от 1 до 65535
         val = data.get("api_port")
-        if val is not None:
-            if not isinstance(val, int) or val <= 0 or val > 65535:
-                raise ValueError(
-                    f"api_port должен быть целым числом от 1 до 65535, получено: {val!r}"
-                )
-                raise ValueError(
-                    f"{key!r} должно быть true или false, получено: {val!r}"
-                )
+        if val is not None and (not isinstance(val, int) or val <= 0 or val > 65535):
+            raise ValueError(f"api_port должен быть целым числом от 1 до 65535, получено: {val!r}")
+            raise ValueError(f"{key!r} должно быть true или false, получено: {val!r}")
 
 
 # ---------------------------------------------------------------------------

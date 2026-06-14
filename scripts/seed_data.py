@@ -1,7 +1,7 @@
-import sqlite3
 import logging
-import sys
 from pathlib import Path
+import sqlite3
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -94,26 +94,22 @@ def seed(config, force: bool = False) -> None:
         conn.commit()
         logger.info("Таблицы очищены.")
 
-    from src.lemmatizer import Lemmatizer
-    from src.synonyms import SynonymDict
     from src.embeddings import FastTextWrapper
     from src.knowledge_base import KnowledgeBase
+    from src.lemmatizer import Lemmatizer
+    from src.synonyms import SynonymDict
 
     Lemmatizer(cache_size=config.cache_lemma_size)
     synonym_dict = SynonymDict(config.synonyms_path)
     fallback_path = (
-        Path(config.fallback_embeddings_path)
-        if config.fallback_embeddings_path
-        else None
+        Path(config.fallback_embeddings_path) if config.fallback_embeddings_path else None
     )
     embedding_model = FastTextWrapper(
         model_path=Path(config.fasttext_model_path),
         fallback_path=fallback_path,
         cache_size=config.word_vector_cache_size,
     )
-    kb = KnowledgeBase(
-        config=config, embedding_model=embedding_model, synonym_dict=synonym_dict
-    )
+    kb = KnowledgeBase(config=config, embedding_model=embedding_model, synonym_dict=synonym_dict)
 
     try:
         for concept in CONCEPTS_DATA:
@@ -149,8 +145,9 @@ if __name__ == "__main__":
     _root = Path(__file__).parent.parent
     if str(_root) not in sys.path:
         sys.path.insert(0, str(_root))
-    from src.config import Config
     import argparse
+
+    from src.config import Config
 
     logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser(description="Наполнение БД тестовыми данными")

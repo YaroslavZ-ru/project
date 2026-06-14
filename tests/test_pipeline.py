@@ -5,17 +5,16 @@ FastText заменяется мок-объектом с нулевыми век
 """
 
 import json
+from pathlib import Path
 import sqlite3
 import time
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
-from src.config import Config, reset_config
 from scripts.init_db import init_db
-
+from src.config import Config, reset_config
 
 # ---------------------------------------------------------------------------
 # Фикстуры
@@ -41,13 +40,7 @@ def tmp_project(tmp_path):
     synonyms_path.write_text("{}", encoding="utf-8")
     domain_templates_path.write_text(
         json.dumps(
-            {
-                "общее": {
-                    "parameters": [
-                        {"name": "type", "label_ru": "Тип", "type": "string"}
-                    ]
-                }
-            },
+            {"общее": {"parameters": [{"name": "type", "label_ru": "Тип", "type": "string"}]}},
             ensure_ascii=False,
         ),
         encoding="utf-8",
@@ -128,12 +121,12 @@ def mock_embedding_model():
 @pytest.fixture
 def pipeline_components(tmp_project, mock_embedding_model):
     """Создаёт полный набор компонентов с мок-моделью."""
-    from src.lemmatizer import Lemmatizer
-    from src.synonyms import SynonymDict
     from src.cache import QueryVectorCache
-    from src.knowledge_base import KnowledgeBase
     from src.generative import GenerativeExpander
+    from src.knowledge_base import KnowledgeBase
+    from src.lemmatizer import Lemmatizer
     from src.sessions import SessionManager
+    from src.synonyms import SynonymDict
 
     _, cfg = tmp_project
 
@@ -333,9 +326,7 @@ def test_pipeline_none_hints_handled(pipeline_components):
 def test_pipeline_returns_needs_clarification_field(pipeline_components):
     """Поле needs_clarification должно присутствовать в ответе."""
     result = call_pipeline(pipeline_components, "ключ")
-    assert "needs_clarification" in result, (
-        "Поле needs_clarification должно быть в ответе"
-    )
+    assert "needs_clarification" in result, "Поле needs_clarification должно быть в ответе"
     assert isinstance(result["needs_clarification"], bool)
 
 

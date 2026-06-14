@@ -1,8 +1,10 @@
 """tests/test_config.py -- тесты класса Config."""
 
 import json
-import pytest
 from pathlib import Path
+
+import pytest
+
 from src.config import Config
 
 PROJECT_ROOT = Path(__file__).parent.parent

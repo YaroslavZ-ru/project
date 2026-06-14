@@ -1,6 +1,7 @@
-import logging
 from collections import OrderedDict
+import logging
 from pathlib import Path
+
 import numpy as np
 
 logger = logging.getLogger("ai_terminator.embeddings")
@@ -24,9 +25,7 @@ class FastTextWrapper:
             return
         self._fallback_loaded = True
         if self._fallback_path is None or not self._fallback_path.exists():
-            logger.warning(
-                "Fallback-файл не задан или не найден: %s", self._fallback_path
-            )
+            logger.warning("Fallback-файл не задан или не найден: %s", self._fallback_path)
             return
         try:
             data = np.load(str(self._fallback_path), allow_pickle=True).item()
@@ -36,9 +35,7 @@ class FastTextWrapper:
             first_vec = next(iter(data.values()))
             self._dim = len(first_vec)
             self._fallback = data
-            logger.info(
-                "Fallback загружен: %d слов, размерность %d", len(data), self._dim
-            )
+            logger.info("Fallback загружен: %d слов, размерность %d", len(data), self._dim)
         except Exception as exc:
             logger.error("Ошибка загрузки fallback: %s", exc)
 
@@ -60,9 +57,7 @@ class FastTextWrapper:
             logger.error("Файл модели не найден: %s", self._model_path)
             self._load_fallback()
         if self._model is None and self._fallback is None:
-            logger.warning(
-                "Ни fastText, ни fallback не загружены. Все векторы будут нулевыми."
-            )
+            logger.warning("Ни fastText, ни fallback не загружены. Все векторы будут нулевыми.")
 
     def get_word_vector(self, word):
         word = word.lower().strip()

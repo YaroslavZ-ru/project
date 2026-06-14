@@ -7,8 +7,8 @@
 """
 
 import logging
-import sqlite3
 from pathlib import Path
+import sqlite3
 
 import numpy as np
 
@@ -147,8 +147,8 @@ def build_fallback(config: Config) -> dict:
 
 if __name__ == "__main__":
     import argparse
-    import sys
     from pathlib import Path as _Path
+    import sys
 
     _root = _Path(__file__).parent.parent
     if str(_root) not in sys.path:

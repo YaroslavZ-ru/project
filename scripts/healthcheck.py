@@ -8,12 +8,12 @@ exit code 1: есть ошибки.
 """
 
 import argparse
+from dataclasses import dataclass
 import json
 import logging
+from pathlib import Path
 import sqlite3
 import sys
-from dataclasses import dataclass
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +49,7 @@ def check_database(config) -> CheckResult:
     """Проверить доступность и содержимое БД СеSQLite."""
     db_path = Path(config.db_path)
     if not db_path.exists():
-        return CheckResult(
-            "База знаний (SQLite)", "FAIL", f"Файл БД не найден: {db_path}"
-        )
+        return CheckResult("База знаний (SQLite)", "FAIL", f"Файл БД не найден: {db_path}")
     try:
         conn = sqlite3.connect(str(db_path))
         n = conn.execute("SELECT COUNT(*) FROM concepts").fetchone()[0]
@@ -76,19 +74,14 @@ def check_fasttext(config) -> CheckResult:
         )
     try:
         import numpy as np
+
         from src.embeddings import FastTextWrapper
 
-        wrapper = FastTextWrapper(
-            model_path=str(model_path), fallback_path=None, cache_size=10
-        )
+        wrapper = FastTextWrapper(model_path=str(model_path), fallback_path=None, cache_size=10)
         vec = wrapper.get_word_vector("тест")
         if not np.all(vec == 0):
-            return CheckResult(
-                "FastText модель", "OK", f"Загружена, dim={wrapper.get_dimension()}"
-            )
-        return CheckResult(
-            "FastText модель", "WARN", "Модель загружена но вектор нулевой"
-        )
+            return CheckResult("FastText модель", "OK", f"Загружена, dim={wrapper.get_dimension()}")
+        return CheckResult("FastText модель", "WARN", "Модель загружена но вектор нулевой")
     except Exception as exc:
         return CheckResult("FastText модель", "FAIL", str(exc))
 
@@ -111,9 +104,7 @@ def check_fallback_embeddings(config) -> CheckResult:
         import numpy as np
 
         d = np.load(str(fb_path), allow_pickle=True).item()
-        return CheckResult(
-            "fallback_embeddings", "OK", f"{len(d)} слов в fallback-словаре"
-        )
+        return CheckResult("fallback_embeddings", "OK", f"{len(d)} слов в fallback-словаре")
     except Exception as exc:
         return CheckResult("fallback_embeddings", "FAIL", str(exc))
 
@@ -148,9 +139,7 @@ def check_domain_templates(config) -> CheckResult:
         if not p or not p.exists():
             return CheckResult(label, "FAIL", f"Файл не найден: {p}")
     try:
-        data = json.loads(
-            Path(config.domain_templates_path).read_text(encoding="utf-8")
-        )
+        data = json.loads(Path(config.domain_templates_path).read_text(encoding="utf-8"))
         n = len(data) if isinstance(data, (dict, list)) else 0
         return CheckResult("domain_templates.json", "OK", f"{n} доменов")
     except Exception as exc:
@@ -268,9 +257,7 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).parent.parent))
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
     parser = argparse.ArgumentParser(description="Диагностика AI-Terminator")
-    parser.add_argument(
-        "--config", default="configs/config.json", help="Путь к config.json"
-    )
+    parser.add_argument("--config", default="configs/config.json", help="Путь к config.json")
     parser.add_argument(
         "--strict",
         action="store_true",

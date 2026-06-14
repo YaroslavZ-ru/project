@@ -1,6 +1,8 @@
+import logging
+
 import numpy as np
 import pytest
-import logging
+
 from src.vectorize import vectorize
 
 
@@ -29,9 +31,7 @@ def test_single_no_normalize(mock):
 
 
 def test_two_tokens_normalized(mock):
-    r = vectorize(
-        {"tokens_with_weights": [("a", 0.7), ("b", 0.3)]}, mock, normalize=True
-    )
+    r = vectorize({"tokens_with_weights": [("a", 0.7), ("b", 0.3)]}, mock, normalize=True)
     assert r[0] == pytest.approx(0.919, abs=1e-3)
     assert r[1] == pytest.approx(0.394, abs=1e-3)
     assert np.linalg.norm(r) == pytest.approx(1.0, abs=1e-6)

@@ -10,9 +10,9 @@
 import argparse
 import json
 import logging
+from pathlib import Path
 import statistics
 import time
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +42,10 @@ def profile_pipeline(
     Returns:
         dict имя_шага -> {min_s, max_s, mean_s, calls}.
     """
-    from src.preprocess import preprocess
-    from src.vectorize import vectorize
     from src.aggregation import aggregate_parameters
     from src.fallback import fallback_response
+    from src.preprocess import preprocess
+    from src.vectorize import vectorize
 
     n_runs = max(1, n_runs)
     if not queries:
@@ -161,9 +161,7 @@ def print_profile_report(stats: dict, n_queries: int, n_runs: int) -> None:
         min_ms = s.get("min_s", 0.0) * 1000
         mean_ms = s.get("mean_s", 0.0) * 1000
         max_ms = s.get("max_s", 0.0) * 1000
-        print(
-            f"{name:<25} | {calls:>7} | {min_ms:>8.3f} | {mean_ms:>7.3f} | {max_ms:>9.3f}"
-        )
+        print(f"{name:<25} | {calls:>7} | {min_ms:>8.3f} | {mean_ms:>7.3f} | {max_ms:>9.3f}")
     print(sep)
     print("Примечание: vectorize включает кэш -- повторные запросы быстрее.")
     print(f"Запросов: {n_queries}, прогонов каждого: {n_runs}")
@@ -174,12 +172,10 @@ if __name__ == "__main__":
 
     sys.path.insert(0, str(Path(__file__).parent.parent))
 
-    from src.config import Config
     from main import _init_components
+    from src.config import Config
 
-    logging.basicConfig(
-        level=logging.WARNING, format="%(levelname)s %(name)s %(message)s"
-    )
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s %(message)s")
 
     parser = argparse.ArgumentParser(description="Профилирование AI-Terminator")
     parser.add_argument("--config", default="configs/config.json")

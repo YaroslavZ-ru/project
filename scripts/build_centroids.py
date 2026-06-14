@@ -9,8 +9,8 @@
 import argparse
 import json
 import logging
-import sys
 from pathlib import Path
+import sys
 
 import numpy as np
 
@@ -48,9 +48,7 @@ def build_domain_centroids(config) -> dict:
         centroids: dict[str, list] = {}
         for domain, vecs in groups.items():
             if len(vecs) < min_concepts:
-                logger.info(
-                    "Домен %r: только %d концептов — пропущен", domain, len(vecs)
-                )
+                logger.info("Домен %r: только %d концептов — пропущен", domain, len(vecs))
                 continue
             matrix = np.stack(vecs).astype(np.float64)
             centroid = matrix.mean(axis=0)
@@ -61,9 +59,7 @@ def build_domain_centroids(config) -> dict:
             logger.info("Центроид домена %r: %d концептов", domain, len(vecs))
 
         if not centroids:
-            logger.error(
-                "Нет доменов с достаточным числом концептов (мин %d)", min_concepts
-            )
+            logger.error("Нет доменов с достаточным числом концептов (мин %d)", min_concepts)
             return {"error": "no_domains_with_enough_concepts"}
 
         faiss_path_str = getattr(config, "domain_centroids_path", "")
@@ -71,9 +67,7 @@ def build_domain_centroids(config) -> dict:
             output_path = Path(faiss_path_str)
         else:
             output_path = Path(config.db_path).parent / "domain_centroids.json"
-            logger.warning(
-                "домен domain_centroids_path не задан, сохраняю в: %s", output_path
-            )
+            logger.warning("домен domain_centroids_path не задан, сохраняю в: %s", output_path)
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(

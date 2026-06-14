@@ -5,7 +5,6 @@
 
 import threading
 
-
 from src.metrics import MetricsCollector
 
 

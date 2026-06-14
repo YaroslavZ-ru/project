@@ -3,11 +3,10 @@
 Не требуют внешних зависимостей. Config мокируется простым объектом.
 """
 
+from pathlib import Path
 import sys
 import time
-from pathlib import Path
 from types import SimpleNamespace
-
 
 _ROOT = Path(__file__).parent.parent
 if str(_ROOT) not in sys.path:

@@ -46,13 +46,9 @@ class MetricsCollector:
         self._prometheus_on = use_metrics and _PROMETHEUS_AVAILABLE
 
         if use_metrics and not _PROMETHEUS_AVAILABLE:
-            logger.warning(
-                "prometheus_client не установлен. Метрики -- только внутренние."
-            )
+            logger.warning("prometheus_client не установлен. Метрики -- только внутренние.")
         elif not use_metrics:
-            logger.info(
-                "MetricsCollector: use_metrics=False. Внутренние счётчики активны."
-            )
+            logger.info("MetricsCollector: use_metrics=False. Внутренние счётчики активны.")
 
         # Внутренние счётчики -- активны всегда
         self._counts: dict[str, int] = {
@@ -111,9 +107,7 @@ class MetricsCollector:
             except Exception as exc:  # noqa: BLE001
                 logger.error("Ошибка Prometheus record_request: %s", exc)
 
-        logger.debug(
-            "metrics.record_request: status=%s, duration=%.3fs", status, duration_s
-        )
+        logger.debug("metrics.record_request: status=%s, duration=%.3fs", status, duration_s)
 
     def record_cache_hit(self) -> None:
         """Зафиксировать попадание в кэш векторов."""
@@ -162,7 +156,8 @@ class MetricsCollector:
         if not self._prometheus_on:
             return None
         try:
-            return generate_latest().decode("utf-8")
+            result: str = generate_latest().decode("utf-8")
+            return result
         except Exception as exc:  # noqa: BLE001
             logger.error("Ошибка generate_latest: %s", exc)
             return None

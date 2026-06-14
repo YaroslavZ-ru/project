@@ -1,4 +1,5 @@
 import logging
+
 from src.lemmatizer import Lemmatizer
 
 logger = logging.getLogger(__name__)
@@ -61,9 +62,7 @@ def aggregate_parameters(
         p["source"] = "knowledge_base"
         result.append(p)
 
-    logger.info(
-        "aggregate: %d кандидатов -> %d параметров", len(candidates), len(result)
-    )
+    logger.info("aggregate: %d кандидатов -> %d параметров", len(candidates), len(result))
     return result
 
 
@@ -125,9 +124,7 @@ def detect_ambiguity(
         domain_counts[d] = domain_counts.get(d, 0) + 1
 
     # Средний score по домену
-    avg_score: dict[str, float] = {
-        d: domain_scores[d] / domain_counts[d] for d in domain_scores
-    }
+    avg_score: dict[str, float] = {d: domain_scores[d] / domain_counts[d] for d in domain_scores}
 
     # Сортировка убыванием
     sorted_domains = sorted(avg_score.items(), key=lambda x: x[1], reverse=True)

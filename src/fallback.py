@@ -1,15 +1,18 @@
 import json
 import logging
 from pathlib import Path
+from typing import Any
+
 from src.config import Config
 from src.lemmatizer import Lemmatizer
 
 logger = logging.getLogger(__name__)
 
 
-def load_json_config(path) -> dict:
+def load_json_config(path: str | Path) -> dict[str, Any]:
     try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
     except FileNotFoundError:
         logger.warning("Файл не найден: %s", path)
         return {}
@@ -24,12 +27,10 @@ def detect_domain(all_lemmas: set, keywords_path) -> str:
         return "общее"
     domain_scores: dict = {}
     for domain, kws in keywords.items():
-        domain_scores[domain] = sum(
-            1 for kw in kws for lemma in all_lemmas if kw in lemma
-        )
+        domain_scores[domain] = sum(1 for kw in kws for lemma in all_lemmas if kw in lemma)
     if max(domain_scores.values()) == 0:
         return "общее"
-    return max(domain_scores, key=lambda k: domain_scores.get(k, 0))
+    return str(max(domain_scores, key=lambda k: domain_scores.get(k, 0)))
 
 
 def fallback_response(term: str, processed: dict, config: Config) -> dict:
@@ -51,9 +52,7 @@ def fallback_response(term: str, processed: dict, config: Config) -> dict:
         p["confidence"] = 0.3
         p["source"] = "template"
 
-    logger.warning(
-        "фаллбэк: '%s' не найден. Домен: '%s'. Шаблонов: %d.", term, domain, len(params)
-    )
+    logger.warning("фаллбэк: '%s' не найден. Домен: '%s'. Шаблонов: %d.", term, domain, len(params))
 
     return {
         "status": "ok",

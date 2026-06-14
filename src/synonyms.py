@@ -33,9 +33,7 @@ class SynonymDict:
             with open(path_str, encoding="utf-8") as f:
                 raw = json.load(f)
         except FileNotFoundError:
-            logger.warning(
-                "Файл синонимов не найден: %s. Работа без синонимов.", path_str
-            )
+            logger.warning("Файл синонимов не найден: %s. Работа без синонимов.", path_str)
             return
         except json.JSONDecodeError as exc:
             logger.error("Ошибка парсинга %s: %s. Работа без синонимов.", path_str, exc)

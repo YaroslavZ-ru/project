@@ -11,6 +11,7 @@
 """
 
 import logging
+
 from src.config import Config
 from src.lemmatizer import Lemmatizer
 from src.synonyms import SynonymDict
