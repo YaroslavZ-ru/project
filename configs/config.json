@@ -15,7 +15,23 @@
   "generative_max_new_params": 3,
   "generative_timeout_seconds": 15.0,
   "min_parameters_for_generative": 5,
-  "generative_keywords": ["материал","размер","тип","скорость","масса","форма","цвет","температура","давление","напряжение","длина","ширина","высота","плотность","мощность"],
+  "generative_keywords": [
+    "материал",
+    "размер",
+    "тип",
+    "скорость",
+    "масса",
+    "форма",
+    "цвет",
+    "температура",
+    "давление",
+    "напряжение",
+    "длина",
+    "ширина",
+    "высота",
+    "плотность",
+    "мощность"
+  ],
   "timeout_seconds": 5.0,
   "cache_embeddings": true,
   "log_level": "INFO",
@@ -45,5 +61,9 @@
   "use_metrics": false,
   "api_host": "127.0.0.1",
   "api_port": 8000,
-  "domain_centroids_path": ""
+  "domain_centroids_path": "",
+  "api_key_enabled": false,
+  "api_key": "",
+  "rate_limit_rpm": 60,
+  "environment": "development"
 }

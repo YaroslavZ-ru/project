@@ -60,12 +60,22 @@ if __name__ == "__main__":
         default="configs/config.json",
         help="Путь к файлу конфигурации",
     )
+    parser.add_argument(
+        "--env",
+        type=str,
+        default=None,
+        choices=["development", "production", "test"],
+        help="Окружение: development, production, test (использует configs/{env}.json override)",
+    )
     args = parser.parse_args()
 
     # Загрузка конфига для получения host/port
     project_root = Path(__file__).parent.parent
     try:
-        cfg = Config.from_json(args.config, project_root=project_root)
+        if args.env:
+            cfg = Config.for_environment(args.env, project_root=project_root)
+        else:
+            cfg = Config.from_json(args.config, project_root=project_root)
     except (FileNotFoundError, ValueError) as exc:
         print(f"Ошибка при загрузке конфига: {exc}")
         sys.exit(1)

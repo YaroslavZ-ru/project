@@ -1,0 +1,31 @@
+site_name: AI-Terminator
+site_description: "Интеллектуальный помощник по параметрам технических терминов"
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  language: ru
+  palette:
+    scheme: default
+    primary: indigo
+    accent: blue
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - search.highlight
+    - content.code.annotate
+
+nav:
+  - "Главная": index.md
+  - "REST API": api.md
+  - "Конфигурация": configuration.md
+  - "Скрипты": scripts.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - tables
+  - toc:
+      permalink: true

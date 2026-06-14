@@ -147,5 +147,13 @@ GOTO end
 pre-commit run --all-files
 GOTO end
 
+:docs-serve
+mkdocs serve
+GOTO end
+
+:docs-build
+mkdocs build
+GOTO end
+
 :end
 EXIT /B 0

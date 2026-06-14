@@ -6,6 +6,7 @@ PYTHON = python
         docker-build docker-run docker-stop
         compose-up compose-down compose-dev compose-logs
         pre-commit-install pre-commit-run pre-commit-update
+        docs-serve docs-build docs-deploy
 
 help:
 	@echo ""
@@ -117,3 +118,12 @@ pre-commit-run:
 
 pre-commit-update:
 	pre-commit autoupdate
+
+docs-serve:
+	mkdocs serve
+
+docs-build:
+	mkdocs build
+
+docs-deploy:
+	mkdocs gh-deploy

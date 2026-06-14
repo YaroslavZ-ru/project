@@ -1,0 +1,11 @@
+{
+  "environment": "development",
+  "api_host": "127.0.0.1",
+  "api_port": 8000,
+  "rate_limit_rpm": 0,
+  "api_key_enabled": false,
+  "use_metrics": false,
+  "use_generative": false,
+  "use_relations": false,
+  "min_confidence": 0.2
+}

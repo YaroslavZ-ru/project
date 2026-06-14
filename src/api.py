@@ -7,8 +7,11 @@
 При отсутствии fastapi -- app = None, ImportError при попытке запустить.
 """
 
+import asyncio
+from collections import deque
 import logging
 from pathlib import Path
+import secrets
 import time
 
 import numpy as np
@@ -37,9 +40,9 @@ _FASTAPI_AVAILABLE = True
 try:
     from contextlib import asynccontextmanager
 
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, HTTPException, Request
     from fastapi.responses import JSONResponse, PlainTextResponse
-    from pydantic import BaseModel, Field
+    from pydantic import BaseModel, ConfigDict, Field
 except ImportError:
     _FASTAPI_AVAILABLE = False
 
@@ -56,6 +59,7 @@ _kb = None
 _generative_expander = None
 _session_manager = None
 _metrics: MetricsCollector | None = None
+_rate_store: dict[str, deque] = {}  # IP -> deque временных меток
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +76,43 @@ if _FASTAPI_AVAILABLE:
         session_id: str | None = Field(None, description="ID сессии (опционально)")
         debug: bool = Field(False, description="Включить debug_info в ответ")
         min_confidence: float | None = Field(None, ge=0.0, le=1.0, description="Порог уверенности")
+
+    class ParameterModel(BaseModel):
+        name: str
+        label_ru: str
+        type: str
+        description: str | None = None
+        unit: str | None = None
+        enum_values: list[str] | None = None
+        confidence: float = 1.0
+
+    class SelectedContext(BaseModel):
+        domain: str | None = None
+        concept_id: str | None = None
+        term: str | None = None
+        similarity: float | None = None
+
+    class QueryResponse(BaseModel):
+        model_config = ConfigDict(extra="ignore")
+        status: str
+        term: str = ""
+        selected_context: SelectedContext = SelectedContext()
+        needs_clarification: bool = False
+        parameters: list[ParameterModel] = []
+        suggested_refinements: list[str] = []
+        warnings: list[str] = []
+        debug_info: dict | None = None
+
+    class HealthResponse(BaseModel):
+        status: str
+        version: str
+        model_loaded: bool = False
+        db_available: bool = False
+
+    class KBStatsResponse(BaseModel):
+        concepts_count: int
+        parameters_count: int
+        db_path: str
 
 
 # ---------------------------------------------------------------------------
@@ -379,69 +420,96 @@ else:
             except Exception as exc:
                 logger.warning("API: ошибка при закрытии KnowledgeBase: %s", exc)
 
+    # ------ вспомогательные функции защиты ------
+    def _check_rate_limit(ip: str, rpm: int) -> bool:
+        """True → запрос разрешён. False → превышен лимит."""
+        now = time.monotonic()
+        q = _rate_store.setdefault(ip, deque())
+        while q and now - q[0] > 60.0:
+            q.popleft()
+        if len(q) >= rpm:
+            return False
+        q.append(now)
+        return True
+
+    def _verify_api_key(request: Request) -> None:
+        if _cfg is None or _cfg.api_key_enabled is not True:
+            return
+        key = request.headers.get("X-API-Key", "")
+        if not key:
+            raise HTTPException(401, detail="Требуется заголовок X-API-Key")
+        if not secrets.compare_digest(key, _cfg.api_key):
+            logger.warning("Неверный API key IP=%s", request.client.host if request.client else "?")
+            raise HTTPException(403, detail="Неверный API key")
+
     app = FastAPI(
-        title="AI-Terminator",
-        description="Интеллектуальный помощник по терминам",
+        title="AI-Terminator API",
+        description="REST API для интеллектуального анализа терминов",
         version="1.0.0",
+        docs_url="/docs",
+        redoc_url="/redoc",
         lifespan=lifespan,
     )
 
-    @app.post("/query")
-    async def query(request: QueryRequest):
-        """Обработать запрос: термин + подсказки -> список параметров.
-
-        Ответ включает needs_clarification: bool --
-        True если термин неоднозначен.
-        """
+    @app.post("/v1/query", response_model=QueryResponse)
+    async def query(request: Request, body: QueryRequest) -> QueryResponse:
+        """Обработать запрос: термин + подсказки -> список параметров."""
+        _verify_api_key(request)
         if _cfg is None:
             raise HTTPException(503, detail="Сервис запускается. Попробуйте позже.")
-
-        hints = [h.strip() for h in request.hints if h.strip()][:3]
-
+        _rpm = getattr(_cfg, "rate_limit_rpm", 0)
+        if isinstance(_rpm, int) and _rpm > 0:
+            ip = request.client.host if request.client else "unknown"
+            if not _check_rate_limit(ip, _cfg.rate_limit_rpm):
+                raise HTTPException(429, detail="Слишком много запросов. Попробуйте позже.")
+        hints = [h.strip() for h in body.hints if h.strip()][:3]
         try:
-            result = _api_run_pipeline(
-                term=request.term,
-                hints=hints,
-                debug=request.debug,
-                min_confidence=request.min_confidence,
-                cfg=_cfg,
-                lemmatizer=_lemmatizer,
-                synonym_dict=_synonym_dict,
-                embedding_model=_embedding_model,
-                vector_cache=_vector_cache,
-                kb=_kb,
-                generative_expander=_generative_expander,
-                session_manager=_session_manager,
-                session_id=request.session_id,
-                metrics=_metrics,
+            result = await asyncio.to_thread(
+                _api_run_pipeline,
+                body.term,
+                hints,
+                body.debug,
+                body.min_confidence,
+                _cfg,
+                _lemmatizer,
+                _synonym_dict,
+                _embedding_model,
+                _vector_cache,
+                _kb,
+                _generative_expander,
+                _session_manager,
+                body.session_id,
+                _metrics,
             )
         except ValueError as exc:
             raise HTTPException(400, detail=str(exc)) from exc
         except Exception as exc:
-            logger.exception("Необработанная ошибка в /query: %s", exc)
+            logger.exception("Необработанная ошибка в /v1/query: %s", exc)
             raise HTTPException(500, detail="Внутренняя ошибка сервера") from None
+        return QueryResponse.model_validate(result)
 
-        return JSONResponse(result)
+    @app.post("/query", response_model=QueryResponse, include_in_schema=False)
+    async def query_legacy(request: Request, body: QueryRequest) -> QueryResponse:
+        return await query(request, body)
 
-    @app.get("/health")
-    async def health():
+    @app.get("/v1/health", response_model=HealthResponse)
+    async def health() -> HealthResponse:
         """Проверка готовности сервиса."""
         if _cfg is None:
-            return JSONResponse({"status": "starting"})
+            return HealthResponse(status="starting", version="1.0.0")
 
         model_loaded = bool(_embedding_model is not None and _embedding_model._model_loaded)
         db_available = bool(_kb is not None and _kb._conn)
 
-        return JSONResponse(
-            {
-                "status": "ok",
-                "version": "1.0.0",
-                "model_loaded": model_loaded,
-                "db_available": db_available,
-            }
+        return HealthResponse(
+            status="ok", version="1.0.0", model_loaded=model_loaded, db_available=db_available
         )
 
-    @app.get("/metrics")
+    @app.get("/health", response_model=HealthResponse, include_in_schema=False)
+    async def health_legacy() -> HealthResponse:
+        return await health()
+
+    @app.get("/v1/metrics", include_in_schema=False)
     async def metrics_endpoint():
         """Метрики сервиса в формате Prometheus text или JSON."""
         if _metrics is None:
@@ -455,7 +523,11 @@ else:
             )
         return JSONResponse(_metrics.get_summary())
 
-    @app.get("/kb/stats")
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics_legacy():
+        return await metrics_endpoint()
+
+    @app.get("/v1/kb/stats", response_model=KBStatsResponse)
     async def kb_stats():
         """Статистика базы знаний: количество концептов и параметров."""
         if _kb is None:
@@ -474,3 +546,7 @@ else:
         except Exception as exc:
             logger.error("Ошибка в /kb/stats: %s", exc)
             raise HTTPException(500, detail="Ошибка получения статистики БД") from exc
+    @app.get("/kb/stats", include_in_schema=False)
+    async def kb_stats_legacy():
+        return await kb_stats()
+

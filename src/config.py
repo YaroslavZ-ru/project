@@ -92,15 +92,27 @@ class Config:
     api_host: str = "127.0.0.1"
     api_port: int = 8000
     domain_centroids_path: str = ""
+    # --- Защита API (изм. 50) ---
+    api_key_enabled: bool = False
+    api_key: str = ""
+    rate_limit_rpm: int = 60
+    # --- Окружения (изм. 53) ---
+    environment: str = "development"
 
     # ------------------------------------------------------------------
     @classmethod
-    def from_json(cls, config_path: str | Path, project_root: Path) -> "Config":
+    def from_json(
+        cls,
+        config_path: str | Path,
+        project_root: Path | None = None,
+        override_path: str | Path | None = None,
+    ) -> "Config":
         """Загрузить, преобразовать пути и валидировать конфиг.
 
         Args:
-            config_path:  путь к configs/config.json (относительный или абсолютный).
-            project_root: корень проекта (папка, где лежит main.py).
+            config_path:   путь к configs/config.json.
+            project_root:  корень проекта (None = Path.cwd()).
+            override_path: путь к override-файлу (dev.json/prod.json), None = нет.
 
         Returns:
             Сконфигурированный экземпляр Config.
@@ -110,8 +122,11 @@ class Config:
             ValueError:       невалидный JSON или ошибка валидации.
         """
         config_path = Path(config_path)
+        _root = Path(project_root) if project_root is not None else Path.cwd()
         if not config_path.is_absolute():
-            config_path = (project_root / config_path).resolve()
+            config_path = (_root / config_path).resolve()
+        else:
+            _root = _root  # project_root остаётся
 
         # 1. Чтение файла
         if not config_path.exists():
@@ -123,28 +138,39 @@ class Config:
         except json.JSONDecodeError as exc:
             raise ValueError(f"Ошибка парсинга config.json: {exc}") from exc
 
+        # override: переопределить базовые поля из dev.json / prod.json
+        if override_path is not None:
+            op = Path(override_path)
+            if op.exists():
+                try:
+                    override_data: dict = json.loads(op.read_text(encoding="utf-8"))
+                    data.update(override_data)
+                    logger.info("Override-конфиг применён: %s", op)
+                except json.JSONDecodeError as exc:
+                    logger.warning("Ошибка парсинга override: %s", exc)
+
         # 2. Преобразование обязательных _path-полей в abs Path
         for key in _AUTO_PATH_FIELDS:
             if key not in data:
                 raise ValueError(f"Обязательное поле отсутствует в config.json: {key!r}")
-            data[key] = (project_root / data[key]).resolve()
+            data[key] = (_root / data[key]).resolve()
 
         # 3. fallback_embeddings_path: пустая строка = нет fallback
         fb = data.get("fallback_embeddings_path", "")
         if fb:
-            data["fallback_embeddings_path"] = str((project_root / fb).resolve())
+            data["fallback_embeddings_path"] = str((_root / fb).resolve())
         else:
             data["fallback_embeddings_path"] = ""
 
         # 4. faiss_index_path: аналогично
         fi = data.get("faiss_index_path", "")
-        data["faiss_index_path"] = str((project_root / fi).resolve()) if fi else ""
+        data["faiss_index_path"] = str((_root / fi).resolve()) if fi else ""
 
         # 5. Валидация
         cls._validate(data)
 
         # 6. Предупреждение если db_path.parent не существует
-        db_parent = data["db_path"].parent
+        db_parent = Path(data["db_path"]).parent
         if not db_parent.exists():
             logger.warning(
                 "Папка для БД не существует: %s. Запустите setup_project.py.",
@@ -268,6 +294,40 @@ class Config:
         if val is not None and (not isinstance(val, int) or val <= 0 or val > 65535):
             raise ValueError(f"api_port должен быть целым числом от 1 до 65535, получено: {val!r}")
             raise ValueError(f"{key!r} должно быть true или false, получено: {val!r}")
+
+        # rate_limit_rpm: int >= 0
+        rpm = data.get("rate_limit_rpm")
+        if rpm is not None and (not isinstance(rpm, int) or rpm < 0):
+            raise ValueError(f"rate_limit_rpm должен быть >= 0, получено: {rpm!r}")
+
+        # environment
+        env = data.get("environment", "development")
+        if env not in ("development", "production", "test"):
+            raise ValueError("environment должен быть: development | production | test")
+
+        if data.get("api_key_enabled") and not data.get("api_key", "").strip():
+            logger.warning("api_key_enabled=true, но api_key пустой. Задайте api_key.")
+
+    # ------------------------------------------------------------------
+    @classmethod
+    def for_environment(
+        cls,
+        env: str = "development",
+        project_root: Path | None = None,
+    ) -> "Config":
+        """Загрузить конфиг с override для окружения.
+
+        Базовый конфиг: configs/config.json.
+        Override: configs/{env}.json (если есть).
+        """
+        root = Path(project_root) if project_root else Path.cwd()
+        base = root / "configs" / "config.json"
+        override = root / "configs" / f"{env}.json"
+        return cls.from_json(
+            base,
+            project_root=root,
+            override_path=override if override.exists() else None,
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -420,11 +420,21 @@ def main() -> None:
         default=None,
         help="JSON-строка входных данных. Если не указано -- читать из stdin.",
     )
+    parser.add_argument(
+        "--env",
+        type=str,
+        default=None,
+        choices=["development", "production", "test"],
+        help="Окружение: development, production, test",
+    )
     args = parser.parse_args()
 
     # --- Загрузка конфига ---
     try:
-        cfg = Config.from_json("configs/config.json", project_root=PROJECT_ROOT)
+        if args.env:
+            cfg = Config.for_environment(args.env, project_root=PROJECT_ROOT)
+        else:
+            cfg = Config.from_json("configs/config.json", project_root=PROJECT_ROOT)
         logger.info("Конфигурация загружена: log_level=%s", cfg.log_level)
     except (FileNotFoundError, ValueError) as exc:
         logger.error("Ошибка загрузки конфига: %s", exc)

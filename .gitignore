@@ -90,3 +90,9 @@ credentials.json
 
 # pre-commit кэш
 .pre-commit-cache/
+
+# mkdocs
+site/
+
+# Локальные оврайды
+configs/prod.local.json

@@ -3,6 +3,7 @@ import json
 import logging
 from pathlib import Path
 import sqlite3
+import threading
 import time
 
 import numpy as np
@@ -19,7 +20,9 @@ class KnowledgeBase:
         self._embedding_model = embedding_model
         self._synonym_dict = synonym_dict
         self._lemmatizer = Lemmatizer(cache_size=config.cache_lemma_size)
-        self._conn = sqlite3.connect(str(self._db_path))
+        self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+        # check_same_thread=False + _db_lock обеспечивают безопасность при asyncio.to_thread()
+        self._db_lock = threading.Lock()
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._concepts_cache = None
