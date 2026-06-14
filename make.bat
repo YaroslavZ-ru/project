@@ -109,5 +109,17 @@ GOTO end
 echo Неизвестная цель: %1. Выполните make.bat help
 EXIT /B 1
 
+:docker-build
+docker build -t ai-terminator:latest .
+GOTO end
+
+:docker-run
+docker run -p 8000:8000 -v %CD%/models:/app/models -v %CD%/data:/app/data ai-terminator:latest
+GOTO end
+
+:docker-stop
+FOR /F "tokens=*" %%i IN ('docker ps -q --filter ancestor=ai-terminator') DO docker stop %%i
+GOTO end
+
 :end
 EXIT /B 0

@@ -1,0 +1,48 @@
+# ============================================================
+# .dockerignore -- что НЕ попадает в Docker-образ
+# ============================================================
+
+# Виртуальные окружения и кэш Python
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Git
+.git/
+.gitignore
+.github/
+
+# Большие файлы (монтируются как volumes)
+models/
+data/knowledge_base.db
+data/fallback_embeddings.npy
+data/faiss.index
+
+# Документация и конфиги разработки
+docs/
+*.md
+Makefile
+make.bat
+.pre-commit-config.yaml
+pyproject.toml
+
+# Логи
+logs/
+
+# Планы и доп материалы
+AI/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Сборочные артефакты
+dist/
+build/
+*.egg-info/

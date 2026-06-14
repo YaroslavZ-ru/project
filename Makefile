@@ -3,6 +3,7 @@ PYTHON = python
 # Цели не являются файлами
 .PHONY: help setup test test-fast run api eval profile health
         build-fallback build-faiss build-synonyms build-centroids export-kb clean lint
+        docker-build docker-run docker-stop
 
 help:
 	@echo ""
@@ -14,6 +15,9 @@ help:
 	@echo "  make api            -- запуск REST API"
 	@echo "  make health         -- диагностика компонентов"
 	@echo "  make eval           -- оценка качества пайплайна"
+	@echo "  make docker-build   -- сборка Docker-образа"
+	@echo "  make docker-run     -- запуск в Docker на порту 8000"
+	@echo "  make docker-stop    -- остановка контейнера"
 	@echo "  make profile        -- профилирование производительности"
 	@echo "  make build-fallback -- сборка fallback эмбеддингов"
 	@echo "  make build-faiss    -- сборка FAISS-индекса"
@@ -73,3 +77,14 @@ clean:
 lint:
 	$(PYTHON) -m py_compile src/*.py scripts/*.py
 
+docker-build:
+	docker build -t ai-terminator:latest .
+
+docker-run:
+	docker run -p 8000:8000 \
+	    -v $(PWD)/models:/app/models \
+	    -v $(PWD)/data:/app/data \
+	    ai-terminator:latest
+
+docker-stop:
+	docker stop $$(docker ps -q --filter ancestor=ai-terminator) 2>/dev/null || true
