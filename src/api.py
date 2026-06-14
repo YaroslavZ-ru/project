@@ -39,11 +39,11 @@ logger = logging.getLogger(__name__)
 _FASTAPI_AVAILABLE = True
 try:
     from contextlib import asynccontextmanager
+    from typing import cast as _cast
 
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.responses import JSONResponse, PlainTextResponse
     from pydantic import BaseModel, ConfigDict, Field
-    from typing import cast as _cast
 except ImportError:
     _FASTAPI_AVAILABLE = False
 
@@ -487,7 +487,8 @@ else:
         except Exception as exc:
             logger.exception("Необработанная ошибка в /v1/query: %s", exc)
             raise HTTPException(500, detail="Внутренняя ошибка сервера") from None
-        return QueryResponse.model_validate(result)
+        result_dict: dict = result  # помощь mypy: asyncio.to_thread -> dict
+        return QueryResponse.model_validate(result_dict)
 
     @app.post("/query", response_model=QueryResponse, include_in_schema=False)
     async def query_legacy(request: Request, body: QueryRequest) -> QueryResponse:
