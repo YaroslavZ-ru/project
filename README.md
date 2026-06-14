@@ -1,244 +1,120 @@
 # AI-Terminator
 
-Интеллектуальная система для генерации параметров, характеристик и ограничений для терминов базы знаний.
-Принимает термин и уточняющие слова, возвращает JSON со списком параметров для его формального описания.
+Интеллектуальный помощник: по введённому термину и уточняющим словам
+генерирует набор параметров для формального описания термина в базе знаний.
 
----
+## Назначение
 
-## Требования
+AI-Terminator анализирует термины русского языка и возвращает параметры.
+Например: `term="ключ"`, `hints=["техника"]` -- система определит контекст
+(слесарный инструмент) и предложит параметры: `size_mm`, `material`, `torque_nm`.
+Использует FastText-векторы, SQLite и гибкий пайплайн агрегации параметров.
 
-- Python 3.10 или выше
+## Быстрый старт
 
----
+### 1. Клонировать и настроить
 
-## Установка
-
-### 1. Клонировать репозиторий
-
-```
-git clone https://github.com/your-org/project.git
+```bash
+git clone <repo-url>
 cd project
-```
-
-### 2. Создать структуру папок
-
-```
 python setup_project.py
-```
-
-### 3. Создать виртуальное окружение
-
-```
-python -m venv venv
-```
-
-Активация:
-
-```
-# Windows (PowerShell)
-.\venv\Scripts\Activate.ps1
-
-# Windows (CMD)
-venv\Scripts\activate.bat
-
-# Linux / macOS
-source venv/bin/activate
-```
-
-### 4. Установить зависимости
-
-```
 pip install -r requirements.txt
 ```
 
-> **Важно для Windows:** `fasttext` требует Microsoft C++ Build Tools.
-> Скачать: https://visualstudio.microsoft.com/visual-cpp-build-tools/
-> После установки: `pip install fasttext-wheel>=0.9.2`
+### 2. Скачать FastText модель
 
-### 5. Инициализировать базу данных
-
-```
-python scripts/setup_all.py
+```bash
+# Скачать cc.ru.300.bin (~8 ГБ) с https://fasttext.cc/docs/en/crawl-vectors.html
+# Поместить в models/cc.ru.300.bin
 ```
 
-Создаёт схему SQLite, заполняет понятиями и пересчитывает эмбеддинги.
-При перезапуске добавьте флаг `--force`:
+### 3. Инициализировать БД
 
-```
-python scripts/setup_all.py --force
+```bash
+python -m scripts.setup_all
 ```
 
----
+### 4. Запустить
+
+```bash
+# CLI:
+python main.py --input '{''"term":"ключ","hints":["техника"]}'
+
+# REST API:
+pip install fastapi uvicorn httpx
+python -m scripts.run_api
+```
 
 ## Структура проекта
 
 ```
 project/
-|-- main.py                       точка входа: читает JSON, запускает пайплайн, выводит JSON
-|-- setup_project.py              создаёт структуру папок на новой машине
-|-- requirements.txt              зависимости проекта
-|-- src/
-|   |-- __init__.py
-|   |-- config.py                 загрузка и валидация config.json
-|   |-- text_cleaner.py           очистка входных строк перед лемматизацией
-|   |-- lemmatizer.py             синглтон-лемматизатор (pymorphy3) с LRU-кэшем
-|   |-- synonyms.py               словарь синонимов с весами релевантности
-|   |-- preprocess.py             полный пайплайн предобработки с весами токенов
-|   |-- embeddings.py             обёртка fastText: ленивая загрузка, LRU, fallback
-|   |-- vectorize.py              векторизация запроса по формуле ТЗ + L2-нормализация
-|   |-- cache.py                  LRU-кэш векторов запросов
-|   |-- knowledge_base.py         доступ к SQLite-базе: поиск, эмбеддинги, FAISS
-|   |-- aggregation.py            ранжирование параметров, определение домена
-|   +-- fallback.py               фоллбэк на шаблоны при пустом поиске
-|-- configs/
-|   |-- config.json               все настройки системы
-|   |-- domain_keywords.json      ключевые слова доменов для fallback-определения
-|   +-- domain_templates.json     шаблоны параметров по доменам
-|-- scripts/
-|   |-- __init__.py
-|   |-- init_db.py                создаёт схему SQLite (идемпотентно)
-|   |-- seed_data.py              заполняет БД начальными понятиями
-|   +-- setup_all.py              init_db + seed_data + пересчёт эмбеддингов
-|-- tests/
-|   |-- __init__.py
-|   |-- test_config.py
-|   |-- test_lemmatizer.py
-|   |-- test_synonyms.py
-|   |-- test_text_cleaner.py
-|   |-- test_preprocess_base.py
-|   |-- test_preprocess_full.py
-|   |-- test_embeddings.py
-|   |-- test_vectorize.py
-|   |-- test_cache.py
-|   |-- test_pipeline_integration.py
-|   |-- test_knowledge_base.py
-|   |-- test_aggregation.py
-|   +-- test_fallback.py
-|-- data/
-|   |-- knowledge_base.db        SQLite-база знаний (в git не хранится)
-|   +-- synonyms.json             словарь синонимов с весами релевантности
-|-- models/                       fastText-модель (~8 ГБ, в git не хранится)
-+-- logs/                         автогенерируемые логи (в git не хранятся)
+├── src/
+│   ├── config.py, text_cleaner.py, lemmatizer.py, synonyms.py
+│   ├── preprocess.py, embeddings.py, vectorize.py, cache.py
+│   ├── knowledge_base.py, aggregation.py, fallback.py, utils.py
+│   └── generative.py, sessions.py, metrics.py, api.py  (17 модулей)
+├── scripts/
+│   ├── init_db.py, seed_data.py, setup_all.py, update_kb.py
+│   ├── build_fallback.py, run_api.py, export_kb.py
+│   └── evaluate.py, profile.py, build_faiss.py, build_synonyms.py  (11 скриптов)
+├── tests/                 -- 17 тестовых файлов
+├── configs/config.json, domain_templates.json, domain_keywords.json
+├── data/knowledge_base.db, synonyms.json, eval_dataset.json
+└── models/cc.ru.300.bin  (скачать отдельно)
 ```
 
----
+## Конфигурация
 
-## Запуск
+Файл: `configs/config.json`
 
-Через stdin:
-
-```
-echo {"term": "ключ"} | python main.py
-```
-
-Через аргумент:
-
-```
-python main.py --input {"term": "ключ", "hints": ["техника"]}
-```
-
----
-
-## Формат входа
-
-```json
-{
-  "term": "ключ",
-  "hints": ["техника", "вращение"],
-  "debug": false,
-  "min_confidence": 0.3
-}
-```
-
-| Поле | Тип | Обязательное | Описание |
+| Поле | Тип | Дефолт | Описание |
 |---|---|---|---|
-| term | строка | да | Анализируемый термин |
-| hints | список строк | нет | Уточняющие слова. По умолчанию: [] |
-| debug | bool | нет | Добавить debug_info в ответ. По умолчанию: false |
-| min_confidence | число | нет | Порог поиска 0.0-1.0. По умолчанию: 0.3 |
+| `min_confidence` | float | 0.3 | Порог сходства |
+| `max_parameters` | int | 20 | Макс. параметров |
+| `max_candidates` | int | 10 | Макс. кандидатов |
+| `use_generative` | bool | false | Включить LLM |
+| `use_faiss` | bool | false | FAISS-индекс |
+| `use_metrics` | bool | false | Prometheus-метрики |
+| `api_host` | str | 127.0.0.1 | Хост REST API |
+| `api_port` | int | 8000 | Порт REST API |
+| `session_ttl_seconds` | int | 1800 | TTL сессии (сек.) |
+| `cache_lemma_size` | int | 5000 | Кэш лемм |
 
----
+## Скрипты
 
-## Формат выхода
-
-Успешный ответ:
-
-```json
-{
-  "status": "ok",
-  "term": "ключ",
-  "selected_context": {
-    "domain": "слесарный инструмент",
-    "confidence": 0.85
-  },
-  "parameters": [
-    {
-      "name": "material",
-      "label_ru": "Материал",
-      "type": "string",
-      "description": "Материал изготовления",
-      "confidence": 1.0,
-      "source": "knowledge_base"
-    }
-  ],
-  "suggested_refinements": [],
-  "warnings": []
-}
+```bash
+python -m scripts.setup_all              # заполнение БД
+python -m scripts.update_kb --file ...   # импорт JSON/CSV
+python -m scripts.evaluate               # Precision@5
+python -m scripts.profile                # профилирование
+python -m scripts.build_faiss            # FAISS-индекс
+python -m scripts.build_synonyms         # словарь синонимов
+python -m scripts.export_kb              # экспорт БД
+python -m scripts.run_api                # REST API
 ```
 
-| Поле | Описание |
-|---|---|
-| status | ok или error |
-| term | Термин из входа |
-| selected_context | Определённый домен и его достоверность |
-| parameters | Список параметров с полями name, label_ru, type, description, confidence, source |
-| suggested_refinements | Уточняющие вопросы если термин неоднозначен |
-| warnings | Предупреждения |
+## REST API
 
-Ответ с `debug: true` дополнительно содержит `debug_info`:
+| Метод | Путь | Описание |
+|---|---|---|
+| POST | `/query` | Анализ термина |
+| GET | `/health` | Статус сервера |
+| GET | `/metrics` | Prometheus/JSON |
+| GET | `/kb/stats` | Статистика БД |
 
-| Поле debug_info | Описание |
-|---|---|
-| query_vector | Нормализованный вектор запроса (300 float) |
-| candidates_raw | Сравненные понятия из БД с оценками сходства |
-| scores_distribution | Достоверность каждого параметра в итоговом ответе |
-
-Ответ при ошибке:
-
-```json
-{
-  "status": "error",
-  "message": "Текст ошибки"
-}
+```bash
+curl -X POST http://localhost:8000/query -H "Content-Type: application/json" -d '{}'
 ```
 
----
+## Тестирование
 
-## Тесты
-
-```
+```bash
 python -m pytest tests/ -v
 ```
 
----
+## Требования
 
-## Текущий статус реализации
-
-Система выполняет полный пайплайн обработки запроса.
-
-**Шаг 1** (работает): очистка, лемматизация, расширение синонимами, веса токенов
-(0.7 термин / 0.3 подсказки / 0.1 синонимы).
-
-**Шаг 2** (работает): взвешенная сумма векторов fastText + L2-нормализация, LRU-кэш вектора запроса.
-Если fastText недоступна: fallback через .npy-файл, затем нулевый вектор + warning в ответе.
-
-**Шаг 3** (работает): косинусный поиск в SQLite-базе знаний с авторасширением порога до 0.2
-при нехватке кандидатов. Опциональный FAISS при более 10 000 понятий.
-
-**Шаг 4** (работает): агрегация параметров по формуле
-0.6×freq + 0.3×avg_sim + 0.1×hint_match. Определение домена.
-Фоллбэк на шаблоны доменов при пустом поиске (confidence=0.3, source="template").
-
-**Шаг 5** (работает): формирование итогового JSON-ответа.
-
-87 автотестов, все проходят.
+- Python 3.10+
+- FastText `cc.ru.300.bin` (~8 ГБ, скачать отдельно)
+- Опц.: `faiss-cpu`, `fastapi`, `uvicorn`, `prometheus_client`, `ruwordnet`

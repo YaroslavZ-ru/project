@@ -143,6 +143,39 @@ class KnowledgeBase:
         self.logger.info("Пересчитано эмбеддингов: %d", updated)
         return updated
 
+    def _load_faiss_index_from_disk(self) -> bool:
+        """Загрузить FAISS-индекс с диска (если задан faiss_index_path).
+
+        Returns:
+            True если индекс успешно загружен, False иначе.
+        """
+        faiss_path_str = getattr(self._config, "faiss_index_path", "")
+        if not faiss_path_str:
+            return False
+        try:
+            import faiss
+        except ImportError:
+            return False
+        try:
+            index_path = Path(faiss_path_str)
+            id_map_path = index_path.with_suffix(".ids.json")
+            if not index_path.exists() or not id_map_path.exists():
+                self.logger.warning(
+                    "FAISS: index or id map not found: %s", index_path
+                )
+                return False
+            index = faiss.read_index(str(index_path))
+            id_map = json.loads(id_map_path.read_text(encoding="utf-8"))
+            concepts = self.get_all_concepts(use_cache=True)
+            concepts_by_id = {c["id"]: c for c in concepts}
+            ordered = [concepts_by_id[cid] for cid in id_map if cid in concepts_by_id]
+            self._faiss_index = {"index": index, "concepts": ordered}
+            self.logger.info("FAISS index loaded from disk: %d vectors", index.ntotal)
+            return True
+        except Exception as exc:
+            self.logger.error("Error loading FAISS from disk: %s", exc)
+            return False
+
     def _build_faiss_index(self, concepts):
         try:
             import faiss
@@ -187,7 +220,8 @@ class KnowledgeBase:
             return []
         if self._config.use_faiss and len(concepts) > self._config.faiss_threshold:
             if self._faiss_index is None:
-                self._build_faiss_index(concepts)
+                if not self._load_faiss_index_from_disk():
+                    self._build_faiss_index(concepts)
             if self._faiss_index is not None:
                 D, I = self._faiss_index["index"].search(
                     query_vector.reshape(1, -1), max_candidates

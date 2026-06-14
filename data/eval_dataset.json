@@ -1,0 +1,66 @@
+[
+  {
+    "id": "eval_001",
+    "term": "ключ гаечный",
+    "hints": [
+      "техника",
+      "вращение"
+    ],
+    "expected_domain": "слесарный инструмент",
+    "expected_params": [
+      "size_mm",
+      "material",
+      "torque_nm"
+    ]
+  },
+  {
+    "id": "eval_002",
+    "term": "ключ разводной",
+    "hints": [
+      "инструмент"
+    ],
+    "expected_domain": "слесарный инструмент",
+    "expected_params": [
+      "size_range_mm",
+      "material"
+    ]
+  },
+  {
+    "id": "eval_003",
+    "term": "ключ скрипичный",
+    "hints": [
+      "музыка"
+    ],
+    "expected_domain": "музыка",
+    "expected_params": [
+      "clef_type",
+      "staff_position"
+    ]
+  },
+  {
+    "id": "eval_004",
+    "term": "ключ",
+    "hints": [],
+    "expected_domain": null,
+    "expected_params": []
+  },
+  {
+    "id": "eval_005",
+    "term": "болт",
+    "hints": [
+      "крепёж"
+    ],
+    "expected_domain": null,
+    "expected_params": []
+  },
+  {
+    "id": "eval_006",
+    "term": "гайка",
+    "hints": [
+      "металл",
+      "резьба"
+    ],
+    "expected_domain": null,
+    "expected_params": []
+  }
+]

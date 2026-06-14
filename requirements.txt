@@ -1,16 +1,14 @@
-﻿# AI-Terminator -- зависимости проекта
-# Установка: pip install -r requirements.txt
+# AI-Terminator -- зависимости проекта
+# Установка базовых зависимостей: pip install -r requirements.txt
+# Установка всех зависимостей:    pip install -r requirements.txt -r requirements-optional.txt
+
+# ============================================================
+# ОБЯЗАТЕЛЬНЫЕ ЗАВИСИМОСТИ
+# ============================================================
 
 # Морфологический анализ русского языка
-pymorphy3>=1.0.0
-pymorphy3-dicts-ru>=2.4.417150
-
-# fastText-модель для векторных представлений слов
-# ВНИМАНИЕ: требует компилятор C++ (Microsoft Visual C++ Build Tools).
-# Установить отдельно ПОСЛЕ установки Build Tools:
-#   pip install fasttext-wheel>=0.9.2
-# Скачать Build Tools: https://visualstudio.microsoft.com/visual-cpp-build-tools/
-# fasttext-wheel>=0.9.2   # <- раскомментировать после установки Build Tools
+pymorphy3>=2.0.0
+pymorphy3-dicts-ru>=2.4.0
 
 # Векторные вычисления
 numpy>=1.24.0
@@ -18,10 +16,36 @@ numpy>=1.24.0
 # Тестирование
 pytest>=7.0.0
 
-# --- ОТКЛЮЧЕНО (будет включаться по мере развития проекта) ---
-# faiss-cpu>=1.7.0           # быстрый поиск по векторам (изм.17)
-# transformers>=4.30.0       # генеративный модуль (изм.21+)
-# torch>=2.0.0               # бэкенд для transformers (изм.21+)
-# transliterate>=1.10.2      # транслитерация (если потребуется)
-# fastapi>=0.100.0           # REST API (если потребуется)
-# uvicorn>=0.23.0            # ASGI-сервер для FastAPI (если потребуется)
+# ============================================================
+# FastText (ОБЯЗАТЕЛЬНА для векторизации)
+# ============================================================
+# На Linux/macOS:
+#   pip install fasttext>=0.9.2
+# На Windows (без компилятора C++):
+#   pip install fasttext-wheel>=0.9.2
+# Выберите одну из двух строк и раскомментируйте:
+# fasttext>=0.9.2
+# fasttext-wheel>=0.9.2
+
+# ============================================================
+# ОПЦИОНАЛЬНЫЕ ЗАВИСИМОСТИ
+# ============================================================
+# Раскомментировать нужное:
+
+# FAISS -- быстрый поиск (use_faiss=true в config.json)
+# faiss-cpu>=1.7.0
+
+# Генеративный модуль (use_generative=true в config.json)
+# transformers>=4.30.0
+# torch>=2.0.0
+
+# REST API
+# fastapi>=0.100.0
+# uvicorn>=0.23.0
+# httpx>=0.24.0       (нужен для тестов API через TestClient)
+
+# Prometheus-метрики (use_metrics=true в config.json)
+# prometheus_client>=0.17.0
+
+# Словарь синонимов из RuWordNet
+# ruwordnet>=1.0.0
