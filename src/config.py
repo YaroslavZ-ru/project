@@ -88,6 +88,9 @@ class Config:
     relation_max_depth: int = 1
     relation_decay_factor: float = 0.5
     domain_centroids_min_concepts: int = 2
+    use_metrics: bool = False
+    api_host: str = "127.0.0.1"
+    api_port: int = 8000
 
     # ------------------------------------------------------------------
     @classmethod
@@ -226,6 +229,7 @@ class Config:
         for key in (
             "use_synonyms", "cache_embeddings", "use_faiss",
             "auto_save_domain_on_ok", "auto_save_domain_on_fallback", "use_relations",
+            "use_metrics",
         ):
             val = data.get(key)
             if val is None:
@@ -233,6 +237,19 @@ class Config:
             if not isinstance(val, bool):
                 raise ValueError(f"{key!r} должно быть true или false, получено: {val!r}")
 
+        # api_host: непустая строка
+        host = data.get("api_host")
+        if host is not None and (not isinstance(host, str) or not host.strip()):
+            raise ValueError("api_host должен быть непустой строкой")
+
+        # api_port: целое от 1 до 65535
+        val = data.get("api_port")
+        if val is not None:
+            if not isinstance(val, int) or val <= 0 or val > 65535:
+                raise ValueError(
+                    f"api_port должен быть целым числом от 1 до 65535, получено: {val!r}"
+                )
+                raise ValueError(f"{key!r} должно быть true или false, получено: {val!r}")
 
 # ---------------------------------------------------------------------------
 # Глобальный кэш конфига
@@ -261,3 +278,4 @@ def reset_config() -> None:
     """Сбросить кэш конфига (используется в тестах)."""
     global _config
     _config = None
+

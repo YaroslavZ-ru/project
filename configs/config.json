@@ -41,5 +41,8 @@
   "use_relations": false,
   "relation_max_depth": 1,
   "relation_decay_factor": 0.5,
-  "domain_centroids_min_concepts": 2
+  "domain_centroids_min_concepts": 2,
+  "use_metrics": false,
+  "api_host": "127.0.0.1",
+  "api_port": 8000
 }

@@ -1,0 +1,90 @@
+[
+  {
+    "id": "concept_001",
+    "term": "ключ гаечный",
+    "domain": "слесарный инструмент",
+    "parameters": [
+      {
+        "name": "size_mm",
+        "label_ru": "Размер",
+        "type": "float",
+        "description": "Под ключа в мм",
+        "unit": "мм",
+        "enum_values": null,
+        "confidence": 1.0
+      },
+      {
+        "name": "material",
+        "label_ru": "Материал",
+        "type": "string",
+        "description": "Материал изготовления",
+        "unit": null,
+        "enum_values": null,
+        "confidence": 1.0
+      },
+      {
+        "name": "torque_nm",
+        "label_ru": "Момент затяжки",
+        "type": "float",
+        "description": "Максимальный момент",
+        "unit": "Н·м",
+        "enum_values": null,
+        "confidence": 1.0
+      }
+    ]
+  },
+  {
+    "id": "concept_002",
+    "term": "ключ разводной",
+    "domain": "слесарный инструмент",
+    "parameters": [
+      {
+        "name": "size_range_mm",
+        "label_ru": "Диапазон размеров",
+        "type": "string",
+        "description": "Мин-макс размер в мм",
+        "unit": null,
+        "enum_values": null,
+        "confidence": 1.0
+      },
+      {
+        "name": "material",
+        "label_ru": "Материал",
+        "type": "string",
+        "description": "Материал изготовления",
+        "unit": null,
+        "enum_values": null,
+        "confidence": 1.0
+      }
+    ]
+  },
+  {
+    "id": "concept_003",
+    "term": "ключ скрипичный",
+    "domain": "музыка",
+    "parameters": [
+      {
+        "name": "clef_type",
+        "label_ru": "Тип ключа",
+        "type": "enum",
+        "description": "Вид музыкального ключа",
+        "unit": null,
+        "enum_values": [
+          "скрипичный",
+          "басовый",
+          "альтовый"
+        ],
+        "confidence": 1.0
+      },
+      {
+        "name": "staff_position",
+        "label_ru": "Позиция на нотном стане",
+        "type": "integer",
+        "description": "Номер линии",
+        "unit": null,
+        "enum_values": null,
+        "confidence": 1.0
+      }
+    ]
+  }
+]
