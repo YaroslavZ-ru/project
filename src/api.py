@@ -43,6 +43,7 @@ try:
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.responses import JSONResponse, PlainTextResponse
     from pydantic import BaseModel, ConfigDict, Field
+    from typing import cast as _cast
 except ImportError:
     _FASTAPI_AVAILABLE = False
 
@@ -490,7 +491,7 @@ else:
 
     @app.post("/query", response_model=QueryResponse, include_in_schema=False)
     async def query_legacy(request: Request, body: QueryRequest) -> QueryResponse:
-        return await query(request, body)
+        return _cast(QueryResponse, await query(request, body))
 
     @app.get("/v1/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
@@ -507,7 +508,7 @@ else:
 
     @app.get("/health", response_model=HealthResponse, include_in_schema=False)
     async def health_legacy() -> HealthResponse:
-        return await health()
+        return _cast(HealthResponse, await health())
 
     @app.get("/v1/metrics", include_in_schema=False)
     async def metrics_endpoint():
@@ -546,7 +547,7 @@ else:
         except Exception as exc:
             logger.error("Ошибка в /kb/stats: %s", exc)
             raise HTTPException(500, detail="Ошибка получения статистики БД") from exc
+
     @app.get("/kb/stats", include_in_schema=False)
     async def kb_stats_legacy():
         return await kb_stats()
-
