@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 main.py -- точка входа AI-Terminator.
 
@@ -8,8 +8,8 @@ main.py -- точка входа AI-Terminator.
 
 В stdout выводится ТОЛЬКО JSON. Всё остальное -- в logs/ai_terminator.log и stderr.
 
-CURRENT STATE (Изменение 3): заглушка -- run_pipeline возвращает фиктивные данные.
-Реальные модули (preprocess, vectorize, search...) будут подключаться по мере развития проекта.
+CURRENT STATE: run_pipeline полностью реализован (Изменения 1-24).
+Все модули подключены: preprocess, vectorize, search, aggregation, sessions, generative.
 """
 
 import argparse
@@ -31,6 +31,8 @@ from src.cache import QueryVectorCache
 from src.knowledge_base import KnowledgeBase
 from src.aggregation import aggregate_parameters, determine_context
 from src.fallback import fallback_response
+from src.generative import GenerativeExpander
+from src.sessions import SessionManager
 
 # ---------------------------------------------------------------------------
 # Константы
@@ -128,16 +130,19 @@ def parse_input(raw: str) -> dict:
         term, hints, debug, min_confidence,
     )
 
+    session_id: str | None = data.get("session_id", None)
+
     return {
         "term": str(term).strip(),
         "hints": hints,
         "debug": debug,
         "min_confidence": min_confidence,
+        "session_id": session_id,
     }
 
 
 # ---------------------------------------------------------------------------
-# Пайплайн (заглушка)
+# Пайплайн
 # ---------------------------------------------------------------------------
 
 def run_pipeline(
@@ -151,12 +156,15 @@ def run_pipeline(
     embedding_model=None,
     vector_cache=None,
     kb=None,
+    generative_expander=None,
+    session_manager=None,
+    session_id: str | None = None,
 ) -> dict:
     """Центральный пайплайн обработки запроса.
 
-    CURRENT STATE (Изменение 3): заглушка -- возвращает фиктивный ответ.
-    Реальная реализация будет наполняться постепенно в изменениях 6-19.
-
+    Центральный пайплайн обработки запроса (Изменения 1-24).
+    Все шаги реализованы: предобработка, векторизация, поиск, агрегация,
+    генеративное расширение (опционально), сессии.
     Args:
         term:           очищенный термин.
         hints:          список уточняющих слов/фраз.
@@ -171,6 +179,12 @@ def run_pipeline(
     logger.info("Запуск пайплайна: term=%r hints=%r", term, hints)
     if hints is None:
         hints = []
+
+    # Загрузка домена из сессии
+    if session_id and session_manager:
+        saved_domain = session_manager.get_domain(session_id)
+        if saved_domain:
+            logger.debug("Использую домен из сессии %r: %s", session_id, saved_domain)
     effective_min_confidence = min_confidence if min_confidence is not None else cfg.min_confidence
 
     # Шаг 1: предобработка
@@ -212,6 +226,19 @@ def run_pipeline(
         parameters   = aggregate_parameters(candidates, hints_lemmas, cfg.max_parameters)
         selected_context      = determine_context(candidates)
         suggested_refinements = []
+
+        # Генеративное расширение при нехватке параметров
+        if (cfg.use_generative
+                and generative_expander is not None
+                and len(parameters) < cfg.min_parameters_for_generative):
+            gen_params = generative_expander.expand(term, hints, parameters, cfg)
+            if gen_params:
+                parameters.extend(gen_params)
+                warnings_list.append(
+                    f"Добавлено {len(gen_params)} параметров генеративной моделью."
+                )
+                logger.info("Генеративное расширение: +%d параметров", len(gen_params))
+
         if len(parameters) < 3:
             warnings_list.append(
                 "Найдено мало параметров. "
@@ -244,6 +271,17 @@ def run_pipeline(
             "scores_distribution": [p["confidence"] for p in parameters],
         }
 
+    # Сохранение домена в сессию
+    if session_manager and session_id:
+        result_status = result.get("status", "")
+        result_domain = result.get("selected_context", {}).get("domain")
+        if result_status == "ok" and cfg.auto_save_domain_on_ok and result_domain:
+            session_manager.update_session(session_id, result_domain, term)
+        elif (result_status == "ok"
+              and cfg.auto_save_domain_on_fallback
+              and result_domain):
+            session_manager.update_session(session_id, result_domain, term)
+
     logger.debug("Пайплайн завершён: %r", result)
     return result
 
@@ -268,7 +306,12 @@ def _init_components(cfg):
         embedding_model=embedding_model,
         synonym_dict=synonym_dict,
     )
-    return synonym_dict, lemmatizer, embedding_model, vector_cache, kb
+    generative_expander = GenerativeExpander(config=cfg)
+    session_manager = SessionManager(config=cfg)
+    return (
+        synonym_dict, lemmatizer, embedding_model,
+        vector_cache, kb, generative_expander, session_manager
+    )
 
 def main() -> None:
     """Читает вход, запускает пайплайн, выводит JSON в stdout.
@@ -316,7 +359,10 @@ def main() -> None:
             raise ValueError("Входные данные пустые. Передайте JSON через --input или stdin.")
 
         parsed = parse_input(raw)
-        synonym_dict, lemmatizer, embedding_model, vector_cache, kb = _init_components(cfg)
+        (
+            synonym_dict, lemmatizer, embedding_model,
+            vector_cache, kb, generative_expander, session_manager
+        ) = _init_components(cfg)
         logger.info("Прогрев модели...")
         _ = embedding_model.get_word_vector("а")
         logger.info("Прогрев завершён.")
@@ -331,6 +377,9 @@ def main() -> None:
             embedding_model=embedding_model,
             vector_cache=vector_cache,
             kb=kb,
+            generative_expander=generative_expander,
+            session_manager=session_manager,
+            session_id=parsed.get("session_id"),
         )
 
     except ValueError as exc:
@@ -351,3 +400,13 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+
+
+
+
