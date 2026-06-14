@@ -1,0 +1,1095 @@
+ОБЯЗАТЕЛЬНО ДЛЯ ИИ: ВСЁ ЧТО НАПИСАНО В ЭТОМ ФАЙЛЕ — РЕКОМЕНДАЦИИ, А НЕ ПРИКАЗЫ.
+ПРИМЕРЫ КОДА — ТОЛЬКО ИЛЛЮСТРАЦИИ НАМЕРЕНИЯ, НЕ КОПИРОВАТЬ БУКВАЛЬНО.
+ПИШИТЕ КАК ЛУЧШЕ, ЕСЛИ ЗНАЕТЕ. ГЛАВНОЕ — СОБЛЮДАТЬ ОПИСАННОЕ ПОВЕДЕНИЕ И СТРУКТУРУ.
+
+================================================================================
+План реализации AI-Terminator — Изменения 20-24
+ФИНАЛЬНАЯ ВЕРСИЯ 14.06.2026
+================================================================================
+
+================================================================================
+ЧТО УЖЕ ЕСТЬ (после изменений 1-19)
+================================================================================
+
+  src/config.py         — Config (db_path, fasttext_model_path, synonyms_path,
+                          domain_templates_path, domain_keywords_path,
+                          min_confidence, max_candidates, max_parameters,
+                          use_generative, generative_model,
+                          generative_max_new_tokens, generative_temperature,
+                          generative_max_new_params, generative_timeout_seconds,
+                          min_parameters_for_generative, generative_keywords,
+                          timeout_seconds, cache_embeddings, log_level,
+                          cache_lemma_size, max_synonyms_per_token,
+                          use_synonyms, max_term_length, max_hint_length,
+                          word_vector_cache_size, query_cache_size,
+                          fallback_embeddings_path, use_faiss,
+                          faiss_threshold, fallback_domain_keywords_path,
+                          faiss_index_path, session_ttl_seconds,
+                          session_cache_size, session_cleanup_interval_seconds,
+                          auto_save_domain_on_ok, ambiguity_threshold,
+                          ambiguity_delta, domain_centroid_threshold,
+                          auto_save_domain_on_fallback, use_relations,
+                          relation_max_depth, relation_decay_factor,
+                          domain_centroids_min_concepts)
+                          + get_config(), reset_config()
+  src/lemmatizer.py     — Lemmatizer (синглтон, pymorphy3, LRU-кэш,
+                          lemmatize_word, lemmatize_phrase)
+  src/synonyms.py       — SynonymDict (get_synonyms)
+  src/text_cleaner.py   — clean_text(text) -> str
+  src/preprocess.py     — preprocess(term, hints, cfg, synonym_dict, lemmatizer)
+                          -> dict (tokens_with_weights, term_lemmas,
+                             hints_lemmas, status, warnings)
+  src/embeddings.py     — FastTextWrapper (ленивая загрузка fastText + fallback,
+                          LRU-кэш, get_word_vector, get_phrase_vector,
+                          get_dimension)
+  src/vectorize.py      — vectorize(processed_query, embedding_model) -> np.ndarray
+                          (взвешенная сумма + L2-нормализация)
+  src/cache.py          — QueryVectorCache (LRU, get, put, clear)
+  src/knowledge_base.py — KnowledgeBase (search_similar_concepts,
+                          get_all_concepts, compute_concept_embedding,
+                          update_all_embeddings, _build_faiss_index,
+                          _linear_search, _blob_to_vector, _vector_to_blob)
+  src/aggregation.py    — aggregate_parameters(candidates, hints_lemmas,
+                          max_parameters) -> list[dict]
+                          determine_context(candidates) -> dict
+  src/fallback.py       — fallback_response(term, processed, config) -> dict
+                          detect_domain(all_lemmas, keywords_path) -> str
+                          load_json_config(path) -> dict
+  main.py               — _setup_logging, parse_input, _init_components,
+                          run_pipeline (шаги 1-5 полностью реализованы),
+                          main
+  scripts/__init__.py   — пустой (делает scripts пакетом)
+  scripts/init_db.py    — init_db(db_path) -> None (схема SQLite v2)
+  scripts/seed_data.py  — seed(config, force) -> None (тестовые данные)
+  scripts/setup_all.py  — последовательный вызов init_db + seed_data
+  configs/config.json   — все поля конфига (use_generative=false, session_*,
+                          generative_*, relations_* — поля есть, модули нет)
+  configs/domain_templates.json  — шаблоны параметров по доменам
+  configs/domain_keywords.json   — ключевые слова для определения домена
+  data/knowledge_base.db         — SQLite БД (таблицы: concepts, parameters,
+                                   relations, metadata; schema_version=2)
+  data/synonyms.json             — словарь синонимов
+
+================================================================================
+СОЗДАВАЕМЫЕ ФАЙЛЫ:
+================================================================================
+  src/utils.py                      (Изменение 20)
+  src/generative.py                 (Изменение 21)
+  tests/test_generative.py          (Изменение 21)
+  src/sessions.py                   (Изменение 22)
+  tests/test_sessions.py            (Изменение 22)
+  scripts/update_kb.py              (Изменение 23)
+  scripts/build_fallback.py         (Изменение 24)
+
+ИЗМЕНЯЕМЫЕ ФАЙЛЫ:
+  main.py  — добавить импорты GenerativeExpander и SessionManager;
+             обновить _init_components (создание expander, session_manager);
+             обновить run_pipeline (вызов expand, передача session_id,
+             сохранение домена); обновить parse_input (чтение session_id)
+             (Изменения 21, 22)
+
+================================================================================
+ОБЩИЕ ПРИНЦИПЫ ДЛЯ ВСЕХ ИЗМЕНЕНИЙ 20-24
+================================================================================
+
+1. Python 3.10+: X | None, list[str], dict[K,V] — не Optional/List/Dict.
+2. sys.path.insert — ТОЛЬКО внутри if __name__ == "__main__":
+   Рекомендованный запуск скриптов: python -m scripts.XXX из корня проекта.
+3. Все пути — только через pathlib.Path. Никогда не конкатенировать строки.
+4. logging.getLogger(__name__) в каждом модуле.
+5. Type hints + docstring Google-style на всех публичных функциях и классах.
+6. try/except на всех внешних вызовах (файлы, SQLite, сетевые запросы, ML-модели).
+7. Опциональные зависимости (transformers, torch) — оборачивать в try/except
+   ImportError. Если библиотека недоступна — модуль деградирует, НЕ падает.
+8. Синглтон Lemmatizer — создавать один раз при инициализации класса,
+   не в каждом вызове метода.
+9. Все новые поля конфига уже присутствуют в configs/config.json и src/config.py.
+   Изменять их НЕ нужно.
+10. Крайние случаи: пустые строки, None, файл не найден, БД недоступна,
+    таймаут, ImportError — все должны быть обработаны явно.
+
+================================================================================
+ИЗМЕНЕНИЕ 20: src/utils.py — декоратор timed и вспомогательные утилиты
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Создать модуль src/utils.py с набором утилит общего назначения: декоратор
+измерения времени timed, безопасное усечение строк safe_truncate и
+получение уникальных элементов с сохранением порядка unique_ordered.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+Декоратор timed нужен для прозрачного профилирования любого метода без
+изменения его логики. safe_truncate устраняет дублирование проверок при
+работе с промптами для LLM (изменение 21) и при валидации данных. Модуль
+utils.py входит в финальное описание структуры проекта.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-----------------
+Модуль НЕ импортирует ничего из src/ (нет риска циклических импортов).
+Использует только stdlib: logging, functools, time.
+
+Функция/декоратор timed:
+  Сигнатура: timed(logger: logging.Logger, label: str | None = None)
+  Это фабрика декораторов (параметризованный декоратор).
+  При вызове обёрнутой функции:
+    1. Сохранить time.monotonic() в start.
+    2. Вызвать оригинальную функцию.
+    3. В блоке finally (даже при исключении) вычислить elapsed и логировать
+       на уровне DEBUG: "[label или func.__name__] завершён за X.XXXс"
+    4. Вернуть результат оригинальной функции (или пробросить исключение).
+  Сохранять __name__, __doc__, __wrapped__ через functools.wraps.
+
+  ИЛЛЮСТРАЦИЯ (не для копирования):
+    import time, functools, logging
+
+    def timed(logger, label=None):
+        def decorator(func):
+            @functools.wraps(func)
+            def wrapper(*args, **kwargs):
+                tag = label or func.__name__
+                start = time.monotonic()
+                try:
+                    return func(*args, **kwargs)
+                finally:
+                    logger.debug("[%s] завершён за %.3fс", tag, time.monotonic() - start)
+            return wrapper
+        return decorator
+
+Функция safe_truncate:
+  Сигнатура: safe_truncate(text: str | None, max_len: int,
+                            suffix: str = "...") -> str
+  Поведение:
+    - Если text is None или не str: вернуть "".
+    - Если len(text) <= max_len: вернуть text без изменений.
+    - Иначе: вернуть text[:max(0, max_len - len(suffix))] + suffix.
+    - Если max_len <= 0: вернуть "".
+
+Функция unique_ordered:
+  Сигнатура: unique_ordered(seq: list) -> list
+  Удаляет дубликаты, сохраняя порядок первого вхождения.
+  Если элемент unhashable (например, dict): использовать O(n^2) проверку
+  через "if item not in result" вместо set, не бросать исключений.
+
+  ИЛЛЮСТРАЦИЯ:
+    def unique_ordered(seq):
+        seen, result = set(), []
+        for item in seq:
+            try:
+                if item not in seen:
+                    seen.add(item)
+                    result.append(item)
+            except TypeError:
+                if item not in result:
+                    result.append(item)
+        return result
+
+ИНТЕРФЕЙС
+----------
+  timed(logger: logging.Logger, label: str | None = None) -> Callable
+  safe_truncate(text: str | None, max_len: int, suffix: str = "...") -> str
+  unique_ordered(seq: list) -> list
+
+ТЕСТЫ
+-----
+Файл tests/test_utils.py не входит в список тестов финального описания.
+При желании можно добавить минимальные проверки:
+  - safe_truncate(None, 10) == ""
+  - safe_truncate("привет", 3, "...") == "..."
+  - safe_truncate("привет", 10) == "привет"
+  - unique_ordered([1, 2, 1, 3]) == [1, 2, 3]
+  - unique_ordered([]) == []
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+Из корня проекта:
+  python -c "
+  import logging
+  logging.basicConfig(level=logging.DEBUG)
+  from src.utils import timed, safe_truncate, unique_ordered
+
+  log = logging.getLogger('test')
+
+  @timed(log, 'demo')
+  def demo(): return 42
+
+  assert demo() == 42
+  assert safe_truncate('hello world', 8) == 'hello...'
+  assert safe_truncate(None, 5) == ''
+  assert unique_ordered([3, 1, 2, 1]) == [3, 1, 2]
+  print('utils: OK')
+  "
+Ожидаемый вывод: строка DEBUG о времени + "utils: OK".
+
+================================================================================
+ИЗМЕНЕНИЕ 21: src/generative.py + интеграция в main.py
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Создать модуль src/generative.py с классом GenerativeExpander, который
+расширяет список параметров с помощью языковой модели (LLM) когда поиск
+в базе знаний вернул недостаточно параметров. Обновить main.py.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+Когда база знаний возвращает менее min_parameters_for_generative параметров,
+система предлагает дополнительные, генерируя текст через LLM. Модуль
+полностью опциональный: если use_generative=False или transformers не
+установлен — expand() молча возвращает пустой список. Модуль generative.py
+указан в финальном описании проекта.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ src/generative.py
+-------------------------------------
+На уровне модуля (до класса):
+  _TRANSFORMERS_AVAILABLE = True
+  try:
+      from transformers import pipeline as hf_pipeline
+  except ImportError:
+      _TRANSFORMERS_AVAILABLE = False
+
+Класс GenerativeExpander:
+  Конструктор __init__(self, config: Config):
+    self._cfg          = config
+    self._pipe         = None
+    self._model_loaded = False
+    self._available    = _TRANSFORMERS_AVAILABLE and config.use_generative
+    Если not _TRANSFORMERS_AVAILABLE:
+      logger.warning("transformers не установлен. Генеративный модуль отключён.")
+    Если _TRANSFORMERS_AVAILABLE and not config.use_generative:
+      logger.info("use_generative=False. GenerativeExpander пассивен.")
+
+  Метод _ensure_pipeline() -> None:
+    Ленивая загрузка. Если self._model_loaded: return немедленно.
+    self._model_loaded = True
+    Если not self._available: return.
+    Попытка:
+      self._pipe = hf_pipeline(
+          "text-generation",
+          model=self._cfg.generative_model,
+          max_new_tokens=self._cfg.generative_max_new_tokens,
+          temperature=self._cfg.generative_temperature,
+          do_sample=True,
+      )
+      logger.info("GenerativeExpander: модель загружена: %s", self._cfg.generative_model)
+    При Exception как exc:
+      logger.error("Ошибка загрузки генеративной модели: %s", exc)
+      self._pipe = None
+      self._available = False
+
+  Метод _build_prompt(term: str, hints: list[str],
+                      existing_params: list[dict]) -> str:
+    Строит промпт для модели на русском языке.
+    params_str = ", ".join(p.get("label_ru", p.get("name", "")) for p in existing_params)
+    hints_str  = ", ".join(hints) if hints else "нет"
+    Сформировать строку вида:
+      "Термин: {term}\nУточнения: {hints_str}\n"
+      "Существующие параметры: {params_str}\n"
+      "Предложи дополнительные характеристики через запятую:"
+    Усечь до 512 символов через safe_truncate из src.utils.
+    Вернуть промпт.
+
+  Метод _slugify(text: str) -> str:
+    Приватный. Переводит label_ru в технический name.
+    Привести к нижнему регистру. Заменить пробелы и дефисы на '_'.
+    Оставить только: буквы (включая кириллицу), цифры, '_'.
+    ИЛЛЮСТРАЦИЯ: "Момент затяжки" -> "момент_затяжки"
+
+  Метод _parse_response(response_text: str,
+                        existing_names: set[str]) -> list[dict]:
+    1. Найти в response_text последнее вхождение символа ':'.
+       Если есть — взять подстроку после него.
+       Если нет — использовать весь response_text.
+    2. Разбить по разделителям: ',', ';', '\n' (любой из них).
+    3. Для каждого кандидата:
+       a. Применить strip() и убрать лишние кавычки/скобки по краям.
+       b. Если длина < 2 или > 80 символов: пропустить.
+       c. Проверить наличие хотя бы одного слова из cfg.generative_keywords
+          в кандидате (case-insensitive, проверка подстроки):
+            any(kw in candidate.lower() for kw in self._cfg.generative_keywords)
+          Если нет совпадений: пропустить.
+       d. slug = self._slugify(candidate)
+          Если slug в existing_names: пропустить.
+       e. Добавить:
+          {"name": slug, "label_ru": candidate.strip(),
+           "type": "string",
+           "description": "Предложено генеративной моделью",
+           "confidence": 0.2, "source": "generative"}
+    4. Вернуть список, ограниченный self._cfg.generative_max_new_params элементами.
+
+  Метод expand(term: str, hints: list[str],
+               existing_params: list[dict],
+               cfg: Config | None = None) -> list[dict]:
+    Args:
+      term:            исходный термин (непустая строка)
+      hints:           список уточнений
+      existing_params: уже найденные параметры
+      cfg:             если None — использовать self._cfg
+    Returns:
+      Список новых параметров (может быть пустым).
+    Raises:
+      Ничего — все ошибки логируются, возвращается [].
+
+    Алгоритм:
+      1. Если not self._available: return []
+      2. self._ensure_pipeline()
+      3. Если self._pipe is None: return []
+      4. existing_names = {p.get("name", "") for p in existing_params}
+      5. prompt = self._build_prompt(term, hints, existing_params)
+      6. Выполнить с таймаутом (cfg.generative_timeout_seconds):
+           from concurrent.futures import ThreadPoolExecutor, TimeoutError
+           with ThreadPoolExecutor(max_workers=1) as executor:
+               future = executor.submit(self._pipe, prompt)
+               try:
+                   result = future.result(timeout=cfg.generative_timeout_seconds)
+               except TimeoutError:
+                   logger.warning("GenerativeExpander: таймаут (%ss)", cfg.generative_timeout_seconds)
+                   return []
+               except Exception as exc:
+                   logger.error("GenerativeExpander: ошибка генерации: %s", exc)
+                   return []
+      7. Если result пустой или нет ["generated_text"]: logger.warning, return []
+      8. generated_text = result[0]["generated_text"]
+      9. new_params = self._parse_response(generated_text, existing_names)
+      10. logger.info("GenerativeExpander: добавлено %d параметров", len(new_params))
+      11. return new_params
+
+ИНТЕГРАЦИЯ В main.py
+--------------------
+ВАЖНО: не создавать конфликтов с существующими импортами!
+Существующие импорты из src/ в main.py остаются без изменений.
+
+1. Добавить строку импорта (после строки "from src.fallback import fallback_response"):
+     from src.generative import GenerativeExpander
+
+2. В _init_components(cfg) добавить в конце тела функции (перед return):
+     generative_expander = GenerativeExpander(config=cfg)
+   Изменить строку return на:
+     return synonym_dict, lemmatizer, embedding_model, vector_cache, kb, generative_expander
+
+3. В сигнатуре run_pipeline добавить параметр:
+     generative_expander=None
+   (Всегда последний в списке, чтобы не нарушать вызовы без этого аргумента.)
+
+4. В теле run_pipeline найти блок "# --- Шаг 4: Агрегация или fallback ---".
+   Внутри ветки if candidates:, ПОСЛЕ строки с suggested_refinements = [],
+   добавить блок генеративного расширения:
+     # Генеративное расширение при нехватке параметров
+     if (cfg.use_generative
+             and generative_expander is not None
+             and len(parameters) < cfg.min_parameters_for_generative):
+         gen_params = generative_expander.expand(term, hints, parameters, cfg)
+         if gen_params:
+             parameters.extend(gen_params)
+             warnings_list.append(
+                 f"Добавлено {len(gen_params)} параметров генеративной моделью."
+             )
+             logger.info("Генеративное расширение: +%d параметров", len(gen_params))
+
+5. В main() найти строку "_init_components(cfg)" и изменить на:
+     (synonym_dict, lemmatizer, embedding_model,
+      vector_cache, kb, generative_expander) = _init_components(cfg)
+   Затем найти вызов run_pipeline и добавить аргумент:
+     generative_expander=generative_expander,
+
+ИНТЕРФЕЙС (публичные методы GenerativeExpander)
+-------------------------------------------------
+  __init__(config: Config) -> None
+  expand(term: str, hints: list[str], existing_params: list[dict],
+         cfg: Config | None = None) -> list[dict]
+
+ТЕСТЫ tests/test_generative.py
+-------------------------------
+Все тесты работают БЕЗ реальной LLM (transformers не требуется).
+Использовать unittest.mock.MagicMock или pytest monkeypatch.
+
+  fixture cfg:
+    Создать Config через Config.from_json('configs/config.json', ...).
+    (Или создать объект с нужными атрибутами через MagicMock.)
+    use_generative = True / False в зависимости от теста.
+
+  test_expand_returns_empty_when_unavailable:
+    Создать GenerativeExpander с cfg.
+    Принудительно установить expander._available = False.
+    Вызвать expand("ключ", [], []).
+    assert result == []
+
+  test_expand_returns_empty_when_pipe_is_none:
+    expander._available = True, expander._model_loaded = True, expander._pipe = None.
+    result = expand("ключ", [], []).
+    assert result == []
+
+  test_expand_returns_empty_on_timeout:
+    Мокировать ThreadPoolExecutor так, чтобы future.result() бросал TimeoutError.
+    expander._available = True, expander._pipe = MagicMock().
+    result = expand("ключ", [], []).
+    assert result == [] (без исключений)
+
+  test_parse_response_filters_by_keywords:
+    cfg.generative_keywords = ["материал", "размер", "тип"]
+    cfg.generative_max_new_params = 5
+    existing_names = set()
+    text = "Предложения: материал, xyz_nonsense, размер, тип"
+    result = expander._parse_response(text, existing_names)
+    assert all("source" in p and p["source"] == "generative" for p in result)
+    names = [p["label_ru"] for p in result]
+    assert "xyz_nonsense" not in names
+    assert len(result) >= 2
+
+  test_parse_response_respects_max_new_params:
+    cfg.generative_max_new_params = 1
+    text = "материал, размер, тип, форма, цвет"
+    result = expander._parse_response(text, set())
+    assert len(result) <= 1
+
+  test_parse_response_skips_existing_names:
+    existing_names = {"материал"}
+    text = "материал, размер"
+    result = expander._parse_response(text, existing_names)
+    slugs = [p["name"] for p in result]
+    assert "материал" not in slugs
+
+  test_build_prompt_contains_term_and_max_512:
+    prompt = expander._build_prompt("ключ", ["техника"], [])
+    assert "ключ" in prompt
+    assert len(prompt) <= 512
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+1. Убедиться что use_generative=false в configs/config.json.
+2. Из корня проекта:
+     python -c "
+     from src.config import Config
+     from pathlib import Path
+     cfg = Config.from_json('configs/config.json', project_root=Path('.'))
+     from src.generative import GenerativeExpander
+     ex = GenerativeExpander(config=cfg)
+     result = ex.expand('ключ', ['техника'], [])
+     assert result == [], f'Ожидал [], получил {result}'
+     print('generative: OK (use_generative=False -> [])')
+     "
+3. Проверить что main.py запускается без ошибок:
+     python main.py --input '{"term":"ключ","hints":["техника"]}'
+
+================================================================================
+ИЗМЕНЕНИЕ 22: src/sessions.py — менеджер пользовательских сессий
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Создать модуль src/sessions.py с классом SessionManager для хранения
+состояния между запросами одного пользователя. Обновить main.py:
+создавать SessionManager в _init_components и использовать в run_pipeline.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+Система должна "помнить" домен из предыдущего запроса пользователя, чтобы
+при следующем запросе без подсказок автоматически учитывать контекст.
+Конфиг уже содержит все нужные поля: session_ttl_seconds, session_cache_size,
+session_cleanup_interval_seconds, auto_save_domain_on_ok,
+auto_save_domain_on_fallback. Модуль sessions.py указан в описании проекта.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ src/sessions.py
+-----------------------------------
+Импорты: logging, time, threading, dataclasses
+
+Dataclass SessionEntry:
+  session_id: str
+  domain: str | None     — последний подтверждённый домен
+  last_term: str | None  — последний термин запроса
+  created_at: float      — time.monotonic() при создании
+  updated_at: float      — time.monotonic() при последнем update
+
+Класс SessionManager:
+  Конструктор __init__(self, config: Config):
+    self._ttl      = config.session_ttl_seconds
+    self._maxsize  = config.session_cache_size
+    self._interval = config.session_cleanup_interval_seconds
+    self._sessions: dict[str, SessionEntry] = {}
+    self._lock     = threading.Lock()
+    self._last_cleanup: float = time.monotonic()
+
+  Метод get_session(session_id: str) -> SessionEntry | None:
+    Если session_id пустой или None: return None.
+    С self._lock:
+      Если session_id не в _sessions: return None.
+      entry = _sessions[session_id].
+      Если time.monotonic() - entry.updated_at > self._ttl:
+        del _sessions[session_id]
+        logger.debug("Сессия истекла: %s", session_id)
+        return None.
+      return entry.
+
+  Метод update_session(session_id: str, domain: str | None,
+                       term: str | None = None) -> None:
+    Если session_id пустой или None: logger.warning, return.
+    С self._lock:
+      Вызвать _maybe_cleanup_unsafe().
+      Если session_id не в _sessions:
+        Если len(_sessions) >= self._maxsize:
+          Найти запись с минимальным updated_at и удалить.
+          logger.warning("SessionManager: лимит %d, удалена старейшая сессия", self._maxsize)
+        _sessions[session_id] = SessionEntry(
+            session_id=session_id, domain=domain, last_term=term,
+            created_at=time.monotonic(), updated_at=time.monotonic()
+        )
+      Иначе:
+        entry = _sessions[session_id]
+        entry.domain     = domain
+        entry.last_term  = term if term is not None else entry.last_term
+        entry.updated_at = time.monotonic()
+      logger.debug("Сессия обновлена: %s, domain=%s", session_id, domain)
+
+  Метод get_domain(session_id: str) -> str | None:
+    entry = self.get_session(session_id)
+    return entry.domain if entry is not None else None
+
+  Метод cleanup(self) -> int:
+    С self._lock:
+      return self._cleanup_unsafe()
+
+  Метод _cleanup_unsafe(self) -> int:
+    (вызывается ВНУТРИ уже захваченного self._lock)
+    now = time.monotonic()
+    expired = [sid for sid, e in _sessions.items()
+               if now - e.updated_at > self._ttl]
+    for sid in expired:
+      del _sessions[sid]
+    if expired:
+      logger.info("SessionManager: удалено %d устаревших сессий", len(expired))
+    self._last_cleanup = now
+    return len(expired)
+
+  Метод _maybe_cleanup_unsafe(self) -> None:
+    (вызывается ВНУТРИ захваченного self._lock)
+    Если time.monotonic() - self._last_cleanup >= self._interval:
+      self._cleanup_unsafe()
+
+  Метод session_count(self) -> int:
+    return len(self._sessions)
+    (нет блокировки — допустимо для чтения размера dict в CPython)
+
+ИНТЕГРАЦИЯ В main.py
+--------------------
+ВАЖНО: добавлять к уже изменённому в Изменении 21 main.py.
+
+1. Добавить импорт (после строки "from src.generative import GenerativeExpander"):
+     from src.sessions import SessionManager
+
+2. В _init_components(cfg) добавить создание session_manager (после generative_expander):
+     session_manager = SessionManager(config=cfg)
+   Изменить return на:
+     return (synonym_dict, lemmatizer, embedding_model, vector_cache,
+             kb, generative_expander, session_manager)
+
+3. В run_pipeline добавить параметры (после generative_expander=None):
+     session_manager=None
+     session_id: str | None = None
+
+4. В начале run_pipeline, после строки 'logger.info("Запуск пайплайна...")':
+     if session_id and session_manager:
+         saved_domain = session_manager.get_domain(session_id)
+         if saved_domain:
+             logger.debug("Использую домен из сессии %r: %s", session_id, saved_domain)
+
+5. В конце run_pipeline, перед "logger.debug('Пайплайн завершён'...)",
+   добавить сохранение домена в сессию:
+     if session_manager and session_id:
+         result_status = result.get("status", "")
+         result_domain = result.get("selected_context", {}).get("domain")
+         if result_status == "ok" and cfg.auto_save_domain_on_ok and result_domain:
+             session_manager.update_session(session_id, result_domain, term)
+         elif (result_status == "ok"
+               and cfg.auto_save_domain_on_fallback
+               and result_domain):
+             session_manager.update_session(session_id, result_domain, term)
+
+6. В функции parse_input добавить чтение session_id:
+     session_id: str | None = data.get("session_id", None)
+   Добавить "session_id": session_id в возвращаемый словарь.
+
+7. В main() обновить вызов _init_components:
+     (synonym_dict, lemmatizer, embedding_model, vector_cache,
+      kb, generative_expander, session_manager) = _init_components(cfg)
+   Передать session_manager и session_id в run_pipeline:
+     result = run_pipeline(
+         ...,
+         generative_expander=generative_expander,
+         session_manager=session_manager,
+         session_id=parsed.get("session_id"),
+     )
+
+КРАЙНИЕ СЛУЧАИ:
+  - session_id=None в запросе: session_manager.get_domain() возвращает None,
+    сессия не создаётся. Поведение идентично нынешнему.
+  - auto_save_domain_on_ok=True, auto_save_domain_on_fallback=False:
+    Сессия сохраняется ТОЛЬКО при реальном поиске в КБ, не при шаблонном ответе.
+  - domain из результата пустой: не сохранять в сессию (if result_domain).
+
+ИНТЕРФЕЙС (публичные методы SessionManager)
+--------------------------------------------
+  __init__(config: Config) -> None
+  get_session(session_id: str) -> SessionEntry | None
+  update_session(session_id: str, domain: str | None, term: str | None = None) -> None
+  get_domain(session_id: str) -> str | None
+  cleanup() -> int
+  session_count() -> int
+
+ТЕСТЫ tests/test_sessions.py
+------------------------------
+Не требуют внешних зависимостей. Config мокируется простым объектом.
+
+  fixture make_config():
+    Возвращает объект с полями:
+      session_ttl_seconds=3600
+      session_cache_size=10
+      session_cleanup_interval_seconds=3600
+
+  test_update_and_get_domain:
+    sm = SessionManager(make_config())
+    sm.update_session("s1", "музыка", "ключ")
+    assert sm.get_domain("s1") == "музыка"
+    assert sm.session_count() == 1
+
+  test_expired_session_returns_none:
+    sm = SessionManager(config с ttl=0)
+    sm.update_session("s2", "техника")
+    import time; time.sleep(0.01)
+    assert sm.get_domain("s2") is None
+
+  test_max_size_eviction:
+    sm = SessionManager(config с maxsize=2)
+    sm.update_session("s1", "a")
+    sm.update_session("s2", "b")
+    sm.update_session("s3", "c")
+    assert sm.session_count() <= 2
+
+  test_cleanup_removes_expired:
+    sm = SessionManager(config с ttl=0)
+    sm.update_session("s1", "a")
+    sm.update_session("s2", "b")
+    import time; time.sleep(0.01)
+    removed = sm.cleanup()
+    assert removed >= 2
+    assert sm.session_count() == 0
+
+  test_none_session_id_ignored:
+    sm = SessionManager(make_config())
+    sm.update_session(None, "музыка")
+    sm.update_session("", "техника")
+    assert sm.session_count() == 0
+
+  test_get_nonexistent_returns_none:
+    assert sm.get_domain("nonexistent") is None
+
+  test_update_overwrites_domain:
+    sm.update_session("s1", "техника")
+    sm.update_session("s1", "музыка")
+    assert sm.get_domain("s1") == "музыка"
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+Из корня проекта:
+  python -c "
+  from src.config import Config
+  from pathlib import Path
+  cfg = Config.from_json('configs/config.json', project_root=Path('.'))
+  from src.sessions import SessionManager
+  sm = SessionManager(config=cfg)
+  sm.update_session('user1', 'музыка', 'ключ')
+  assert sm.get_domain('user1') == 'музыка'
+  assert sm.session_count() == 1
+  sm.update_session('user1', 'техника', 'гайка')
+  assert sm.get_domain('user1') == 'техника'
+  print('sessions: OK')
+  "
+Ожидаемый вывод: "sessions: OK".
+
+Проверить интеграцию с main.py:
+  python main.py --input '{"term":"ключ","hints":["музыка"],"session_id":"test123"}'
+Убедиться что вывод содержит корректный JSON и нет ошибок импорта.
+
+================================================================================
+ИЗМЕНЕНИЕ 23: scripts/update_kb.py — импорт новых понятий в базу знаний
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Создать скрипт scripts/update_kb.py для добавления новых концептов в
+knowledge_base.db из внешних файлов (JSON или CSV). Скрипт вычисляет
+эмбеддинги через KnowledgeBase.compute_concept_embedding и сохраняет в БД.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+После первоначального заполнения базы (seed_data.py) необходим механизм
+пополнения без пересборки всего проекта. scripts/update_kb.py указан в
+финальном описании проекта.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ scripts/update_kb.py
+----------------------------------------
+Импорты в теле модуля (stdlib): sqlite3, json, csv, logging
+from pathlib import Path
+
+Импорты из src/ допустимы ТОЛЬКО внутри функций или внутри
+if __name__ == "__main__": через условный sys.path.insert.
+Рекомендованный запуск: python -m scripts.update_kb (не sys.path проблема).
+Поэтому импорты из src/ можно делать на уровне модуля без sys.path
+(пакет scripts/ позволяет from src.X import Y при запуске через -m).
+
+ФОРМАТ JSON-ФАЙЛА ДЛЯ ИМПОРТА:
+  [
+    {
+      "id": "concept_004",
+      "term": "ключ торцевой",
+      "domain": "слесарный инструмент",
+      "parameters": [
+        {
+          "name": "drive_size",
+          "label_ru": "Размер привода",
+          "type": "string",
+          "description": "Квадрат привода (1/4, 3/8, 1/2)",
+          "unit": "дюйм",
+          "enum_values": null
+        }
+      ]
+    }
+  ]
+
+ФОРМАТ CSV-ФАЙЛА ДЛЯ ИМПОРТА (заголовок обязателен):
+  id,term,domain,param_name,param_label_ru,param_type,param_description,param_unit
+  concept_004,ключ торцевой,слесарный инструмент,drive_size,Размер привода,string,...
+
+Строки с одинаковым id группируются в один концепт.
+Если param_name пустой — концепт добавляется без параметров.
+
+Функция validate_concept(concept: dict) -> list[str]:
+  Возвращает список строк с описанием ошибок. Пустой список = концепт валиден.
+  Проверки:
+    - "id": присутствует, непустая строка без пробелов в начале/конце
+    - "term": присутствует, непустая строка
+    - "parameters": если задан — должен быть списком
+    - Каждый параметр: "name" и "label_ru" обязательны и непусты
+    - "type" параметра (если задан): одно из string/integer/float/boolean/enum
+  Не бросать исключений — только возвращать список ошибок.
+
+Функция load_concepts_from_json(path: Path) -> list[dict]:
+  Читать файл в кодировке utf-8.
+  При FileNotFoundError: logger.error, return [].
+  При json.JSONDecodeError: logger.error, return [].
+  Если корневой элемент не список: logger.error, return [].
+  Вернуть список словарей как есть (без валидации — это делает update_from_concepts).
+
+Функция load_concepts_from_csv(path: Path) -> list[dict]:
+  Открыть с encoding="utf-8-sig" (совместимость с Excel BOM).
+  Использовать csv.DictReader.
+  Группировать строки по "id": dict[id -> концепт].
+  Пропускать строки с пустым "id".
+  При Exception: logger.error, return [].
+
+Функция update_from_concepts(concepts: list[dict], config: Config,
+                              force: bool = False) -> dict:
+  Args:
+    concepts: список концептов
+    config:   Config
+    force:    если True — обновлять существующие концепты и их параметры
+  Returns:
+    {"inserted": int, "updated": int, "skipped": int, "errors": int}
+
+  Алгоритм:
+    0. Инициализировать компоненты для вычисления эмбеддингов:
+         Lemmatizer(cache_size=config.cache_lemma_size)
+         SynonymDict(json_path=config.synonyms_path)
+         FastTextWrapper(...)
+         kb = KnowledgeBase(config, embedding_model, synonym_dict)
+    1. Открыть отдельное sqlite3.connect(str(config.db_path)).
+    2. Счётчики: inserted=0, updated=0, skipped=0, errors=0.
+    3. Для каждого концепта:
+       a. errors_list = validate_concept(concept).
+          Если не пустой: logger.warning("Невалидный концепт %r: %s", cid, errors_list)
+          errors += 1; continue.
+       b. cid = concept["id"]
+          Проверить: SELECT id FROM concepts WHERE id=?
+          exists = cursor.fetchone() is not None
+       c. Если exists и not force: skipped += 1; continue.
+       d. Вычислить embedding:
+            try: emb = kb.compute_concept_embedding(concept["term"])
+            except Exception: logger.error(...); errors += 1; continue.
+          blob = emb.astype("<f4").tobytes()
+       e. Если not exists:
+            INSERT INTO concepts (id, term, domain, embedding) VALUES (?,?,?,?)
+            inserted += 1
+          Иначе (force=True):
+            UPDATE concepts SET term=?, domain=?, embedding=? WHERE id=?
+            DELETE FROM parameters WHERE concept_id=?
+            updated += 1
+       f. INSERT OR IGNORE INTO parameters (concept_id, name, label_ru, type,
+          description, unit, enum_values) для каждого параметра концепта.
+          enum_values: если список — json.dumps(список), иначе None.
+    4. conn.commit().
+    5. kb._concepts_cache = None  (сбросить кэш).
+    6. kb.close(); conn.close()
+    7. logger.info("Импорт: inserted=%d updated=%d skipped=%d errors=%d", ...)
+    8. Вернуть stats.
+
+Блок if __name__ == "__main__":
+  Условный sys.path.insert(0, ...) только здесь (для запуска без -m).
+  argparse:
+    --file    путь к файлу для импорта (обязательный)
+    --force   флаг: обновлять существующие
+    --config  путь к конфигу (default="configs/config.json")
+  Определить формат по расширению файла:
+    .json -> load_concepts_from_json
+    .csv  -> load_concepts_from_csv
+    иное  -> вывести ошибку, sys.exit(1)
+  Загрузить Config, вызвать update_from_concepts, вывести итоги.
+  При errors > 0: завершить с sys.exit(1).
+
+ИНТЕРФЕЙС
+----------
+  validate_concept(concept: dict) -> list[str]
+  load_concepts_from_json(path: Path) -> list[dict]
+  load_concepts_from_csv(path: Path) -> list[dict]
+  update_from_concepts(concepts: list[dict], config: Config,
+                       force: bool = False) -> dict
+
+ТЕСТЫ
+-----
+Тестовый файл не входит в список тестов финального описания проекта.
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+1. Создать файл test_import.json рядом с main.py:
+   [{"id":"concept_test_99","term":"молоток слесарный","domain":"инструмент",
+     "parameters":[{"name":"weight_g","label_ru":"Масса","type":"float","unit":"г"}]}]
+2. Выполнить (модель FastText не обязательна, нулевой вектор — ок для проверки):
+     python -m scripts.update_kb --file test_import.json
+   Ожидаемый вывод: inserted=1, updated=0, skipped=0, errors=0
+3. Запустить повторно (без --force): skipped=1.
+4. Запустить с --force: updated=1.
+5. Удалить тестовый концепт вручную при необходимости:
+     python -c "
+     import sqlite3
+     c = sqlite3.connect('data/knowledge_base.db')
+     c.execute("DELETE FROM concepts WHERE id='concept_test_99'")
+     c.commit(); c.close()
+     print('удалено')
+     "
+
+================================================================================
+ИЗМЕНЕНИЕ 24: scripts/build_fallback.py — создание fallback_embeddings.npy
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Создать скрипт scripts/build_fallback.py, который собирает все уникальные
+слова из БД, получает векторы через FastTextWrapper и сохраняет словарь
+{слово: np.ndarray} в файл data/fallback_embeddings.npy. Этот файл
+используется FastTextWrapper при отсутствии основной модели cc.ru.300.bin.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+cc.ru.300.bin занимает ~8 ГБ и недоступен на большинстве машин разработки.
+fallback_embeddings.npy содержит только векторы слов из реального проекта
+и занимает несколько МБ. FastTextWrapper уже умеет читать этот формат через
+np.load(..., allow_pickle=True).item(). scripts/build_fallback.py указан
+в финальном описании проекта. Поле fallback_embeddings_path уже есть в
+config.json (сейчас пустое — нужно заполнить вручную после запуска скрипта).
+
+ДЕТАЛИ РЕАЛИЗАЦИИ scripts/build_fallback.py
+---------------------------------------------
+Импорты в теле модуля: logging, sqlite3, numpy as np
+from pathlib import Path
+
+Функция collect_words_from_db(db_path: Path,
+                               lemmatizer) -> set[str]:
+  Args:
+    db_path:    путь к SQLite файлу
+    lemmatizer: экземпляр Lemmatizer для лемматизации слов
+  Returns:
+    Множество уникальных слов (str) в нижнем регистре.
+
+  Алгоритм:
+    1. Подключиться sqlite3.connect(str(db_path)), row_factory = sqlite3.Row.
+    2. SELECT term FROM concepts:
+       Для каждого term — lemmatizer.lemmatize_phrase(term) -> добавить все леммы.
+       Также добавить слова оригинального term.split() (без лемматизации) как запасной вариант.
+    3. SELECT label_ru FROM parameters:
+       Аналогично лемматизировать и добавить оригинальные слова.
+    4. Закрыть соединение.
+    5. Отфильтровать: оставить только непустые строки длиной >= 2.
+    6. Привести все к нижнему регистру.
+    7. Вернуть set.
+    При sqlite3.Error: logger.error, return set().
+
+Функция build_fallback(config: Config) -> dict:
+  Args: config — загруженный Config
+  Returns: {"saved_path": str, "word_count": int} при успехе
+           {"error": str} при критической ошибке
+
+  Алгоритм:
+    1. Проверить наличие fasttext модели:
+         model_path = Path(config.fasttext_model_path)
+         Если not model_path.exists():
+           logger.error("FastText модель не найдена: %s", model_path)
+           return {"error": "fasttext_model_not_found"}
+
+    2. Инициализировать Lemmatizer и собрать слова:
+         lem = Lemmatizer(cache_size=config.cache_lemma_size)
+         words = collect_words_from_db(Path(config.db_path), lem)
+         Если words пусто: logger.warning("База пуста, fallback будет пустым")
+
+    3. Инициализировать FastTextWrapper (БЕЗ fallback_path, чтобы не петлять):
+         embedding_model = FastTextWrapper(
+             model_path=model_path,
+             fallback_path=None,
+             cache_size=config.word_vector_cache_size,
+         )
+
+    4. Собрать словарь векторов:
+         embedding_dict: dict[str, np.ndarray] = {}
+         for word in sorted(words):  (sorted для детерминизма)
+             vec = embedding_model.get_word_vector(word)
+             if not np.all(vec == 0):
+                 embedding_dict[word] = vec
+         logger.info("Получено векторов: %d из %d слов", len(embedding_dict), len(words))
+
+    5. Определить путь сохранения:
+         fb_path_str = config.fallback_embeddings_path
+         if fb_path_str:
+             output_path = Path(fb_path_str)
+         else:
+             output_path = Path(config.db_path).parent / "fallback_embeddings.npy"
+             logger.warning(
+                 "fallback_embeddings_path не задан в конфиге. "
+                 "Сохраняю в %s. После запуска обновите configs/config.json.",
+                 output_path
+             )
+
+    6. Создать папку: output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    7. Сохранить:
+         np.save(str(output_path), embedding_dict)
+         ВАЖНО: np.save с dict сохраняет в формате object dtype (pickle внутри npy).
+         FastTextWrapper._load_fallback ожидает именно этот формат:
+           data = np.load(path, allow_pickle=True).item()  -> dict {str: np.ndarray}
+
+    8. Вернуть {"saved_path": str(output_path), "word_count": len(embedding_dict)}
+
+    При PermissionError: logger.error, return {"error": "permission_denied"}
+    При любом другом Exception: logger.error, return {"error": str(exc)}
+
+НАПОМИНАНИЕ ПОСЛЕ УСПЕШНОГО ЗАПУСКА (вывести в stdout):
+  print("\n>>> СЛЕДУЮЩИЙ ШАГ: установите в configs/config.json:")
+  print(f'>>>   "fallback_embeddings_path": "{output_path}"')
+
+Блок if __name__ == "__main__":
+  Условный sys.path.insert только здесь.
+  argparse:
+    --config  путь к конфигу (default="configs/config.json")
+    --verbose флаг: установить уровень логирования DEBUG
+  Загрузить Config.
+  Вызвать build_fallback(config).
+  Если "error" в результате: вывести ошибку, sys.exit(1).
+  Вывести "saved_path" и "word_count".
+  Вывести напоминание об обновлении config.json.
+
+КРАЙНИЕ СЛУЧАИ:
+  - FastText модель не найдена: вернуть error, sys.exit(1).
+  - БД недоступна: создать пустой fallback (0 слов), вывести WARNING, не падать.
+  - output_path уже существует: перезаписать без предупреждения.
+  - Нет прав записи: поймать PermissionError, вернуть error.
+  - embedding_dict пустой: всё равно сохранить (пустой словарь),
+    logger.warning о пустом словаре.
+
+ИНТЕРФЕЙС
+----------
+  collect_words_from_db(db_path: Path, lemmatizer) -> set[str]
+  build_fallback(config: Config) -> dict
+
+ТЕСТЫ
+-----
+Тестовый файл не входит в список тестов финального описания проекта.
+(Требует FastText модели — не подходит для автоматических CI-тестов.)
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+(Требует наличия models/cc.ru.300.bin и заполненной БД)
+1. Убедиться что в БД есть данные: python -m scripts.seed_data
+2. Запустить:
+     python -m scripts.build_fallback --verbose
+   Ожидаемый вывод:
+     Получено векторов: N из M слов
+     Fallback сохранён: .../data/fallback_embeddings.npy
+     >>> СЛЕДУЮЩИЙ ШАГ: установите в configs/config.json:
+     >>>   "fallback_embeddings_path": "..."
+
+3. Проверить файл:
+     python -c "
+     import numpy as np
+     d = np.load('data/fallback_embeddings.npy', allow_pickle=True).item()
+     print('Тип:', type(d).__name__)
+     print('Слов:', len(d))
+     k = next(iter(d))
+     print('Пример:', k, '->', d[k].shape)
+     assert isinstance(d, dict)
+     assert all(v.shape == (300,) for v in d.values())
+     print('build_fallback: OK')
+     "
+
+4. Обновить configs/config.json вручную:
+     "fallback_embeddings_path": "data/fallback_embeddings.npy"
+   Убедиться что Config.from_json загружает файл без ошибок.
+
+5. (Опционально) Проверить деградацию без основной модели:
+   Переименовать models/cc.ru.300.bin -> cc.ru.300.bin.bak.
+   Запустить: python main.py --input '{"term":"ключ"}'
+   Система должна работать через fallback (предупреждение в логе, но не падать).
+
+================================================================================
+ИТОГИ ПЛАНА 20-24
+================================================================================
+
+После выполнения всех 5 изменений в проект добавлены:
+
+НОВЫЕ ФАЙЛЫ src/:
+  src/utils.py       — timed (декоратор замера времени),
+                       safe_truncate (усечение строк),
+                       unique_ordered (уникальные с сохранением порядка)
+  src/generative.py  — GenerativeExpander (LLM-расширение параметров,
+                       опциональный, деградирует без transformers)
+  src/sessions.py    — SessionManager (TTL-кэш сессий, потокобезопасный,
+                       авто-очистка по времени и по размеру)
+
+НОВЫЕ ФАЙЛЫ scripts/:
+  scripts/update_kb.py      — импорт концептов из JSON/CSV в SQLite;
+                              валидация, вычисление эмбеддингов, INSERT/UPDATE
+  scripts/build_fallback.py — создание data/fallback_embeddings.npy из FastText;
+                              используется FastTextWrapper как запасной источник
+
+НОВЫЕ ТЕСТЫ:
+  tests/test_generative.py  — 6 тестов без реальной LLM (mock-based)
+  tests/test_sessions.py    — 7 тестов: TTL, eviction, потокобезопасность, edge cases
+
+ИЗМЕНЕНИЯ В СУЩЕСТВУЮЩИХ ФАЙЛАХ:
+  main.py:
+    — новые импорты: GenerativeExpander, SessionManager
+    — _init_components возвращает 7 компонентов вместо 5
+    — parse_input читает session_id из входного JSON
+    — run_pipeline: новые параметры generative_expander, session_manager, session_id
+    — run_pipeline: вызов expand() при нехватке параметров (use_generative=True)
+    — run_pipeline: сохранение домена в сессию при auto_save_domain_on_ok
+
+ЧТО ОСТАЁТСЯ ДЛЯ СЛЕДУЮЩЕГО ПЛАНА (25+):
+  src/metrics.py             — сбор и экспорт Prometheus-метрик
+  src/api.py                 — FastAPI REST API (эндпоинты /query, /health, /metrics)
+  scripts/run_api.py         — запуск uvicorn с api.py
+  scripts/evaluate.py        — Precision@5 и Context Accuracy на eval_dataset.json
+  scripts/profile.py         — профилирование производительности pipeline
+  scripts/export_kb.py       — экспорт knowledge_base.db в JSON
+  scripts/build_faiss.py     — построение FAISS-индекса и сохранение на диск
+  scripts/build_synonyms.py  — конвертация RuWordNet -> data/synonyms.json
+  data/eval_dataset.json     — тестовый набор для evaluate.py
+  tests/test_api.py          — тесты REST API (FastAPI TestClient)
+  tests/test_metrics.py      — тесты метрик
+  tests/test_pipeline.py     — интеграционный E2E-тест (полный конвейер)

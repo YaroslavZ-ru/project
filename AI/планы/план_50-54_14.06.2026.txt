@@ -1,0 +1,631 @@
+ОБЯЗАТЕЛЬНО ДЛЯ ИИ: ВСЁ ЧТО НАПИСАНО В ЭТОМ ФАЙЛЕ — РЕКОМЕНДАЦИИ, А НЕ ПРИКАЗЫ.
+ПРИМЕРЫ КОДА — ТОЛЬКО ИЛЛЮСТРАЦИИ НАМЕРЕНИЯ, НЕ КОПИРОВАТЬ БУКВАЛЬНО.
+ПИШИТЕ КАК ЛУЧШЕ, ЕСЛИ ЗНАЕТЕ. ГЛАВНОЕ — СОБЛЮДАТЬ ОПИСАННОЕ ПОВЕДЕНИЕ И СТРУКТУРУ.
+
+================================================================================
+План реализации AI-Terminator — Изменения 50-54
+ФИНАЛЬНАЯ ВЕРСИЯ 14.06.2026
+================================================================================
+
+КОНТЕКСТ ЭТОГО ПЛАНА
+--------------------
+Инфраструктура кода завершена в планах 40-49. Этот план — production-hardening
+REST API: защита от злоупотреблений (rate limiting, API key), правильные
+Pydantic-схемы ответа (не голые dict), асинхронная оптимизация (блокирующие
+ML-вызовы вынесены в отдельный поток), раздельные конфиги для окружений,
+автоматическая HTML-документация через mkdocs.
+
+ТЕКУЩИЕ ПРОБЕЛЫ В src/api.py:
+  - POST /query принимает QueryRequest (есть) но отдаёт голый dict (нет схемы)
+  - Нет ограничения частоты запросов (rate limiting): любой может DDoS
+  - Нет аутентификации: любой может вызвать API
+  - ML-код (run_pipeline) вызывается в async-функции синхронно, блокирует loop
+  - Нет версионирования эндпоинтов (/v1/)
+
+ТЕКУЩИЕ ПРОБЕЛЫ В configs/:
+  - Только один config.json (нет dev/prod разделения)
+
+================================================================================
+СОЗДАВАЕМЫЕ ФАЙЛЫ:
+================================================================================
+  configs/dev.json              (Изменение 53)
+  configs/prod.json             (Изменение 53)
+  docs/index.md                 (Изменение 54)
+  docs/api.md                   (Изменение 54)
+  docs/configuration.md         (Изменение 54)
+  docs/scripts.md               (Изменение 54)
+  mkdocs.yml                    (Изменение 54)
+
+ИЗМЕНЯЕМЫЕ ФАЙЛЫ:
+  src/api.py      — rate limiting, API key, Pydantic output models,
+                    версионирование /v1/, asyncio.to_thread         (Изм. 50-52)
+  src/config.py   — поля: api_key_enabled, api_key, rate_limit_rpm,
+                    environment                                      (Изм. 50, 53)
+  configs/config.json — те же поля                                   (Изм. 50, 53)
+  requirements.txt — добавить: slowapi, limits; mkdocs, mkdocs-material
+                                                                     (Изм. 50, 54)
+  Makefile         — цели: docs-serve, docs-build                    (Изм. 54)
+  make.bat         — те же цели                                      (Изм. 54)
+
+================================================================================
+ОБЩИЕ ПРИНЦИПЫ ДЛЯ ВСЕХ ИЗМЕНЕНИЙ 50-54
+================================================================================
+
+1. Все новые поля Config опциональны с дефолтами — обратная совместимость.
+2. Rate limiting и API key — опциональные (выключены по умолчанию).
+   При отключённых — API работает ровно как раньше.
+3. asyncio.to_thread() — без изменений публичного интерфейса.
+4. dev.json и prod.json наследуют все поля config.json (дефолты),
+   переопределяют только отличающиеся поля.
+5. mkdocs — только документация, никакого нового кода.
+
+================================================================================
+ИЗМЕНЕНИЕ 50: Rate limiting + API key — src/api.py и src/config.py
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Добавить в API две защитные механики:
+  1. Rate limiting — ограничить частоту запросов (N запросов в минуту с IP)
+  2. API key — опциональная проверка заголовка X-API-Key
+
+Одновременно добавить три новых поля в Config и config.json.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+Без rate limiting один клиент может отправить тысячи запросов и перегрузить
+сервер. Без API key любой, кто узнал адрес сервера, может использовать
+API бесплатно. Оба механизма стандартны для любого production API.
+
+ОБНОВЛЕНИЕ src/config.py
+------------------------
+Добавить в Config (в блок опциональных полей):
+  api_key_enabled:  bool  = False   — включить проверку API key
+  api_key:          str   = ""      — секретный ключ (пустой = любой принимается)
+  rate_limit_rpm:   int   = 60      — максимум запросов в минуту с одного IP
+                                      (0 = без ограничений)
+
+Валидация в _validate:
+  rate_limit_rpm: if not isinstance(v, int) or v < 0:
+      raise ValueError("rate_limit_rpm должен быть целым числом >= 0")
+  api_key: если api_key_enabled=True и api_key пустой — logger.warning.
+
+Добавить в configs/config.json:
+  "api_key_enabled":  false,
+  "api_key":          "",
+  "rate_limit_rpm":   60
+
+ДОБАВИТЬ В requirements.txt (опциональная секция):
+  # Rate limiting для REST API:
+  # slowapi>=0.1.9
+  # limits>=3.6.0
+
+ДЕТАЛИ РЕАЛИЗАЦИИ — Rate Limiting в src/api.py
+-----------------------------------------------
+Опциональный импорт:
+  _SLOWAPI_AVAILABLE = True
+  try:
+      from slowapi import Limiter, _rate_limit_exceeded_handler
+      from slowapi.util import get_remote_address
+      from slowapi.errors import RateLimitExceeded
+  except ImportError:
+      _SLOWAPI_AVAILABLE = False
+
+В lifespan, ПОСЛЕ инициализации _cfg:
+  if _cfg.rate_limit_rpm > 0 and _SLOWAPI_AVAILABLE:
+      limiter = Limiter(key_func=get_remote_address)
+      app.state.limiter = limiter
+      app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+      logger.info("Rate limiting: %d req/min per IP", _cfg.rate_limit_rpm)
+  elif _cfg.rate_limit_rpm > 0 and not _SLOWAPI_AVAILABLE:
+      logger.warning("rate_limit_rpm задан, но slowapi не установлен. "
+                     "pip install slowapi limits")
+
+При использовании slowapi — декоратор на POST /v1/query:
+  @app.post("/v1/query")
+  @limiter.limit(f"{cfg.rate_limit_rpm}/minute")
+  async def query(request: Request, body: QueryRequest):
+      ...
+
+При RateLimitExceeded: slowapi автоматически возвращает HTTP 429.
+
+Если slowapi НЕ установлен, реализовать in-memory ограничение:
+  _rate_store: dict[str, deque] = {}   — IP -> deque временных меток
+
+  def _check_rate_limit(ip: str, rpm: int) -> bool:
+    now = time.monotonic()
+    window = 60.0
+    q = _rate_store.setdefault(ip, deque())
+    while q and now - q[0] > window:
+        q.popleft()
+    if len(q) >= rpm:
+        return False
+    q.append(now)
+    return True
+
+  В начале POST /v1/query:
+    if _cfg.rate_limit_rpm > 0 and not _SLOWAPI_AVAILABLE:
+        ip = request.client.host if request.client else "unknown"
+        if not _check_rate_limit(ip, _cfg.rate_limit_rpm):
+            raise HTTPException(429, detail="Слишком много запросов. Попробуйте позже.")
+
+ДЕТАЛИ РЕАЛИЗАЦИИ — API Key в src/api.py
+-----------------------------------------
+Импортировать secrets (stdlib) в начале файла.
+
+Функция verify_api_key(request: Request) -> None:
+  Если not _cfg.api_key_enabled: return
+  key = request.headers.get("X-API-Key", "")
+  Если not key:
+      raise HTTPException(401, detail="Требуется заголовок X-API-Key")
+  Если not secrets.compare_digest(key, _cfg.api_key):
+      logger.warning("Неверный API key от IP=%s",
+                     request.client.host if request.client else "?")
+      raise HTTPException(403, detail="Неверный API key")
+
+Добавить вызов verify_api_key в POST /v1/query и GET /v1/metrics.
+НЕ добавлять в GET /v1/health — healthcheck должен быть публичным.
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+Включить в configs/config.json:
+  "api_key_enabled": true, "api_key": "secret123", "rate_limit_rpm": 5
+
+Запустить: python -m scripts.run_api
+
+Без ключа (должно вернуть 401):
+  curl -X POST http://localhost:8000/v1/query \
+       -H "Content-Type: application/json" \
+       -d '{"term":"ключ"}'
+  Ожидаемый ответ: 401 {"detail":"Требуется заголовок X-API-Key"}
+
+С верным ключом (200):
+  curl ... -H "X-API-Key: secret123"
+  Ожидаемый ответ: 200 {...}
+
+После 5 запросов (429):
+  Ожидаемый ответ: 429 Too Many Requests
+
+================================================================================
+ИЗМЕНЕНИЕ 51: Pydantic output models + версионирование /v1/
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Создать Pydantic-схемы для выходных данных API. Переименовать эндпоинты
+на /v1/query, /v1/health, /v1/metrics, /v1/kb/stats. Сохранить старые
+пути как алиасы для обратной совместимости.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+Сейчас API возвращает голый dict — нет документации полей в Swagger UI,
+нет валидации выхода, клиенты не знают что ожидать. Pydantic output models
+автоматически генерируют документацию в /docs. Версионирование /v1/ позволяет
+в будущем добавить /v2/ не ломая существующих клиентов.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ — Pydantic output models в src/api.py
+--------------------------------------------------------
+Добавить рядом с QueryRequest:
+
+  class ParameterModel(BaseModel):
+    name:        str
+    label_ru:    str
+    type:        str
+    description: str | None = None
+    unit:        str | None = None
+    enum_values: list[str] | None = None
+    confidence:  float = 1.0
+
+  class SelectedContext(BaseModel):
+    domain:     str | None = None
+    concept_id: str | None = None
+    term:       str | None = None
+    similarity: float | None = None
+
+  class QueryResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore")  — лишние поля в dict игнорируются
+    status:                str
+    term:                  str
+    selected_context:      SelectedContext
+    needs_clarification:   bool = False
+    parameters:            list[ParameterModel]
+    suggested_refinements: list[str] = []
+    warnings:              list[str] = []
+    debug_info:            dict | None = None
+
+  class HealthResponse(BaseModel):
+    status:        str
+    version:       str
+    model_loaded:  bool = False
+    db_available:  bool = False
+
+  class KBStatsResponse(BaseModel):
+    concepts_count:   int
+    parameters_count: int
+    db_path:          str
+
+ОБНОВЛЕНИЕ эндпоинтов:
+  @app.post("/v1/query", response_model=QueryResponse)
+  async def query(request: Request, body: QueryRequest) -> QueryResponse:
+      ...
+      result_dict = await asyncio.to_thread(_api_run_pipeline, ...)
+      return QueryResponse.model_validate(result_dict)
+
+  @app.get("/v1/health", response_model=HealthResponse)
+  async def health() -> HealthResponse:
+      ...
+
+Старые пути как алиасы (include_in_schema=False — не отображаются в Swagger):
+  @app.post("/query", response_model=QueryResponse, include_in_schema=False)
+  async def query_legacy(request: Request, body: QueryRequest):
+      return await query(request, body)
+
+Обновить FastAPI app metadata:
+  app = FastAPI(
+      title="AI-Terminator API",
+      description="REST API для интеллектуального анализа терминов",
+      version="1.0.0",
+      docs_url="/docs",
+      redoc_url="/redoc",
+      lifespan=lifespan,
+  )
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+Запустить: python -m scripts.run_api
+Открыть в браузере: http://localhost:8000/docs
+Ожидаемый результат: Swagger UI со схемами QueryRequest и QueryResponse.
+
+================================================================================
+ИЗМЕНЕНИЕ 52: asyncio.to_thread() — неблокирующие ML-вызовы
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+В POST /v1/query вынести вызов _api_run_pipeline в asyncio.to_thread()
+чтобы ML-код не блокировал event loop FastAPI.
+Обеспечить потокобезопасность SQLite в KnowledgeBase.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+FastAPI использует asyncio event loop. Когда в async-функции вызывается
+синхронный тяжёлый ML-код — event loop блокируется и ВСЕ остальные запросы
+ждут. asyncio.to_thread() запускает блокирующий код в отдельном потоке из
+ThreadPoolExecutor — event loop остаётся свободным.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ src/api.py
+------------------------------
+Добавить в начало файла:
+  import asyncio
+
+В POST /v1/query изменить вызов:
+  БЫЛО (блокирует event loop):
+    result = _api_run_pipeline(term, hints, ...)
+
+  СТАЛО (не блокирует):
+    result = await asyncio.to_thread(
+        _api_run_pipeline,
+        term, hints, debug, min_confidence,
+        _cfg, _lemmatizer, _synonym_dict, _embedding_model,
+        _vector_cache, _kb, _generative_expander,
+        _session_manager, session_id, _metrics,
+    )
+
+ПОТОКОБЕЗОПАСНОСТЬ SQLite в src/knowledge_base.py
+--------------------------------------------------
+Вариант А (рекомендуемый): использовать check_same_thread=False + Lock.
+  В __init__ KnowledgeBase:
+    self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
+    self._db_lock = threading.Lock()
+
+  Все методы execute/fetchall оборачивать:
+    with self._db_lock:
+        rows = self._conn.execute(sql, params).fetchall()
+
+  Добавить threading в импорты KnowledgeBase.
+
+  Документировать в комментарии к __init__:
+    "check_same_thread=False + _db_lock обеспечивают безопасность при
+    использовании из нескольких потоков через asyncio.to_thread()."
+
+FastTextWrapper — потокобезопасен (GIL + нативный C++ код fasttext).
+Документировать этот факт в комментарии FastTextWrapper.
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+Запустить API и проверить параллельные запросы:
+  python -c "
+  import asyncio, httpx
+
+  async def load_test():
+      async with httpx.AsyncClient() as client:
+          tasks = [
+              client.post('http://localhost:8000/v1/query',
+                          json={'term': 'ключ', 'hints': ['техника']})
+              for _ in range(5)
+          ]
+          results = await asyncio.gather(*tasks)
+          for r in results:
+              print(r.status_code, r.elapsed.total_seconds(), 's')
+
+  asyncio.run(load_test())
+  "
+Ожидаемый вывод: все 5 запросов завершаются примерно ОДНОВРЕМЕННО
+(не последовательно) — event loop не заблокирован.
+
+================================================================================
+ИЗМЕНЕНИЕ 53: configs/dev.json + configs/prod.json
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Создать два override-конфига: configs/dev.json и configs/prod.json.
+Обновить Config.from_json() для поддержки override_path.
+Добавить поле environment в Config.
+Обновить scripts/run_api.py и main.py: поддержать --env аргумент.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+Сейчас один config.json для всего. Разработчику нужен DEBUG и нет rate limit.
+На продакшне — INFO, rate_limit=60, api_key включён. Дублировать весь
+config.json для каждого окружения неправильно. Решение: базовый config.json
++ маленький override-файл для окружения.
+
+ОБНОВЛЕНИЕ src/config.py
+------------------------
+Новое поле:
+  environment: str = "development"
+
+Валидация:
+  allowed = ("development", "production", "test")
+  if data.get("environment", "development") not in allowed:
+      raise ValueError(f"environment должен быть одним из: {allowed}")
+
+Обновить from_json() — добавить параметр override_path:
+  @classmethod
+  def from_json(cls, path, project_root=None, override_path=None):
+    base_data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if override_path is not None:
+        op = Path(override_path)
+        if op.exists():
+            override_data = json.loads(op.read_text(encoding="utf-8"))
+            base_data.update(override_data)
+            logger.info("Override-конфиг применён: %s", op)
+    # ... существующая логика _validate и создания Config
+
+Добавить метод:
+  @classmethod
+  def for_environment(cls, env="development", project_root=None):
+    root     = Path(project_root or Path.cwd())
+    base     = root / "configs" / "config.json"
+    override = root / "configs" / f"{env}.json"
+    return cls.from_json(base, project_root=root,
+                         override_path=override if override.exists() else None)
+
+ФОРМАТ configs/dev.json
+-----------------------
+Только поля ОТЛИЧАЮЩИЕСЯ от config.json:
+  {
+    "environment":       "development",
+    "api_host":          "127.0.0.1",
+    "api_port":          8000,
+    "rate_limit_rpm":    0,
+    "api_key_enabled":   false,
+    "use_metrics":       false,
+    "use_generative":    false,
+    "use_relations":     false,
+    "min_confidence":    0.2
+  }
+  (min_confidence занижен — больше результатов при тестировании)
+
+ФОРМАТ configs/prod.json
+------------------------
+  {
+    "environment":       "production",
+    "api_host":          "0.0.0.0",
+    "api_port":          8000,
+    "rate_limit_rpm":    60,
+    "api_key_enabled":   true,
+    "api_key":           "",
+    "use_metrics":       true,
+    "min_confidence":    0.35,
+    "log_level":         "INFO"
+  }
+  ВАЖНО: api_key пустой в prod.json. Значение задаётся через .env или
+  GitHub Secrets. Документировать в README.
+
+ОБНОВЛЕНИЕ scripts/run_api.py:
+  Добавить аргумент: --env str (default="development")
+  Использовать: Config.for_environment(args.env) вместо Config.from_json()
+
+ОБНОВЛЕНИЕ main.py:
+  Добавить --env в argparse. Использовать Config.for_environment().
+
+ДОБАВИТЬ В .gitignore:
+  configs/prod.local.json
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  python -c "
+  from src.config import Config
+  from pathlib import Path
+  dev = Config.for_environment('development', Path('.'))
+  print('dev: rate_limit=', dev.rate_limit_rpm, 'env=', dev.environment)
+  prod = Config.for_environment('production', Path('.'))
+  print('prod: rate_limit=', prod.rate_limit_rpm, 'env=', prod.environment)
+  "
+  Ожидаемый вывод:
+    dev: rate_limit= 0 env= development
+    prod: rate_limit= 60 env= production
+
+  python -m scripts.run_api --env production
+  Ожидаемый вывод: uvicorn на 0.0.0.0:8000 с rate limiting.
+
+================================================================================
+ИЗМЕНЕНИЕ 54: mkdocs документация
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Создать mkdocs.yml и папку docs/ с Markdown-страницами документации.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+README.md — краткая справка. Полноценная документация объясняет API
+эндпоинты, все конфиг-поля, каждый скрипт, архитектуру.
+mkdocs + mkdocs-material: пишешь Markdown, получаешь профессиональный сайт.
+
+ДОБАВИТЬ В requirements.txt (опциональная секция):
+  # Документация:
+  # mkdocs>=1.5.0
+  # mkdocs-material>=9.0.0
+
+ДЕТАЛИ РЕАЛИЗАЦИИ mkdocs.yml
+------------------------------
+  site_name:        "AI-Terminator"
+  site_description: "Интеллектуальный помощник по параметрам терминов"
+  docs_dir:         docs
+  site_dir:         site
+
+  theme:
+    name:     material
+    language: ru
+    palette:
+      scheme:  default
+      primary: indigo
+      accent:  blue
+    features:
+      - navigation.tabs
+      - navigation.sections
+      - search.highlight
+      - content.code.annotate
+
+  nav:
+    - Главная:       index.md
+    - REST API:      api.md
+    - Конфигурация:  configuration.md
+    - Скрипты:       scripts.md
+
+  markdown_extensions:
+    - admonition
+    - pymdownx.highlight
+    - pymdownx.superfences
+    - tables
+    - toc:
+        permalink: true
+
+ДЕТАЛИ docs/index.md
+---------------------
+  # AI-Terminator
+  Интеллектуальный помощник: по термину и уточняющим словам генерирует
+  набор параметров для его формального описания.
+  (пример: term="ключ гаечный", hints=["техника"] -> параметры)
+  (блок Быстрый старт с командами)
+  (схема архитектуры: ASCII-art пайплайн)
+
+ДЕТАЛИ docs/api.md
+-------------------
+  # REST API
+  Описание всех 4 эндпоинтов: POST /v1/query, GET /v1/health,
+  GET /v1/metrics, GET /v1/kb/stats.
+  Для каждого: пример curl, пример ответа JSON, коды ошибок.
+  Раздел "Аутентификация" (X-API-Key).
+  Раздел "Rate Limiting" (rate_limit_rpm).
+  Ссылка: При запущенном API -- http://localhost:8000/docs (Swagger UI).
+
+ДЕТАЛИ docs/configuration.md
+------------------------------
+  # Конфигурация
+  Полная таблица ВСЕХ полей Config с типом, дефолтом, описанием.
+  Раздел "Окружения" (dev.json / prod.json, --env аргумент).
+  Раздел "Безопасность" (api_key_enabled, rate_limit_rpm).
+
+ДЕТАЛИ docs/scripts.md
+-----------------------
+  # Скрипты
+  Таблица: скрипт | назначение | команда | ключевые аргументы.
+  Все 13 скриптов: setup_all, update_kb, build_fallback, build_faiss,
+  build_synonyms, build_centroids, export_kb, evaluate, profile,
+  run_api, healthcheck, update_relations + CHANGELOG ссылка.
+
+ОБНОВЛЕНИЕ Makefile:
+  docs-serve:
+      mkdocs serve
+  docs-build:
+      mkdocs build
+  docs-deploy:
+      mkdocs gh-deploy
+
+ОБНОВЛЕНИЕ make.bat:
+  :docs-serve
+  mkdocs serve
+  GOTO end
+  :docs-build
+  mkdocs build
+  GOTO end
+
+ДОБАВИТЬ В .gitignore:
+  site/
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  pip install mkdocs mkdocs-material
+  mkdocs serve
+  Открыть http://127.0.0.1:8000
+  Ожидаемый результат: сайт с навигацией, поиском, тёмной темой.
+
+  mkdocs build
+  Открыть site/index.html в браузере.
+
+================================================================================
+ИТОГИ ПЛАНА 50-54 — PRODUCTION-READY API
+================================================================================
+
+НОВЫЕ ФАЙЛЫ:
+  configs/dev.json     — overrides для разработки (rate_limit=0, debug)
+  configs/prod.json    — overrides для продакшна (rate_limit=60, api_key)
+  docs/index.md        — главная страница документации
+  docs/api.md          — описание REST API с примерами
+  docs/configuration.md — справочник по всем полям config.json
+  docs/scripts.md      — описание всех 13 скриптов
+  mkdocs.yml           — конфигурация генератора документации
+
+ИЗМЕНЁННЫЕ ФАЙЛЫ:
+  src/api.py      — rate limiting (slowapi / in-memory), API key
+                    (secrets.compare_digest), Pydantic output models
+                    (QueryResponse, HealthResponse, KBStatsResponse),
+                    версионирование /v1/, обратная совместимость /query,
+                    asyncio.to_thread() для ML-вызовов
+  src/knowledge_base.py — check_same_thread=False + _db_lock (потокобезопасность)
+  src/config.py   — +environment, +api_key_enabled, +api_key, +rate_limit_rpm,
+                    Config.from_json(override_path), Config.for_environment(env)
+  configs/config.json — +environment, +api_key_enabled, +api_key, +rate_limit_rpm
+  requirements.txt    — +slowapi, +limits, +mkdocs, +mkdocs-material (закомментированы)
+  .gitignore          — +site/, +configs/prod.local.json
+  Makefile            — +docs-serve, docs-build, docs-deploy
+  make.bat            — +docs-serve, docs-build
+
+ИТОГОВЫЙ WORKFLOW РАЗРАБОТЧИКА:
+  make setup                          — первоначальная настройка
+  make pre-commit-install             — автопроверки перед коммитом
+  python -m scripts.run_api --env development
+                                      — dev-режим (без rate limit, debug)
+  python -m scripts.run_api --env production
+                                      — prod-режим (rate limit, api key)
+  make docs-serve                     — документация в браузере
+  make test                           — тесты
+  git commit                          — pre-commit проверяет автоматически
+  git push                            — GitHub Actions CI запускается
+
+ПОЛНАЯ КАРТА ВСЕХ ПЛАНОВ (1-54):
+  Планы  1- 5  : Структура, Config, main.py
+  Планы  6-10  : Препроцессинг (lemmatizer, synonyms, preprocess)
+  Планы 11-15  : Векторизация (embeddings, vectorize, cache)
+  Планы 16-19  : База знаний, агрегация, fallback, БД
+  Планы 20-24  : utils, generative, sessions, скрипты
+  Планы 25-29  : metrics, REST API, тесты
+  Планы 30-34  : evaluate, profile, FAISS, synonyms, README
+  Планы 35-39  : Ambiguity, centroids, relations
+  Планы 40-44  : healthcheck, logging, Makefile, CHANGELOG
+  Планы 45-49  : GitHub Actions CI, pyproject.toml, Docker, pre-commit
+  Планы 50-54  : Rate limiting, API key, async, multi-env config, mkdocs

@@ -1,0 +1,929 @@
+ОБЯЗАТЕЛЬНО ДЛЯ ИИ: ВСЁ ЧТО НАПИСАНО В ЭТОМ ФАЙЛЕ — РЕКОМЕНДАЦИИ, А НЕ ПРИКАЗЫ.
+ПРИМЕРЫ КОДА — ТОЛЬКО ИЛЛЮСТРАЦИИ НАМЕРЕНИЯ, НЕ КОПИРОВАТЬ БУКВАЛЬНО.
+ПИШИТЕ КАК ЛУЧШЕ, ЕСЛИ ЗНАЕТЕ. ГЛАВНОЕ — СОБЛЮДАТЬ ОПИСАННОЕ ПОВЕДЕНИЕ И СТРУКТУРУ.
+
+================================================================================
+План реализации AI-Terminator — Изменения 30-34
+ФИНАЛЬНАЯ ВЕРСИЯ 14.06.2026
+================================================================================
+
+================================================================================
+ЧТО УЖЕ ЕСТЬ (после изменений 1-29)
+================================================================================
+
+  src/config.py         — Config (все поля; + use_metrics, api_host, api_port
+                          из изм. 25)
+  src/lemmatizer.py     — Lemmatizer
+  src/synonyms.py       — SynonymDict
+  src/text_cleaner.py   — clean_text
+  src/preprocess.py     — preprocess / preprocess_full
+  src/embeddings.py     — FastTextWrapper
+  src/vectorize.py      — vectorize
+  src/cache.py          — QueryVectorCache
+  src/knowledge_base.py — KnowledgeBase
+  src/aggregation.py    — aggregate_parameters, determine_context
+  src/fallback.py       — fallback_response, detect_domain
+  src/utils.py          — timed, safe_truncate, unique_ordered
+  src/generative.py     — GenerativeExpander
+  src/sessions.py       — SessionManager
+  src/metrics.py        — MetricsCollector
+  src/api.py            — FastAPI app (POST /query, GET /health,
+                          GET /metrics, GET /kb/stats)
+  main.py               — полный пайплайн (шаги 1-5 + generative + session)
+  scripts/__init__.py
+  scripts/init_db.py    — init_db
+  scripts/seed_data.py  — seed
+  scripts/setup_all.py  — init_db + seed_data
+  scripts/update_kb.py  — импорт JSON/CSV -> SQLite
+  scripts/build_fallback.py — build_fallback -> fallback_embeddings.npy
+  scripts/run_api.py    — запуск uvicorn
+  scripts/export_kb.py  — экспорт SQLite -> JSON
+  tests/__init__.py
+  tests/test_config.py, test_lemmatizer.py, test_synonyms.py,
+  tests/test_text_cleaner.py, test_preprocess_base.py, test_preprocess_full.py,
+  tests/test_embeddings.py, test_vectorize.py, test_cache.py,
+  tests/test_knowledge_base.py, test_aggregation.py, test_fallback.py,
+  tests/test_generative.py, test_sessions.py,
+  tests/test_metrics.py, test_api.py, test_pipeline.py
+  configs/config.json   — все поля
+  configs/domain_templates.json, configs/domain_keywords.json
+  data/knowledge_base.db, data/synonyms.json
+  requirements.txt      — текущая версия (fastapi, prometheus_client и др.
+                          закомментированы)
+  README.md             — существует (содержимое неполное)
+
+  НЕ СУЩЕСТВУЕТ (создаётся в этом плане):
+    data/eval_dataset.json
+    scripts/evaluate.py
+    scripts/profile.py
+    scripts/build_faiss.py
+    scripts/build_synonyms.py
+
+================================================================================
+СОЗДАВАЕМЫЕ ФАЙЛЫ:
+================================================================================
+  data/eval_dataset.json         (Изменение 30)
+  scripts/evaluate.py            (Изменение 30)
+  scripts/profile.py             (Изменение 31)
+  scripts/build_faiss.py         (Изменение 32)
+  scripts/build_synonyms.py      (Изменение 33)
+
+ИЗМЕНЯЕМЫЕ ФАЙЛЫ:
+  requirements.txt   — раскомментировать / добавить опциональные зависимости
+                       с пояснениями; финализировать версии   (Изменение 34)
+  README.md          — обновить до финального состояния проекта (Изменение 34)
+
+================================================================================
+ОБЩИЕ ПРИНЦИПЫ ДЛЯ ВСЕХ ИЗМЕНЕНИЙ 30-34
+================================================================================
+
+1. Python 3.10+: X | None, list[str].
+2. sys.path.insert — ТОЛЬКО внутри if __name__ == "__main__":
+3. Все пути — pathlib.Path.
+4. logging.getLogger(__name__) в каждом модуле.
+5. Type hints + docstring Google-style на всех публичных функциях.
+6. try/except на всех внешних вызовах (SQLite, ML-модели, файловая система).
+7. Опциональные зависимости (faiss-cpu, ruwordnet, prometheus_client) — через
+   try/except ImportError; деградировать, не падать.
+8. Все скрипты идемпотентны: повторный запуск не портит данные.
+9. Вывод скриптов в stdout — только значимые данные; детали — в лог.
+
+================================================================================
+ИЗМЕНЕНИЕ 30: data/eval_dataset.json + scripts/evaluate.py
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Создать эталонный датасет data/eval_dataset.json и скрипт scripts/evaluate.py,
+который вычисляет метрики качества: Precision@5 и Context Accuracy.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+Без объективной оценки качества невозможно понять деградировала ли система
+после изменений. evaluate.py запускает пайплайн на фиксированном наборе
+примеров и сравнивает выдачу с ожидаемыми параметрами. Precision@5 показывает
+долю релевантных параметров среди топ-5 предложенных. Context Accuracy — долю
+запросов, для которых определён правильный домен.
+Оба файла указаны в финальном описании проекта.
+
+ФОРМАТ data/eval_dataset.json
+------------------------------
+Список объектов. Каждый объект — один тест-кейс:
+  {
+    "id":       "eval_001",
+    "term":     "ключ гаечный",
+    "hints":    ["техника", "вращение"],
+    "expected_domain": "слесарный инструмент",
+    "expected_params": ["size_mm", "material", "torque_nm"]
+  }
+
+  Поля:
+    id              — уникальный идентификатор (строка)
+    term            — термин для анализа (непустая строка)
+    hints           — список уточнений (может быть пустым)
+    expected_domain — ожидаемый домен из selected_context.domain
+                      (если null — домен не проверяется)
+    expected_params — список name-ключей параметров, которые ДОЛЖНЫ попасть
+                      в топ-5 ответа (порядок не важен)
+
+Минимальный датасет (не менее 6 кейсов):
+  eval_001: "ключ гаечный",     ["техника"],          "слесарный инструмент",
+            ["size_mm", "material"]
+  eval_002: "ключ разводной",   ["инструмент"],       "слесарный инструмент",
+            ["size_range_mm", "material"]
+  eval_003: "ключ скрипичный",  ["музыка"],           "музыка",
+            ["clef_type", "staff_position"]
+  eval_004: "ключ",             [],                   null,
+            []   (пустые expected_params — тест только на статус ok)
+  eval_005: "болт",             ["крепёж"],           null,
+            []
+  eval_006: "гайка",            ["металл", "резьба"], null,
+            []
+
+Файл создать ВРУЧНУЮ (это данные, не генерируемый код). Структура JSON —
+корректный UTF-8 с отступами 2 пробела.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ scripts/evaluate.py
+---------------------------------------
+Импорты (stdlib): json, logging, sys, argparse, time
+from pathlib import Path
+
+Опциональный импорт компонентов проекта (внутри __main__ или в теле функций):
+from src.config import Config
+from main import _init_components, run_pipeline  (или дублировать логику)
+
+ВАЖНО: evaluate.py запускает ПОЛНЫЙ run_pipeline для каждого кейса.
+Если FastText недоступен — векторы будут нулевыми, поиск не сработает,
+но тест fallback-пути тоже полезен.
+
+Dataclass EvalResult:
+  id:              str
+  term:            str
+  status:          str      ("ok", "error")
+  returned_params: list[str]  (имена параметров name из ответа)
+  returned_domain: str | None
+  expected_params: list[str]
+  expected_domain: str | None
+  precision_at_5:  float    (вычисляется методом)
+  domain_correct:  bool
+  duration_s:      float
+
+  Метод compute_precision_at_5(self) -> float:
+    top5 = self.returned_params[:5]
+    Если expected_params пустой: return 1.0 (нет требований -> считаем ok)
+    hits = len(set(top5) & set(self.expected_params))
+    return hits / min(5, len(self.expected_params))
+
+  Метод compute_domain_correct(self) -> bool:
+    Если self.expected_domain is None: return True (домен не проверяем)
+    return self.returned_domain == self.expected_domain
+
+Функция run_evaluation(dataset_path: Path, config: Config,
+                        components: tuple) -> list[EvalResult]:
+  Args:
+    dataset_path: путь к eval_dataset.json
+    config:       Config
+    components:   результат _init_components(config) — tuple из 7 элементов
+  Returns:
+    Список EvalResult для каждого кейса.
+
+  Алгоритм:
+    1. Загрузить dataset_path (json.loads).
+       При ошибке: logger.error, return [].
+    2. Распаковать components:
+         (synonym_dict, lemmatizer, embedding_model, vector_cache,
+          kb, generative_expander, session_manager) = components
+    3. Для каждого кейса:
+       a. Зафиксировать start = time.monotonic().
+       b. Вызвать run_pipeline:
+            result = run_pipeline(
+                term=case["term"],
+                hints=case.get("hints", []),
+                debug=False,
+                min_confidence=None,
+                cfg=config,
+                lemmatizer=lemmatizer,
+                synonym_dict=synonym_dict,
+                embedding_model=embedding_model,
+                vector_cache=vector_cache,
+                kb=kb,
+                generative_expander=generative_expander,
+                session_manager=session_manager,
+                session_id=None,
+            )
+       c. duration = time.monotonic() - start
+       d. Извлечь returned_params:
+            [p["name"] for p in result.get("parameters", [])]
+       e. Извлечь returned_domain:
+            result.get("selected_context", {}).get("domain")
+       f. Создать EvalResult, вычислить precision_at_5 и domain_correct.
+       g. logger.info("eval %s: P@5=%.2f domain=%s t=%.3fs",
+                      case["id"], er.precision_at_5, er.domain_correct, duration)
+    4. Вернуть список EvalResult.
+
+Функция print_report(results: list[EvalResult]) -> None:
+  Вывести в stdout таблицу:
+    ID       | Term          | P@5  | Domain | Time
+    ---------|---------------|------|--------|------
+    eval_001 | ключ гаечный  | 1.00 | OK     | 0.123s
+    ...
+  Итоговая строка:
+    "Precision@5 (avg): X.XX | Context Accuracy: X.XX | Total: N кейсов"
+  Если N == 0: вывести предупреждение.
+
+Функция compute_summary(results: list[EvalResult]) -> dict:
+  avg_precision = среднее precision_at_5 по всем кейсам
+  context_accuracy = доля кейсов где domain_correct == True
+  return {
+      "precision_at_5":    round(avg_precision, 4),
+      "context_accuracy":  round(context_accuracy, 4),
+      "total_cases":       len(results),
+      "ok_cases":          len([r for r in results if r.status == "ok"]),
+      "error_cases":       len([r for r in results if r.status == "error"]),
+      "avg_duration_s":    round(sum(r.duration_s for r in results) / max(1, len(results)), 4),
+  }
+
+Блок if __name__ == "__main__":
+  Условный sys.path.insert.
+  argparse:
+    --dataset  путь к eval_dataset.json (default="data/eval_dataset.json")
+    --config   путь к конфигу (default="configs/config.json")
+    --json     флаг: вывести итог в JSON-формате вместо таблицы
+  Загрузить Config, вызвать _init_components.
+  Вызвать run_evaluation, print_report (или json-вывод), compute_summary.
+  Вывести summary в stdout.
+
+КРАЙНИЕ СЛУЧАИ:
+  - Файл eval_dataset.json не найден: вывести ERROR, sys.exit(1).
+  - Пустой датасет: вывести WARNING, вывести нулевые метрики.
+  - run_pipeline бросил исключение: поймать, записать EvalResult со status="error",
+    precision_at_5=0.0, domain_correct=False; продолжить.
+  - FastText не загружен: результаты будут fallback-ответами; это валидный сценарий.
+
+ИНТЕРФЕЙС
+----------
+  run_evaluation(dataset_path, config, components) -> list[EvalResult]
+  compute_summary(results) -> dict
+  print_report(results) -> None
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+1. Убедиться что БД инициализирована: python -m scripts.setup_all
+2. Выполнить:
+     python -m scripts.evaluate --dataset data/eval_dataset.json
+   Ожидаемый вывод: таблица с 6 строками, итоговые метрики.
+   При пустой или плохо заполненной БД: Precision@5 ~ 0.0 (это нормально —
+   показывает что БД нуждается в данных).
+3. Сохранить результат в JSON:
+     python -m scripts.evaluate --json > data/eval_results.json
+
+================================================================================
+ИЗМЕНЕНИЕ 31: scripts/profile.py — профилирование производительности
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Создать скрипт scripts/profile.py, который запускает пайплайн N раз
+на наборе тестовых запросов и выводит детальную статистику производительности
+каждого шага (preprocess, vectorize, search, aggregate, fallback).
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+После добавления новых модулей (generative, sessions, metrics) важно знать
+где тратится время. profile.py инструментирует каждый шаг декоратором timed
+из src/utils.py или прямым замером. Без FastText модели замеряются только
+быстрые шаги (preprocess, кэш). С FastText — полная картина.
+scripts/profile.py указан в финальном описании проекта.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ scripts/profile.py
+--------------------------------------
+Импорты (stdlib): logging, sys, argparse, time, statistics
+from pathlib import Path
+
+Тестовые запросы (встроенные по умолчанию):
+  TEST_QUERIES = [
+      {"term": "ключ",         "hints": ["техника"]},
+      {"term": "ключ",         "hints": ["музыка"]},
+      {"term": "болт",         "hints": ["крепёж", "металл"]},
+      {"term": "гайка",        "hints": []},
+      {"term": "термин",       "hints": ["база знаний"]},
+  ]
+
+Функция profile_pipeline(config: Config, components: tuple,
+                          queries: list[dict],
+                          n_runs: int = 3) -> dict:
+  Args:
+    config:     Config
+    components: tuple из _init_components
+    queries:    список запросов {"term": ..., "hints": ...}
+    n_runs:     сколько прогонов каждого запроса
+  Returns:
+    Словарь со статистикой: {имя_шага: {"min_s", "max_s", "mean_s", "calls"}}
+
+  Алгоритм:
+    1. Создать словарь timings: dict[str, list[float]] для накопления замеров.
+       Ключи: "total", "preprocess", "vectorize", "search", "aggregate_or_fallback"
+    2. Для каждого запроса, для каждого прогона:
+       a. Зафиксировать start_total = time.monotonic().
+
+       b. ШАГ 1 — preprocess:
+            t0 = time.monotonic()
+            processed = preprocess(term, hints, cfg, synonym_dict, lemmatizer)
+            timings["preprocess"].append(time.monotonic() - t0)
+
+       c. ШАГ 2 — vectorize (с кэшем):
+            t0 = time.monotonic()
+            query_vector = vector_cache.get(term, hints, cfg)
+            if query_vector is None:
+                query_vector = vectorize(processed, embedding_model)
+                vector_cache.put(term, hints, cfg, query_vector)
+            timings["vectorize"].append(time.monotonic() - t0)
+
+       d. ШАГ 3 — search:
+            t0 = time.monotonic()
+            candidates = kb.search_similar_concepts(
+                query_vector, max_candidates=cfg.max_candidates)
+            timings["search"].append(time.monotonic() - t0)
+
+       e. ШАГ 4-5 — aggregate или fallback:
+            t0 = time.monotonic()
+            if candidates:
+                aggregate_parameters(candidates, [], cfg.max_parameters)
+            else:
+                fallback_response(term, processed, cfg)
+            timings["aggregate_or_fallback"].append(time.monotonic() - t0)
+
+       f. timings["total"].append(time.monotonic() - start_total)
+
+    3. Вычислить для каждого ключа: min, max, mean, count.
+    4. Вернуть stats.
+
+Функция print_profile_report(stats: dict, n_queries: int, n_runs: int) -> None:
+  Вывести в stdout таблицу:
+    Шаг                     | Вызовов | Мин (мс) | Ср (мс) | Макс (мс)
+    -------------------------|---------|----------|---------|----------
+    preprocess               |   15    |   0.123  |  0.456  |  1.234
+    vectorize (с кэшем)      |   15    |   0.001  |  0.002  |  0.005
+    search                   |   15    |   0.234  |  0.567  |  2.345
+    aggregate_or_fallback    |   15    |   0.012  |  0.034  |  0.123
+    total                    |   15    |   0.567  |  1.234  |  3.456
+
+  Вывести примечание: "Vectorize включает кэш: повторные запросы быстрее".
+  Вывести: "Запросов: N_QUERIES, прогонов каждого: N_RUNS"
+
+Блок if __name__ == "__main__":
+  Условный sys.path.insert.
+  argparse:
+    --config   путь к конфигу (default="configs/config.json")
+    --runs     int, количество прогонов каждого запроса (default=3)
+    --queries  путь к JSON-файлу с запросами (default=None — использовать TEST_QUERIES)
+  Загрузить Config, _init_components, profile_pipeline, print_profile_report.
+
+КРАЙНИЕ СЛУЧАИ:
+  - FastText не загружен: vectorize вернёт нулевой вектор, search — пустой список.
+    Профилирование всё равно работает (замеряет быстрые пути).
+  - БД пустая: search вернёт [], aggregate_or_fallback измерит fallback.
+  - n_runs < 1: использовать n_runs = 1.
+  - queries пустой: использовать TEST_QUERIES.
+
+ИНТЕРФЕЙС
+----------
+  profile_pipeline(config, components, queries, n_runs=3) -> dict
+  print_profile_report(stats, n_queries, n_runs) -> None
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  python -m scripts.profile
+  Ожидаемый вывод: таблица со временами всех шагов.
+  Без FastText: preprocess и fallback будут замерены, search покажет ~0мс.
+
+  python -m scripts.profile --runs 5
+  Ожидаемый вывод: таблица с 25 вызовами (5 запросов * 5 прогонов).
+
+================================================================================
+ИЗМЕНЕНИЕ 32: scripts/build_faiss.py — построение FAISS-индекса
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Создать скрипт scripts/build_faiss.py, который читает все эмбеддинги концептов
+из БД, строит FAISS-индекс и сохраняет его на диск. Сохранённый индекс
+загружается KnowledgeBase при use_faiss=True и len(concepts) > faiss_threshold.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+При большой базе знаний (тысячи концептов) линейный поиск через numpy
+становится медленным. FAISS обеспечивает O(log N) поиск. Скрипт нужен
+для предварительного построения индекса перед деплоем с use_faiss=True.
+scripts/build_faiss.py указан в финальном описании проекта.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ scripts/build_faiss.py
+------------------------------------------
+На уровне модуля:
+  _FAISS_AVAILABLE = True
+  try:
+      import faiss
+  except ImportError:
+      _FAISS_AVAILABLE = False
+
+Функция build_faiss_index(config: Config) -> dict:
+  Args: config — Config
+  Returns:
+    {"index_path": str, "vectors_count": int} при успехе.
+    {"error": str} при критической ошибке.
+
+  Алгоритм:
+    1. Если not _FAISS_AVAILABLE:
+         logger.error("faiss-cpu не установлен. pip install faiss-cpu")
+         return {"error": "faiss_not_installed"}
+
+    2. Определить output_path:
+         faiss_path_str = config.faiss_index_path
+         Если faiss_path_str (непустой):
+           output_path = Path(faiss_path_str)
+         Иначе:
+           output_path = Path(config.db_path).parent / "faiss.index"
+           logger.warning("faiss_index_path не задан, сохраняю в %s", output_path)
+
+    3. Загрузить концепты из БД:
+         from src.knowledge_base import KnowledgeBase
+         kb = KnowledgeBase(config=config, embedding_model=None, synonym_dict=None)
+         concepts = kb.get_all_concepts(use_cache=False)
+         kb.close()
+         Если concepts пустой:
+           logger.error("База концептов пуста. Сначала выполните seed_data или update_kb.")
+           return {"error": "empty_database"}
+
+    4. Проверить что у концептов есть ненулевые эмбеддинги:
+         valid = [c for c in concepts if not np.all(c["embedding"] == 0)]
+         Если len(valid) < len(concepts):
+           logger.warning("Пропущено %d концептов с нулевым эмбеддингом",
+                          len(concepts) - len(valid))
+         Если valid пустой:
+           logger.error("Нет концептов с ненулевым эмбеддингом. Запустите seed_data.")
+           return {"error": "no_valid_embeddings"}
+
+    5. Построить матрицу эмбеддингов:
+         matrix = np.stack([c["embedding"] for c in valid]).astype(np.float32)
+         norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+         matrix = matrix / np.maximum(norms, 1e-9)  (нормализовать для cosine)
+
+    6. Построить индекс:
+         dim = matrix.shape[1]  (должно быть 300)
+         index = faiss.IndexFlatIP(dim)  (Inner Product = cosine для нормализованных)
+         index.add(matrix)
+         logger.info("FAISS индекс построен: %d векторов, размерность %d",
+                     index.ntotal, dim)
+
+    7. Сохранить маппинг concept_id -> индекс (нужен для поиска):
+         id_map_path = output_path.with_suffix(".ids.json")
+         id_map = [c["id"] for c in valid]
+         id_map_path.write_text(json.dumps(id_map, ensure_ascii=False), encoding="utf-8")
+
+    8. Сохранить индекс:
+         output_path.parent.mkdir(parents=True, exist_ok=True)
+         faiss.write_index(index, str(output_path))
+         logger.info("Индекс сохранён: %s", output_path)
+         logger.info("Маппинг ID сохранён: %s", id_map_path)
+
+    9. Вывести напоминание:
+         Установить в configs/config.json:
+           "use_faiss": true
+           "faiss_index_path": "{output_path}"
+
+   10. Вернуть {"index_path": str(output_path), "vectors_count": index.ntotal}
+
+  При Exception: logger.error, return {"error": str(exc)}.
+
+ОБНОВЛЕНИЕ src/knowledge_base.py (НЕОБХОДИМО):
+  Текущая реализация _build_faiss_index строит индекс прямо в памяти при
+  первом поиске. После build_faiss.py нужно уметь ЗАГРУЖАТЬ готовый индекс.
+  Добавить в KnowledgeBase метод _load_faiss_index_from_disk() -> bool:
+    Если config.faiss_index_path пустой: return False.
+    Если not _FAISS_AVAILABLE: return False.
+    id_map_path = Path(config.faiss_index_path).with_suffix(".ids.json")
+    Если not id_map_path.exists(): logger.warning, return False.
+    try:
+        index   = faiss.read_index(config.faiss_index_path)
+        id_map  = json.loads(id_map_path.read_text(encoding="utf-8"))
+        concepts = self.get_all_concepts(use_cache=True)
+        concepts_by_id = {c["id"]: c for c in concepts}
+        ordered = [concepts_by_id[cid] for cid in id_map if cid in concepts_by_id]
+        self._faiss_index = {"index": index, "concepts": ordered}
+        logger.info("FAISS индекс загружен с диска: %d векторов", index.ntotal)
+        return True
+    except Exception as exc:
+        logger.error("Ошибка загрузки FAISS: %s", exc)
+        return False
+
+  В search_similar_concepts, ДО _build_faiss_index, добавить попытку загрузки:
+    if self._config.use_faiss and ... and self._faiss_index is None:
+        loaded = self._load_faiss_index_from_disk()
+        if not loaded:
+            self._build_faiss_index(concepts)
+
+  ВАЖНО: это изменение src/knowledge_base.py НЕ ломает существующих тестов,
+  т.к. добавляет новый приватный метод и расширяет условие в search_similar_concepts.
+
+Блок if __name__ == "__main__":
+  Условный sys.path.insert.
+  argparse:
+    --config  путь к конфигу (default="configs/config.json")
+    --output  путь для сохранения индекса (override faiss_index_path из конфига)
+  Загрузить Config, вызвать build_faiss_index, вывести результат.
+  Вывести напоминание об обновлении config.json.
+
+ИНТЕРФЕЙС
+----------
+  build_faiss_index(config: Config) -> dict
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+(Требует: pip install faiss-cpu, заполненная БД с ненулевыми эмбеддингами)
+  python -m scripts.build_faiss
+  Ожидаемый вывод:
+    FAISS индекс построен: 3 векторов, размерность 300
+    Индекс сохранён: data/faiss.index
+    НАПОМИНАНИЕ: установите use_faiss=true в configs/config.json
+
+  Проверить загрузку:
+    python -c "
+    import faiss
+    index = faiss.read_index('data/faiss.index')
+    print('Загружен индекс:', index.ntotal, 'векторов')
+    "
+
+================================================================================
+ИЗМЕНЕНИЕ 33: scripts/build_synonyms.py — конвертация RuWordNet
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Создать скрипт scripts/build_synonyms.py, который конвертирует данные из
+RuWordNet в формат data/synonyms.json, используемый SynonymDict.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+Текущий data/synonyms.json — пустой заглушечный файл или содержит минимум данных.
+Настоящий словарь синонимов строится из RuWordNet (ruwordnet.ru) — русскоязычного
+аналога WordNet с синсетами, гиперонимами и гипонимами. Без полного словаря
+синонимов веса в формуле векторизации (0.1 * синонимы) не работают.
+scripts/build_synonyms.py указан в финальном описании проекта.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ scripts/build_synonyms.py
+---------------------------------------------
+На уровне модуля:
+  _RUWORDNET_AVAILABLE = True
+  try:
+      import ruwordnet
+  except ImportError:
+      _RUWORDNET_AVAILABLE = False
+
+ФОРМАТ ВЫХОДНОГО data/synonyms.json:
+  Словарь: {лемма: список синонимов}
+  Пример:
+    {
+      "ключ": ["отмычка", "пароль", "тональность", "родник"],
+      "болт": ["шуруп", "крепёж", "стержень"],
+      "гайка": ["контргайка", "крепёж"]
+    }
+  Все слова в нижнем регистре, лемматизированы.
+  Синонимы — список строк (леммы).
+  Максимум 10 синонимов на слово (избыточные отрезать).
+
+Функция build_from_ruwordnet(output_path: Path,
+                              lemmatizer,
+                              max_synonyms: int = 10) -> dict:
+  Args:
+    output_path:  куда сохранить synonyms.json
+    lemmatizer:   Lemmatizer (для лемматизации слов из RuWordNet)
+    max_synonyms: максимум синонимов на слово
+  Returns:
+    {"words_count": N, "synonyms_avg": float, "saved_to": str} или {"error": str}
+
+  Алгоритм:
+    1. Если not _RUWORDNET_AVAILABLE:
+         logger.error("ruwordnet не установлен. pip install ruwordnet")
+         return {"error": "ruwordnet_not_installed"}
+
+    2. Загрузить RuWordNet:
+         wn = ruwordnet.RuWordNet()
+         logger.info("RuWordNet загружен")
+
+    3. Собрать синонимы:
+         synonyms_dict: dict[str, set[str]] = {}
+         Для каждого синсета (sense group) в wn:
+           members = все леммы синсета (приведённые к нижнему регистру)
+           members_lemmas = [lemmatizer.lemmatize_word(m) for m in members]
+           members_lemmas = [m for m in members_lemmas if m]  (убрать пустые)
+           Для каждого слова w в members_lemmas:
+             Добавить в synonyms_dict[w] все остальные слова синсета.
+
+         ПРИМЕЧАНИЕ: RuWordNet API может отличаться от версии к версии.
+         Проверить актуальный API: ruwordnet.RuWordNet() и методы итерации синсетов.
+         ИЛЛЮСТРАЦИЯ:
+           for synset in wn.synsets():
+               senses = [s.lemma.lower() for s in synset.senses]
+               senses_lemmas = unique_ordered([lem.lemmatize_word(s) for s in senses])
+               for word in senses_lemmas:
+                   if word not in synonyms_dict:
+                       synonyms_dict[word] = set()
+                   synonyms_dict[word].update(
+                       s for s in senses_lemmas if s != word
+                   )
+
+    4. Ограничить количество синонимов:
+         result = {w: list(syns)[:max_synonyms]
+                   for w, syns in synonyms_dict.items()
+                   if syns}
+
+    5. Сохранить:
+         output_path.parent.mkdir(parents=True, exist_ok=True)
+         output_path.write_text(
+             json.dumps(result, ensure_ascii=False, indent=2),
+             encoding="utf-8"
+         )
+
+    6. Статистика:
+         avg_syns = sum(len(v) for v in result.values()) / max(1, len(result))
+         logger.info("Словарь синонимов: %d слов, avg %.1f синонимов", len(result), avg_syns)
+         return {"words_count": len(result), "synonyms_avg": round(avg_syns, 2),
+                 "saved_to": str(output_path)}
+
+  При Exception: logger.error, return {"error": str(exc)}.
+
+Функция build_minimal_fallback(output_path: Path) -> dict:
+  Если ruwordnet недоступен — создать минимальный словарь из встроенных данных.
+  Встроенный словарь (хардкодированный в скрипте, 20-30 слов):
+    {
+      "ключ": ["отмычка", "инструмент"],
+      "болт": ["крепёж", "шуруп"],
+      "гайка": ["крепёж"],
+      "материал": ["вещество", "субстанция"],
+      "размер": ["габарит", "величина"],
+      "тип": ["вид", "разновидность", "категория"],
+      ... (не менее 20 слов)
+    }
+  Сохранить в output_path. Вернуть {"words_count": N, "source": "fallback"}.
+  Использовать ТОЛЬКО если ruwordnet не установлен И output_path не существует.
+
+Блок if __name__ == "__main__":
+  Условный sys.path.insert.
+  argparse:
+    --output      путь для synonyms.json (default из config.synonyms_path)
+    --config      путь к конфигу (default="configs/config.json")
+    --max-synonyms  int (default=10)
+    --fallback    флаг: использовать встроенный словарь даже если ruwordnet есть
+  Если not _RUWORDNET_AVAILABLE or args.fallback:
+    Вывести WARNING, вызвать build_minimal_fallback.
+  Иначе:
+    Загрузить Lemmatizer, вызвать build_from_ruwordnet.
+
+КРАЙНИЕ СЛУЧАИ:
+  - ruwordnet не установлен: использовать build_minimal_fallback.
+  - output_path уже существует: перезаписать (спросить подтверждение если --interactive).
+  - Lemmatizer не инициализирован до вызова build_from_ruwordnet:
+    Создать Lemmatizer(cache_size=1000) внутри функции если не передан.
+  - RuWordNet API изменился: поймать AttributeError, вывести инструкцию.
+
+ИНТЕРФЕЙС
+----------
+  build_from_ruwordnet(output_path, lemmatizer, max_synonyms=10) -> dict
+  build_minimal_fallback(output_path) -> dict
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+БЕЗ ruwordnet (минимальный словарь):
+  python -m scripts.build_synonyms --fallback
+  Ожидаемый вывод: "Создан минимальный словарь: 20+ слов -> data/synonyms.json"
+  Проверить:
+    python -c "
+    import json, pathlib
+    d = json.loads(pathlib.Path('data/synonyms.json').read_text(encoding='utf-8'))
+    print('Слов:', len(d))
+    print('Пример ключ:', d.get('ключ'))
+    "
+
+С ruwordnet (полный словарь):
+  pip install ruwordnet
+  python -m scripts.build_synonyms
+  Ожидаемый вывод: "Словарь синонимов: N слов, avg X.X синонимов"
+  (N может быть несколько тысяч)
+
+  Проверить что SynonymDict корректно читает новый файл:
+    python -c "
+    from src.synonyms import SynonymDict
+    sd = SynonymDict('data/synonyms.json')
+    print(sd.get_synonyms('ключ', max_synonyms=5))
+    "
+
+================================================================================
+ИЗМЕНЕНИЕ 34: Финализация — requirements.txt + README.md
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Обновить requirements.txt: раскомментировать опциональные зависимости,
+разбить на секции, добавить prometheus_client и httpx.
+Обновить README.md: написать полную документацию проекта.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+Проект завершён структурно (все модули из финального описания реализованы).
+requirements.txt остался в начальном состоянии: fastapi, uvicorn, prometheus_client,
+httpx и другие зависимости закомментированы или отсутствуют.
+README.md неполный. Это последний шаг, превращающий набор файлов в готовый проект.
+
+ФИНАЛЬНАЯ ВЕРСИЯ requirements.txt
+-----------------------------------
+Структура файла с секциями:
+
+  # AI-Terminator -- зависимости проекта
+  # Установка базовых зависимостей: pip install -r requirements.txt
+  # Установка всех зависимостей:    pip install -r requirements.txt -r requirements-optional.txt
+
+  # ============================================================
+  # ОБЯЗАТЕЛЬНЫЕ ЗАВИСИМОСТИ
+  # ============================================================
+
+  # Морфологический анализ русского языка
+  pymorphy3>=2.0.0
+  pymorphy3-dicts-ru>=2.4.0
+
+  # Векторные вычисления
+  numpy>=1.24.0
+
+  # Тестирование
+  pytest>=7.0.0
+
+  # ============================================================
+  # FastText (ОБЯЗАТЕЛЬНА для векторизации)
+  # ============================================================
+  # На Linux/macOS:
+  #   pip install fasttext>=0.9.2
+  # На Windows (без компилятора C++):
+  #   pip install fasttext-wheel>=0.9.2
+  # Выберите одну из двух строк и раскомментируйте:
+  # fasttext>=0.9.2
+  # fasttext-wheel>=0.9.2
+
+  # ============================================================
+  # ОПЦИОНАЛЬНЫЕ ЗАВИСИМОСТИ
+  # ============================================================
+  # Раскомментировать нужное:
+
+  # FAISS -- быстрый поиск (use_faiss=true в config.json)
+  # faiss-cpu>=1.7.0
+
+  # Генеративный модуль (use_generative=true в config.json)
+  # transformers>=4.30.0
+  # torch>=2.0.0
+
+  # REST API
+  # fastapi>=0.100.0
+  # uvicorn>=0.23.0
+  # httpx>=0.24.0       (нужен для тестов API через TestClient)
+
+  # Prometheus-метрики (use_metrics=true в config.json)
+  # prometheus_client>=0.17.0
+
+  # Словарь синонимов из RuWordNet
+  # ruwordnet>=1.0.0
+
+ВАЖНО: pymorphy3 изменить с >=1.0.0 на >=2.0.0 (в текущем requirements.txt
+указана версия >=1.0.0 — исправить).
+
+ФИНАЛЬНОЕ СОДЕРЖИМОЕ README.md
+--------------------------------
+README.md должен содержать следующие разделы:
+
+  # AI-Terminator
+
+  Интеллектуальный помощник: по введённому термину и уточняющим словам
+  генерирует набор параметров для формального описания термина в базе знаний.
+
+  ## Назначение
+  [2-3 предложения с примером term="ключ", hints=["техника"] -> параметры]
+
+  ## Быстрый старт
+
+  ### 1. Клонировать и настроить
+    git clone ...
+    cd project
+    python setup_project.py
+    pip install -r requirements.txt
+
+  ### 2. Скачать FastText модель
+    # Скачать cc.ru.300.bin (~8 ГБ) и поместить в models/
+
+  ### 3. Инициализировать базу данных
+    python -m scripts.setup_all
+
+  ### 4. Запустить
+    # CLI:
+    python main.py --input '{"term":"ключ","hints":["техника"]}'
+
+    # REST API (требует fastapi + uvicorn):
+    pip install fastapi uvicorn httpx
+    python -m scripts.run_api
+
+  ## Структура проекта
+  [Дерево папок из финального описания: src/, scripts/, tests/, configs/, data/, models/]
+
+  ## Конфигурация
+  [Таблица ключевых полей config.json с описанием и дефолтами]
+  Минимальная таблица (10-15 ключевых полей):
+    | Поле                | Тип   | Дефолт | Описание               |
+    |---------------------|-------|--------|------------------------|
+    | min_confidence      | float | 0.3    | Порог сходства         |
+    | use_generative      | bool  | false  | Включить LLM           |
+    | use_faiss           | bool  | false  | FAISS-индекс           |
+    | use_metrics         | bool  | false  | Prometheus-метрики     |
+    | api_host            | str   | 127... | Хост REST API          |
+    | api_port            | int   | 8000   | Порт REST API          |
+    | session_ttl_seconds | int   | 1800   | TTL сессии (сек)       |
+
+  ## Скрипты
+  [Список всех scripts/ с однострочным описанием и командой запуска]
+    python -m scripts.setup_all            — первоначальное заполнение БД
+    python -m scripts.update_kb --file ... — импорт концептов из JSON/CSV
+    python -m scripts.evaluate             — оценка качества (Precision@5)
+    python -m scripts.profile              — профилирование pipeline
+    python -m scripts.build_fallback       — создание fallback эмбеддингов
+    python -m scripts.build_faiss          — построение FAISS-индекса
+    python -m scripts.build_synonyms       — словарь синонимов из RuWordNet
+    python -m scripts.export_kb            — экспорт БД в JSON
+    python -m scripts.run_api              — запуск REST API
+
+  ## REST API
+  [Описание 4 эндпоинтов: POST /query, GET /health, GET /metrics, GET /kb/stats]
+  Пример запроса:
+    curl -X POST http://localhost:8000/query \
+         -H "Content-Type: application/json" \
+         -d '{"term":"ключ","hints":["техника"]}'
+
+  ## Тестирование
+    python -m pytest tests/ -v
+
+  ## Требования
+  Python 3.10+. FastText модель cc.ru.300.bin (~8 ГБ, скачать отдельно).
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+1. Убедиться что requirements.txt корректно парсится pip:
+     pip install -r requirements.txt --dry-run
+   (не должно падать с ошибкой парсинга)
+
+2. README.md читается без ошибок:
+     python -c "
+     import pathlib
+     content = pathlib.Path('README.md').read_text(encoding='utf-8')
+     print('README.md:', len(content), 'символов')
+     assert '## Быстрый старт' in content
+     assert 'python main.py' in content
+     print('README: OK')
+     "
+
+3. Финальная проверка всей структуры:
+     python setup_project.py
+     python -m pytest tests/ -v --tb=short 2>&1 | tail -20
+   Ожидаемый результат: все тесты PASSED или SKIPPED.
+
+================================================================================
+ИТОГИ ПЛАНА 30-34 — ПРОЕКТ ЗАВЕРШЁН
+================================================================================
+
+После выполнения всех 5 изменений проект полностью соответствует финальному
+описанию (описание_проекта_13.06.2026.txt).
+
+НОВЫЕ ФАЙЛЫ:
+  data/eval_dataset.json  — 6+ тест-кейсов для оценки качества
+  scripts/evaluate.py     — Precision@5 и Context Accuracy
+  scripts/profile.py      — замер времени каждого шага пайплайна
+  scripts/build_faiss.py  — построение и сохранение FAISS-индекса
+  scripts/build_synonyms.py — конвертация RuWordNet -> synonyms.json
+
+ОБНОВЛЁННЫЕ ФАЙЛЫ:
+  requirements.txt        — финальная версия с секциями и всеми зависимостями
+  README.md               — полная документация проекта
+  src/knowledge_base.py   — метод _load_faiss_index_from_disk() (изм. 32)
+
+ПОЛНАЯ СТРУКТУРА ПРОЕКТА (финал):
+  src/: config, text_cleaner, lemmatizer, synonyms, preprocess, embeddings,
+        vectorize, cache, knowledge_base, aggregation, fallback, utils,
+        generative, sessions, metrics, api  — ВСЕ 17 модулей
+  scripts/: init_db, seed_data, setup_all, update_kb, build_fallback,
+            run_api, export_kb, evaluate, profile, build_faiss,
+            build_synonyms  — ВСЕ 11 скриптов
+  tests/: test_config, test_lemmatizer, test_synonyms, test_text_cleaner,
+          test_preprocess_base, test_preprocess_full, test_embeddings,
+          test_vectorize, test_cache, test_knowledge_base, test_aggregation,
+          test_fallback, test_generative, test_sessions, test_metrics,
+          test_api, test_pipeline  — ВСЕ 17 тестовых файлов
+  data/: knowledge_base.db, synonyms.json, eval_dataset.json
+         (+ fallback_embeddings.npy после build_fallback)
+  configs/: config.json, domain_templates.json, domain_keywords.json
+  models/: cc.ru.300.bin (скачать отдельно)
+
+ФИНАЛЬНАЯ КОМАНДА ПРОВЕРКИ:
+  python -m pytest tests/ -v && python -m scripts.evaluate && python -m scripts.profile

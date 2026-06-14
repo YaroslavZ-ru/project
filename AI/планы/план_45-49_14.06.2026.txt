@@ -1,0 +1,850 @@
+ОБЯЗАТЕЛЬНО ДЛЯ ИИ: ВСЁ ЧТО НАПИСАНО В ЭТОМ ФАЙЛЕ — РЕКОМЕНДАЦИИ, А НЕ ПРИКАЗЫ.
+ПРИМЕРЫ КОДА — ТОЛЬКО ИЛЛЮСТРАЦИИ НАМЕРЕНИЯ, НЕ КОПИРОВАТЬ БУКВАЛЬНО.
+ПИШИТЕ КАК ЛУЧШЕ, ЕСЛИ ЗНАЕТЕ. ГЛАВНОЕ — СОБЛЮДАТЬ ОПИСАННОЕ ПОВЕДЕНИЕ И СТРУКТУРУ.
+
+================================================================================
+План реализации AI-Terminator — Изменения 45-49
+ФИНАЛЬНАЯ ВЕРСИЯ 14.06.2026
+================================================================================
+
+КОНТЕКСТ ЭТОГО ПЛАНА
+--------------------
+Функциональная часть (планы 1-39) и DevOps-слой (план 40-44) завершены.
+Этот план — профессиональная инфраструктура кода: автоматическое CI через
+GitHub Actions, единая конфигурация инструментов через pyproject.toml,
+контейнеризация через Docker, автоматические проверки перед коммитом через
+pre-commit. После плана 45-49 проект соответствует стандартам корпоративного
+Python-проекта.
+
+АНАЛИЗ ТЕКУЩЕГО СОСТОЯНИЯ (что отсутствует):
+  .github/workflows/   — нет (нет CI/CD)
+  pyproject.toml       — нет (pytest настраивается отдельно; нет mypy, ruff)
+  Dockerfile           — нет (контейнер недоступен)
+  .dockerignore        — нет
+  docker-compose.yml   — нет
+  .pre-commit-config.yaml — нет (нет автопроверок перед коммитом)
+
+================================================================================
+СОЗДАВАЕМЫЕ ФАЙЛЫ:
+================================================================================
+  .github/workflows/ci.yml          (Изменение 45)
+  .github/workflows/release.yml     (Изменение 45)
+  pyproject.toml                    (Изменение 46)
+  Dockerfile                        (Изменение 47)
+  .dockerignore                     (Изменение 47)
+  docker-compose.yml                (Изменение 48)
+  docker-compose.dev.yml            (Изменение 48)
+  .pre-commit-config.yaml           (Изменение 49)
+
+ИЗМЕНЯЕМЫЕ ФАЙЛЫ:
+  .gitignore     — добавить .github/workflows/secrets.env  (Изменение 45)
+  Makefile       — добавить цели docker-build, docker-run,
+                   docker-compose-up, pre-commit-install    (Изменения 47-49)
+  make.bat       — те же цели для Windows                  (Изменения 47-49)
+
+================================================================================
+ОБЩИЕ ПРИНЦИПЫ ДЛЯ ВСЕХ ИЗМЕНЕНИЙ 45-49
+================================================================================
+
+1. CI не требует FastText модели — тесты запускаются с мокированным
+   embedding_model (np.zeros). Модель НЕ скачивается в CI.
+2. Docker-образ НЕ включает venv и .git.
+3. pyproject.toml — единая точка конфигурации для pytest, mypy, ruff.
+   Удалять отдельные файлы настроек (setup.cfg, .mypy.ini) не нужно
+   (их нет), но не создавать дублирующие файлы.
+4. pre-commit запускает только быстрые проверки (< 5 секунд):
+   trailing-whitespace, end-of-file-fixer, синтаксис Python, ruff.
+   Тесты pytest НЕ запускаются в pre-commit (они медленные).
+5. Все секреты (API-ключи, токены) — только через GitHub Secrets или .env.
+   Никаких секретов в коде или в CI-конфиге.
+
+================================================================================
+ИЗМЕНЕНИЕ 45: .github/workflows/ci.yml + release.yml — GitHub Actions
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Создать директорию .github/workflows/ и два workflow-файла:
+  ci.yml     — запускается при push и pull_request в main/develop
+  release.yml — запускается при создании GitHub Release (тег v*)
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+Без CI любой push в репозиторий может сломать тесты незаметно. GitHub Actions
+автоматически запускает тесты при каждом push, предупреждает если что-то
+сломалось, показывает статус в pull request. release.yml автоматически
+проверяет качество при выпуске версии.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ .github/workflows/ci.yml
+-------------------------------------------
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  test:
+    name: Тесты (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+      fail-fast: false  (продолжать тестировать другие версии при провале)
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Настройка Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Установка зависимостей
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov
+          # Опциональные зависимости для полного покрытия тестов:
+          pip install fastapi httpx || true  (|| true: не падать если недоступно)
+
+      - name: Инициализация структуры проекта
+        run: python setup_project.py
+
+      - name: Инициализация БД
+        run: python -m scripts.setup_all
+
+      - name: Запуск тестов с покрытием
+        run: |
+          python -m pytest tests/ -v --tb=short             --cov=src --cov-report=term-missing             --cov-report=xml:coverage.xml             -p no:warnings
+        env:
+          PYTHONPATH: .
+
+      - name: Загрузка отчёта покрытия
+        uses: codecov/codecov-action@v4
+        if: matrix.python-version == '3.11'
+        with:
+          file: coverage.xml
+          fail_ci_if_error: false
+
+  lint:
+    name: Линтинг
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Установка ruff
+        run: pip install ruff
+
+      - name: Проверка синтаксиса и стиля (ruff)
+        run: ruff check src/ scripts/ tests/ main.py
+
+      - name: Проверка форматирования (ruff format --check)
+        run: ruff format --check src/ scripts/ tests/ main.py
+
+  type-check:
+    name: Проверка типов (mypy)
+    runs-on: ubuntu-latest
+    continue-on-error: true  (не блокировать PR при ошибках типов — пока)
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Установка зависимостей
+        run: |
+          pip install -r requirements.txt
+          pip install mypy
+
+      - name: Проверка типов
+        run: mypy src/ --ignore-missing-imports --no-error-summary
+        continue-on-error: true
+
+ДЕТАЛИ РЕАЛИЗАЦИИ .github/workflows/release.yml
+-------------------------------------------------
+name: Release
+
+on:
+  release:
+    types: [published]  (срабатывает когда релиз опубликован на GitHub)
+
+jobs:
+  verify:
+    name: Верификация перед выпуском
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Установка зависимостей
+        run: pip install -r requirements.txt
+
+      - name: Инициализация и тесты
+        run: |
+          python setup_project.py
+          python -m scripts.setup_all
+          python -m pytest tests/ -v --tb=short
+        env:
+          PYTHONPATH: .
+
+      - name: Диагностика
+        run: python -m scripts.healthcheck
+
+      - name: Уведомление об успехе
+        run: echo "Release ${{ github.ref_name }} верифицирован!"
+
+ДОБАВИТЬ В .gitignore:
+  # GitHub Actions локальные секреты (НЕ добавлять в git)
+  .github/workflows/secrets.env
+  .actrc
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+Локально (требует act: https://github.com/nektos/act):
+  act push --job test
+  (Имитирует GitHub Actions локально)
+
+Без act — просто запушить в GitHub и проверить вкладку Actions.
+
+Проверить структуру файла:
+  python -c "
+  import yaml, pathlib
+  ci = yaml.safe_load(pathlib.Path('.github/workflows/ci.yml').read_text())
+  print('jobs:', list(ci['jobs'].keys()))
+  print('python versions:', ci['jobs']['test']['strategy']['matrix']['python-version'])
+  "
+  (Требует pip install pyyaml)
+
+================================================================================
+ИЗМЕНЕНИЕ 46: pyproject.toml — единая конфигурация инструментов
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Создать pyproject.toml в корне проекта. Файл централизует настройки
+pytest, mypy, ruff (линтер + форматировщик) и метаданные проекта.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+Без pyproject.toml конфигурация раздроблена по файлам: pytest.ini или
+setup.cfg для pytest, .mypy.ini для mypy, .ruff.toml для ruff.
+pyproject.toml — современный стандарт (PEP 517/518/621) для всего сразу.
+Также позволяет задать метаданные проекта (name, version, description),
+которые читаются при сборке пакета.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ pyproject.toml
+----------------------------------
+Файл разделён на секции:
+
+[build-system]
+  requires = ["setuptools>=68", "wheel"]
+  build-backend = "setuptools.backends.legacy:build"
+
+[project]
+  name        = "ai-terminator"
+  version     = "0.9.0"
+  description = "Интеллектуальный помощник по параметрам технических терминов"
+  readme      = "README.md"
+  requires-python = ">=3.10"
+  license     = {text = "MIT"}
+  authors     = [{name = "AI-Terminator Team"}]
+  keywords    = ["nlp", "knowledge-base", "russian", "terminology"]
+
+  dependencies — только обязательные (не опциональные):
+    "pymorphy3>=2.0.0",
+    "pymorphy3-dicts-ru>=2.4.0",
+    "numpy>=1.24.0",
+
+  [project.optional-dependencies]
+    api        = ["fastapi>=0.100.0", "uvicorn>=0.23.0", "httpx>=0.24.0"]
+    metrics    = ["prometheus_client>=0.17.0"]
+    generative = ["transformers>=4.30.0", "torch>=2.0.0"]
+    faiss      = ["faiss-cpu>=1.7.0"]
+    synonyms   = ["ruwordnet>=1.0.0"]
+    dev        = ["pytest>=7.0.0", "pytest-cov>=4.0.0", "ruff>=0.4.0",
+                  "mypy>=1.0.0", "pre-commit>=3.0.0"]
+    all        = [список всех выше]
+
+  [project.scripts]
+    ai-terminator = "main:main"  (CLI точка входа)
+
+[tool.pytest.ini_options]
+  testpaths   = ["tests"]
+  python_files = ["test_*.py"]
+  python_classes = ["Test*"]
+  python_functions = ["test_*"]
+  addopts = "-v --tb=short"
+  log_cli = true
+  log_cli_level = "WARNING"
+  filterwarnings = [
+      "ignore::DeprecationWarning",
+      "ignore::PendingDeprecationWarning",
+  ]
+
+[tool.mypy]
+  python_version = "3.10"
+  warn_return_any = true
+  warn_unused_configs = true
+  ignore_missing_imports = true
+  strict = false  (строгий режим включить позже, когда все аннотации добавлены)
+  exclude = ["venv/", "build/", "dist/"]
+  Для src/ папки:
+    [[tool.mypy.overrides]]
+    module = "src.*"
+    disallow_untyped_defs = true
+    disallow_any_unimported = false
+
+[tool.ruff]
+  target-version = "py310"
+  line-length    = 100
+  exclude = ["venv/", "build/", "dist/", ".git/"]
+
+  [tool.ruff.lint]
+    select = [
+        "E",   — pycodestyle errors
+        "W",   — pycodestyle warnings
+        "F",   — pyflakes
+        "I",   — isort (импорты)
+        "N",   — pep8-naming
+        "UP",  — pyupgrade (современный синтаксис Python)
+        "B",   — flake8-bugbear (распространённые ошибки)
+        "C4",  — flake8-comprehensions
+        "SIM", — flake8-simplify
+    ]
+    ignore = [
+        "E501",  — длинные строки (контролируется line-length)
+        "B008",  — function calls in defaults (FastAPI Depends)
+        "N806",  — Variable in function should be lowercase (ML-конвенции)
+    ]
+    per-file-ignores:
+      "tests/*" = ["S101"]  — assert в тестах — нормально
+      "scripts/*" = ["T201"] — print в скриптах — нормально
+
+  [tool.ruff.lint.isort]
+    known-first-party = ["src", "scripts"]
+    force-sort-within-sections = true
+
+  [tool.ruff.format]
+    quote-style = "double"
+    indent-style = "space"
+    skip-magic-trailing-comma = false
+
+[tool.coverage.run]
+  source = ["src"]
+  omit   = ["venv/*", "tests/*", "scripts/*"]
+
+[tool.coverage.report]
+  skip_empty = true
+  show_missing = true
+  precision = 1
+
+ОБНОВЛЕНИЕ requirements.txt (добавить секцию dev):
+  Добавить комментарий (в блок опциональных):
+    # Инструменты разработки (устанавливаются через pyproject.toml extras):
+    #   pip install -e ".[dev]"
+    # Или вручную:
+    # ruff>=0.4.0
+    # mypy>=1.0.0
+    # pytest-cov>=4.0.0
+    # pre-commit>=3.0.0
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  pip install ruff mypy pytest-cov
+
+  # Линтинг:
+  ruff check src/ scripts/ tests/ main.py
+  Ожидаемый вывод: список ошибок стиля (или "All checks passed").
+
+  # Форматирование (только проверка, не изменение):
+  ruff format --check src/ scripts/ tests/ main.py
+
+  # Проверка типов:
+  mypy src/ --ignore-missing-imports
+
+  # Тесты с покрытием:
+  python -m pytest tests/ --cov=src --cov-report=term-missing
+
+================================================================================
+ИЗМЕНЕНИЕ 47: Dockerfile + .dockerignore
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Создать Dockerfile для сборки образа AI-Terminator и .dockerignore для
+исключения ненужных файлов. Образ запускает REST API (src/api.py).
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+Docker позволяет развернуть API на любом сервере без ручной установки
+зависимостей: docker build + docker run. FastText модель монтируется
+как volume (не включается в образ — она слишком большая, ~8 ГБ).
+
+ДЕТАЛИ РЕАЛИЗАЦИИ Dockerfile
+------------------------------
+Многоэтапная сборка (multi-stage) для минимального финального образа:
+
+  # === Этап 1: зависимости ===
+  FROM python:3.11-slim AS builder
+
+  WORKDIR /build
+
+  # Сначала копируем только requirements.txt для кэширования слоя
+  COPY requirements.txt .
+
+  # Устанавливаем зависимости в /opt/venv
+  RUN python -m venv /opt/venv &&       /opt/venv/bin/pip install --upgrade pip &&       /opt/venv/bin/pip install -r requirements.txt &&       /opt/venv/bin/pip install fastapi uvicorn httpx
+
+  # === Этап 2: финальный образ ===
+  FROM python:3.11-slim AS runtime
+
+  # Метаданные образа
+  LABEL maintainer="AI-Terminator"
+  LABEL description="AI-Terminator REST API"
+  LABEL version="0.9.0"
+
+  # Создаём непривилегированного пользователя (безопасность)
+  RUN groupadd -r aiterminator && useradd -r -g aiterminator aiterminator
+
+  WORKDIR /app
+
+  # Копируем venv из builder
+  COPY --from=builder /opt/venv /opt/venv
+
+  # Копируем исходный код (БЕЗ venv, .git, models/)
+  COPY src/          ./src/
+  COPY scripts/      ./scripts/
+  COPY configs/      ./configs/
+  COPY main.py       .
+  COPY setup_project.py .
+
+  # Создаём папки
+  RUN mkdir -p data logs models &&       chown -R aiterminator:aiterminator /app
+
+  # Устанавливаем PATH для venv
+  ENV PATH="/opt/venv/bin:$PATH"
+  ENV PYTHONPATH="/app"
+  ENV PYTHONDONTWRITEBYTECODE=1
+  ENV PYTHONUNBUFFERED=1
+
+  # Инициализация структуры и БД
+  RUN python setup_project.py &&       python -m scripts.setup_all
+
+  # Переключаемся на непривилегированного пользователя
+  USER aiterminator
+
+  # Healthcheck контейнера
+  HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3       CMD python -m scripts.healthcheck || exit 1
+
+  # Порт API
+  EXPOSE 8000
+
+  # FastText модель монтируется как volume:
+  #   docker run -v /host/models:/app/models ...
+  VOLUME ["/app/models", "/app/data"]
+
+  # Точка входа
+  CMD ["/opt/venv/bin/python", "-m", "scripts.run_api"]
+
+ДЕТАЛИ РЕАЛИЗАЦИИ .dockerignore
+---------------------------------
+  # Виртуальные окружения и кэш
+  venv/
+  __pycache__/
+  *.py[cod]
+  .pytest_cache/
+  .coverage
+  htmlcov/
+
+  # Git
+  .git/
+  .gitignore
+  .github/
+
+  # Большие файлы (монтируются как volumes)
+  models/
+  data/knowledge_base.db
+  data/fallback_embeddings.npy
+  data/faiss.index
+
+  # Документация и конфиги разработки
+  docs/
+  *.md
+  CHANGELOG.md
+  Makefile
+  make.bat
+  .pre-commit-config.yaml
+  pyproject.toml
+
+  # Логи
+  logs/
+
+  # AI-папка (планы, описание — не нужны в контейнере)
+  AI/
+
+  # IDE
+  .idea/
+  .vscode/
+
+ОБНОВЛЕНИЕ Makefile (добавить цели):
+  docker-build:
+  	docker build -t ai-terminator:latest .
+
+  docker-run:
+  	docker run -p 8000:8000   	    -v $(PWD)/models:/app/models   	    -v $(PWD)/data:/app/data   	    ai-terminator:latest
+
+  docker-stop:
+  	docker stop $(docker ps -q --filter ancestor=ai-terminator) 2>/dev/null || true
+
+ОБНОВЛЕНИЕ make.bat (добавить цели):
+  :docker-build
+  docker build -t ai-terminator:latest .
+  GOTO end
+
+  :docker-run
+  docker run -p 8000:8000 -v %CD%/models:/app/models -v %CD%/data:/app/data ai-terminator:latest
+  GOTO end
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+(Требует установленного Docker)
+  # Сборка образа:
+  docker build -t ai-terminator:latest .
+  Ожидаемый результат: образ собран, ~500-800 МБ.
+
+  # Запуск:
+  docker run -p 8000:8000 ai-terminator:latest
+  Ожидаемый вывод: uvicorn INFO... Application startup complete.
+
+  # Проверка API:
+  curl http://localhost:8000/health
+  Ожидаемый ответ: {"status":"ok","version":"1.0.0",...}
+
+  # Размер образа:
+  docker images ai-terminator
+  Ожидаемый размер: < 800 МБ (без FastText модели).
+
+================================================================================
+ИЗМЕНЕНИЕ 48: docker-compose.yml + docker-compose.dev.yml
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Создать docker-compose.yml для продакшн-запуска и docker-compose.dev.yml
+для разработки (с hot-reload и монтированием исходников).
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+docker run с длинным набором флагов неудобен. docker-compose.yml описывает
+всю конфигурацию в файле: volumes, ports, environment, healthcheck, restart.
+docker-compose.dev.yml добавляет монтирование исходников — изменения кода
+видны в контейнере без пересборки (при reload=True в uvicorn).
+
+ДЕТАЛИ РЕАЛИЗАЦИИ docker-compose.yml (продакшн)
+-------------------------------------------------
+  version: "3.9"
+
+  services:
+    api:
+      image: ai-terminator:latest
+      build:
+        context: .
+        dockerfile: Dockerfile
+        target: runtime
+      container_name: ai-terminator-api
+      restart: unless-stopped
+
+      ports:
+        - "8000:8000"
+
+      volumes:
+        - ./models:/app/models:ro   (read-only: модель только читается)
+        - ./data:/app/data          (read-write: БД создаётся при старте)
+        - ./logs:/app/logs          (логи пробрасываем на хост)
+        - ./configs:/app/configs:ro
+
+      environment:
+        - PYTHONUNBUFFERED=1
+        - AI_LOG_LEVEL=INFO
+
+      healthcheck:
+        test: ["CMD", "python", "-m", "scripts.healthcheck"]
+        interval: 30s
+        timeout: 10s
+        start_period: 60s
+        retries: 3
+
+      logging:
+        driver: json-file
+        options:
+          max-size: "10m"
+          max-file: "3"
+
+  networks:
+    default:
+      name: ai-terminator-net
+
+ДЕТАЛИ РЕАЛИЗАЦИИ docker-compose.dev.yml (разработка)
+------------------------------------------------------
+  version: "3.9"
+
+  services:
+    api:
+      build:
+        context: .
+        dockerfile: Dockerfile
+        target: builder  (используем builder-образ — он содержит pip-кэш)
+      container_name: ai-terminator-dev
+      restart: "no"
+
+      ports:
+        - "8000:8000"
+        - "5678:5678"  (порт для debugger — например debugpy)
+
+      volumes:
+        - ./src:/app/src              (горячая замена кода)
+        - ./scripts:/app/scripts
+        - ./configs:/app/configs
+        - ./tests:/app/tests
+        - ./main.py:/app/main.py
+        - ./models:/app/models:ro
+        - ./data:/app/data
+        - ./logs:/app/logs
+
+      environment:
+        - PYTHONUNBUFFERED=1
+        - AI_LOG_LEVEL=DEBUG
+
+      command: >
+        python -m scripts.run_api --reload
+        (reload=True: uvicorn перезагружается при изменении файлов)
+
+  ИСПОЛЬЗОВАНИЕ:
+    Продакшн:  docker compose up -d
+    Dev:       docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+ОБНОВЛЕНИЕ Makefile (добавить):
+  compose-up:
+  	docker compose up -d
+
+  compose-down:
+  	docker compose down
+
+  compose-dev:
+  	docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+  compose-logs:
+  	docker compose logs -f api
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  # Продакшн-запуск:
+  docker compose up --build
+  Ожидаемый вывод: api | INFO ... Application startup complete.
+
+  # В другом терминале:
+  curl http://localhost:8000/health
+
+  # Остановка:
+  docker compose down
+
+  # Dev-режим (горячая замена):
+  docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+  Изменить src/api.py -> увидеть перезагрузку в логах uvicorn.
+
+================================================================================
+ИЗМЕНЕНИЕ 49: .pre-commit-config.yaml — автопроверки перед коммитом
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Создать .pre-commit-config.yaml, который запускает набор быстрых проверок
+автоматически при каждом git commit. Обновить Makefile/make.bat: добавить
+цель pre-commit-install.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+pre-commit перехватывает git commit и запускает проверки ДО того как изменения
+попадут в репозиторий. Это значит: никаких trailing spaces, правильные
+переводы строк, валидный синтаксис Python, отсортированные импорты —
+всё автоматически. Разработчик вообще не думает об этих деталях.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ .pre-commit-config.yaml
+-------------------------------------------
+  repos:
+    # ============================================================
+    # pre-commit-hooks: базовые файловые проверки
+    # ============================================================
+    - repo: https://github.com/pre-commit/pre-commit-hooks
+      rev: v4.6.0
+      hooks:
+        - id: trailing-whitespace       (убрать пробелы в конце строк)
+          args: [--markdown-linebreak-ext=md]
+        - id: end-of-file-fixer         (файл должен заканчиваться переводом строки)
+        - id: check-yaml                (валидация YAML-файлов)
+        - id: check-json                (валидация JSON-файлов, включая config.json)
+        - id: check-toml                (валидация pyproject.toml)
+        - id: check-added-large-files   (запрет коммита файлов > 1 МБ)
+          args: [--maxkb=1000]
+        - id: check-merge-conflict      (запрет коммита >>>>>> маркеров)
+        - id: check-case-conflict       (конфликты имён файлов case-insensitive)
+        - id: debug-statements          (запрет import pdb/breakpoint() в коде)
+        - id: mixed-line-ending         (единый стиль переноса строк)
+          args: [--fix=lf]
+        - id: no-commit-to-branch       (запрет прямого коммита в main)
+          args: [--branch=main]
+
+    # ============================================================
+    # ruff: линтинг и форматирование Python
+    # ============================================================
+    - repo: https://github.com/astral-sh/ruff-pre-commit
+      rev: v0.4.9
+      hooks:
+        - id: ruff                      (линтинг)
+          args: [--fix, --exit-non-zero-on-fix]
+        - id: ruff-format               (форматирование)
+
+    # ============================================================
+    # mypy: проверка типов (только для src/)
+    # ============================================================
+    - repo: https://github.com/pre-commit/mirrors-mypy
+      rev: v1.10.0
+      hooks:
+        - id: mypy
+          files: ^src/
+          args: [--ignore-missing-imports, --no-error-summary]
+          additional_dependencies: [numpy, pymorphy3]
+          pass_filenames: false  (запускать mypy на всей папке src/, не по файлам)
+
+    # ============================================================
+    # Проверка синтаксиса Python (быстрая, без mypy)
+    # ============================================================
+    - repo: https://github.com/pre-commit/pre-commit-hooks
+      rev: v4.6.0
+      hooks:
+        - id: check-ast                 (синтаксис Python файлов)
+
+  ФАЙЛ .pre-commit-config.yaml — это YAML. Соблюдать отступы точно.
+
+УСТАНОВКА И АКТИВАЦИЯ pre-commit:
+  1. pip install pre-commit
+  2. pre-commit install           (устанавливает git hook в .git/hooks/pre-commit)
+  3. pre-commit install --hook-type commit-msg   (если нужны msg-проверки)
+
+  Первый запуск всех хуков на всех файлах:
+    pre-commit run --all-files
+
+ОБНОВЛЕНИЕ Makefile (добавить):
+  pre-commit-install:
+  	pip install pre-commit
+  	pre-commit install
+  	pre-commit install --hook-type commit-msg
+  	echo "pre-commit установлен. Хуки активны."
+
+  pre-commit-run:
+  	pre-commit run --all-files
+
+  pre-commit-update:
+  	pre-commit autoupdate
+
+ОБНОВЛЕНИЕ make.bat (добавить):
+  :pre-commit-install
+  pip install pre-commit
+  pre-commit install
+  echo pre-commit установлен.
+  GOTO end
+
+  :pre-commit-run
+  pre-commit run --all-files
+  GOTO end
+
+ДОБАВИТЬ В .gitignore:
+  # pre-commit кэш
+  .pre-commit-cache/
+
+КРАЙНИЕ СЛУЧАИ:
+  - Разработчик хочет пропустить хуки для одного коммита:
+      git commit --no-verify -m "..."  (документировать в README)
+  - mypy падает из-за отсутствия stubs: добавить в args [--ignore-missing-imports]
+  - check-added-large-files блокирует test-данные: добавить их в
+      .pre-commit-config.yaml exclude или увеличить maxkb.
+  - no-commit-to-branch: при разработке прямо в main — закомментировать хук.
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  # Установка:
+  pip install pre-commit
+  pre-commit install
+
+  # Запуск всех хуков вручную:
+  pre-commit run --all-files
+  Ожидаемый вывод: список хуков с результатами (Passed/Failed/Fixed).
+
+  # Тест: создать файл с trailing spaces:
+  echo "test   " > /tmp/test_trailing.py
+  git add /tmp/test_trailing.py
+  git commit -m "test"
+  Ожидаемый вывод: "trailing-whitespace....Failed" — коммит отклонён.
+
+  # Проверить что JSON конфиги валидны:
+  pre-commit run check-json --all-files
+  Ожидаемый вывод: "check json...Passed"
+
+================================================================================
+ИТОГИ ПЛАНА 45-49 — ПРОФЕССИОНАЛЬНАЯ ИНФРАСТРУКТУРА КОДА
+================================================================================
+
+НОВЫЕ ФАЙЛЫ:
+  .github/workflows/ci.yml        — CI: тесты на Python 3.10/3.11/3.12 + lint
+  .github/workflows/release.yml   — верификация при GitHub Release
+  pyproject.toml                  — единая конфигурация pytest, mypy, ruff,
+                                    метаданные пакета, optional extras
+  Dockerfile                      — multi-stage образ, runtime без FastText
+  .dockerignore                   — исключает venv, git, models, AI/
+  docker-compose.yml              — продакшн-запуск (volumes, restart, health)
+  docker-compose.dev.yml          — dev-запуск (hot-reload, debug port)
+  .pre-commit-config.yaml         — 10 хуков: spaces, yaml/json/toml валидация,
+                                    ruff lint+format, mypy, no-commit-to-main
+
+ИЗМЕНЁННЫЕ ФАЙЛЫ:
+  .gitignore     — +.pre-commit-cache/, +.actrc, +.github/workflows/secrets.env
+  Makefile       — +8 новых целей (docker-*, compose-*, pre-commit-*)
+  make.bat       — +8 новых целей
+
+ИТОГОВАЯ КОМАНДА НАСТРОЙКИ НОВОГО РАЗРАБОТЧИКА:
+  git clone <repo>
+  cd project
+  make setup                  (setup_project + pip install + БД)
+  make pre-commit-install     (git hooks)
+  make health                 (диагностика)
+  make test                   (все тесты)
+
+ПОЛНАЯ КАРТА ВСЕХ ПЛАНОВ (1-49):
+  Планы  1-5:  Структура, Config, main.py
+  Планы  6-10: Шаг 1 пайплайна (preprocess)
+  Планы 11-15: Шаг 2 (embeddings, vectorize, cache)
+  Планы 16-19: Шаги 3-5 (knowledge_base, aggregation, fallback, БД)
+  Планы 20-24: utils, generative, sessions, update_kb, build_fallback
+  Планы 25-29: metrics, API, run_api, export_kb, все тесты
+  Планы 30-34: evaluate, profile, build_faiss, build_synonyms, README
+  Планы 35-39: Ambiguity, centroids, relations (все config-поля)
+  Планы 40-44: healthcheck, .gitignore, логи в файл, Makefile, CHANGELOG
+  Планы 45-49: GitHub Actions CI, pyproject.toml, Docker, docker-compose,
+               pre-commit hooks

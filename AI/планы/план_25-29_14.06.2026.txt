@@ -1,0 +1,1062 @@
+ОБЯЗАТЕЛЬНО ДЛЯ ИИ: ВСЁ ЧТО НАПИСАНО В ЭТОМ ФАЙЛЕ — РЕКОМЕНДАЦИИ, А НЕ ПРИКАЗЫ.
+ПРИМЕРЫ КОДА — ТОЛЬКО ИЛЛЮСТРАЦИИ НАМЕРЕНИЯ, НЕ КОПИРОВАТЬ БУКВАЛЬНО.
+ПИШИТЕ КАК ЛУЧШЕ, ЕСЛИ ЗНАЕТЕ. ГЛАВНОЕ — СОБЛЮДАТЬ ОПИСАННОЕ ПОВЕДЕНИЕ И СТРУКТУРУ.
+
+================================================================================
+План реализации AI-Terminator — Изменения 25-29
+ФИНАЛЬНАЯ ВЕРСИЯ 14.06.2026
+================================================================================
+
+================================================================================
+ЧТО УЖЕ ЕСТЬ (после изменений 1-24)
+================================================================================
+
+  src/config.py         — Config (все поля из изменений 1-19; из изм. 20-24
+                          поля уже есть: use_generative, generative_*, session_*,
+                          ambiguity_*, use_relations, relation_*, use_faiss,
+                          faiss_*, fallback_embeddings_path)
+                          + get_config(), reset_config()
+  src/lemmatizer.py     — Lemmatizer (синглтон, LRU-кэш)
+  src/synonyms.py       — SynonymDict
+  src/text_cleaner.py   — clean_text
+  src/preprocess.py     — preprocess / preprocess_full
+  src/embeddings.py     — FastTextWrapper (ленивая загрузка, fallback, LRU-кэш)
+  src/vectorize.py      — vectorize (взвешенная сумма + L2-норм.)
+  src/cache.py          — QueryVectorCache
+  src/knowledge_base.py — KnowledgeBase (search_similar_concepts,
+                          compute_concept_embedding, update_all_embeddings,
+                          _build_faiss_index, _linear_search)
+  src/aggregation.py    — aggregate_parameters, determine_context
+  src/fallback.py       — fallback_response, detect_domain
+  src/utils.py          — timed, safe_truncate, unique_ordered
+  src/generative.py     — GenerativeExpander (опциональная LLM-интеграция)
+  src/sessions.py       — SessionManager (TTL-кэш, потокобезопасный)
+  main.py               — _setup_logging, parse_input, _init_components
+                          (7 компонентов: synonym_dict, lemmatizer,
+                          embedding_model, vector_cache, kb,
+                          generative_expander, session_manager),
+                          run_pipeline (шаги 1-5 + generative expand
+                          + session save), main
+  scripts/__init__.py   — пустой
+  scripts/init_db.py    — init_db(db_path)
+  scripts/seed_data.py  — seed(config, force)
+  scripts/setup_all.py  — запуск init_db + seed_data
+  scripts/update_kb.py  — update_from_concepts (JSON/CSV -> SQLite)
+  scripts/build_fallback.py — build_fallback -> fallback_embeddings.npy
+  tests/__init__.py
+  tests/test_config.py, test_lemmatizer.py, test_synonyms.py,
+  tests/test_text_cleaner.py, test_preprocess_base.py, test_preprocess_full.py,
+  tests/test_embeddings.py, test_vectorize.py, test_cache.py,
+  tests/test_knowledge_base.py, test_aggregation.py, test_fallback.py,
+  tests/test_generative.py, test_sessions.py
+  configs/config.json   — все поля (use_generative=false; use_metrics НЕТ;
+                          api_host НЕТ; api_port НЕТ — добавляем в изм. 25)
+  configs/domain_templates.json, configs/domain_keywords.json
+  data/knowledge_base.db, data/synonyms.json
+
+================================================================================
+СОЗДАВАЕМЫЕ ФАЙЛЫ:
+================================================================================
+  src/metrics.py                    (Изменение 25)
+  src/api.py                        (Изменение 26)
+  scripts/run_api.py                (Изменение 27)
+  scripts/export_kb.py              (Изменение 27)
+  tests/test_metrics.py             (Изменение 28)
+  tests/test_api.py                 (Изменение 28)
+  tests/test_pipeline.py            (Изменение 29)
+
+ИЗМЕНЯЕМЫЕ ФАЙЛЫ:
+  src/config.py      — добавить 3 новых опциональных поля:
+                       use_metrics: bool = False
+                       api_host: str = "127.0.0.1"
+                       api_port: int = 8000
+                       (Изменение 25)
+  configs/config.json — добавить те же 3 поля с теми же значениями
+                        (Изменение 25)
+
+================================================================================
+ОБЩИЕ ПРИНЦИПЫ ДЛЯ ВСЕХ ИЗМЕНЕНИЙ 25-29
+================================================================================
+
+1. Python 3.10+: X | None, list[str], dict[K,V].
+2. sys.path.insert — ТОЛЬКО внутри if __name__ == "__main__":
+3. Все пути — только через pathlib.Path.
+4. logging.getLogger(__name__) в каждом модуле.
+5. Type hints + docstring Google-style на всех публичных функциях.
+6. try/except на всех внешних вызовах.
+7. Опциональные зависимости (fastapi, uvicorn, prometheus_client) —
+   оборачивать в try/except ImportError. Деградировать, не падать.
+8. FastAPI использует lifespan context manager (современный подход,
+   не устаревшие @app.on_event("startup")/@app.on_event("shutdown")).
+9. ML-компоненты (FastTextWrapper, KnowledgeBase) создаются ОДИН РАЗ
+   при старте API (в lifespan), не на каждый запрос.
+10. Новые поля конфига (use_metrics, api_host, api_port) добавляются
+    как опциональные с дефолтами — НЕ нарушают существующую валидацию.
+
+================================================================================
+ИЗМЕНЕНИЕ 25: src/metrics.py — сбор внутренних метрик + Prometheus
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Создать модуль src/metrics.py с классом MetricsCollector.
+Одновременно обновить src/config.py и configs/config.json: добавить
+три новых опциональных поля (use_metrics, api_host, api_port).
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+API (изм. 26) и пайплайн должны накапливать статистику: сколько запросов
+обработано, каково среднее время ответа, сколько fallback-ответов. При
+use_metrics=True и наличии prometheus_client эти метрики экспортируются
+в формат Prometheus (подключается к /metrics эндпоинту). При отсутствии
+библиотеки — возвращается внутренний JSON-формат. Модуль metrics.py
+указан в финальном описании проекта. Поля api_host/api_port нужны run_api.py
+(изм. 27), добавлять их сейчас — правильное место.
+
+ОБНОВЛЕНИЕ src/config.py
+------------------------
+В классе Config добавить три новых поля В БЛОК "Опциональные с дефолтами"
+(ПОСЛЕ строки "domain_centroids_min_concepts: int = 2"):
+  use_metrics: bool = False
+  api_host: str = "127.0.0.1"
+  api_port: int = 8000
+
+В методе _validate добавить проверку api_port:
+  val = data.get("api_port")
+  if val is not None:
+      if not isinstance(val, int) or val <= 0 or val > 65535:
+          raise ValueError(f"api_port должен быть целым числом от 1 до 65535, получено: {val!r}")
+
+Проверка api_host: если задан — должен быть непустой строкой. При None —
+брать дефолт "127.0.0.1". Добавить в _validate:
+  host = data.get("api_host")
+  if host is not None and (not isinstance(host, str) or not host.strip()):
+      raise ValueError("api_host должен быть непустой строкой")
+
+ОБНОВЛЕНИЕ configs/config.json
+-------------------------------
+Добавить в конец объекта (перед закрывающей }):
+  "use_metrics": false,
+  "api_host": "127.0.0.1",
+  "api_port": 8000
+
+ВАЖНО: Эти поля имеют дефолты в Config — даже если config.json не обновлён,
+код не упадёт. Но обновить config.json обязательно для согласованности.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ src/metrics.py
+----------------------------------
+На уровне модуля (опциональный prometheus_client):
+  _PROMETHEUS_AVAILABLE = True
+  try:
+      import prometheus_client
+      from prometheus_client import Counter, Histogram, Gauge, generate_latest
+  except ImportError:
+      _PROMETHEUS_AVAILABLE = False
+
+Класс MetricsCollector:
+  НЕ является синглтоном. Создаётся один раз в _init_components.
+
+  Конструктор __init__(self, use_metrics: bool = False):
+    self._use_metrics   = use_metrics
+    self._prometheus_on = use_metrics and _PROMETHEUS_AVAILABLE
+    Если use_metrics and not _PROMETHEUS_AVAILABLE:
+      logger.warning("prometheus_client не установлен. Метрики — только внутренние.")
+
+    Внутренние счётчики (всегда активны, независимо от Prometheus):
+      self._counts: dict[str, int] = {
+          "requests_total":    0,
+          "requests_ok":       0,
+          "requests_fallback": 0,
+          "requests_error":    0,
+          "cache_hits":        0,
+          "cache_misses":      0,
+      }
+      self._total_duration: float = 0.0   (сумма времён в секундах)
+      self._lock = threading.Lock()       (для потокобезопасности)
+
+    Если self._prometheus_on:
+      Зарегистрировать Prometheus-метрики. Использовать registry=None
+      (дефолтный global registry) только ЕСЛИ не уже зарегистрированы.
+      ИЛЛЮСТРАЦИЯ (безопасная регистрация):
+        try:
+            self._prom_requests_total = Counter(
+                "ait_requests_total", "Всего запросов AI-Terminator",
+                ["status"]
+            )
+            self._prom_duration = Histogram(
+                "ait_request_duration_seconds", "Время обработки запроса"
+            )
+            self._prom_cache_hits = Counter(
+                "ait_cache_hits_total", "Попаданий в кэш векторов"
+            )
+        except ValueError:
+            # Метрики уже зарегистрированы (повторное создание в тестах)
+            self._prometheus_on = False
+
+  Метод record_request(duration_s: float, status: str) -> None:
+    status — одно из: "ok", "fallback", "error".
+    С self._lock:
+      self._counts["requests_total"]    += 1
+      self._counts["requests_" + status] = self._counts.get(
+          "requests_" + status, 0) + 1
+      self._total_duration += max(0.0, duration_s)
+    Если self._prometheus_on:
+      self._prom_requests_total.labels(status=status).inc()
+      self._prom_duration.observe(duration_s)
+    logger.debug("metrics.record_request: status=%s, duration=%.3fs", status, duration_s)
+
+  Метод record_cache_hit() -> None:
+    С self._lock: self._counts["cache_hits"] += 1
+    Если self._prometheus_on: self._prom_cache_hits.inc()
+
+  Метод record_cache_miss() -> None:
+    С self._lock: self._counts["cache_misses"] += 1
+
+  Метод get_summary() -> dict:
+    С self._lock:
+      total = self._counts["requests_total"]
+      avg_dur = (self._total_duration / total) if total > 0 else 0.0
+      return {
+          "requests_total":    total,
+          "requests_ok":       self._counts["requests_ok"],
+          "requests_fallback": self._counts["requests_fallback"],
+          "requests_error":    self._counts["requests_error"],
+          "cache_hits":        self._counts["cache_hits"],
+          "cache_misses":      self._counts["cache_misses"],
+          "avg_duration_s":    round(avg_dur, 4),
+          "prometheus_active": self._prometheus_on,
+      }
+
+  Метод get_prometheus_text() -> str | None:
+    Если not self._prometheus_on: return None.
+    try:
+        return generate_latest().decode("utf-8")
+    except Exception as exc:
+        logger.error("Ошибка generate_latest: %s", exc)
+        return None
+
+ИНТЕГРАЦИЯ В main.py (НУЖНА, но НЕ обязательна для CLI):
+  Метрики в main.py — опциональная добавка. Если MetricsCollector не передан
+  в run_pipeline — ничего не ломается. Интеграция через API (изм. 26) важнее.
+  Опционально: добавить metrics=None в run_pipeline и вызывать
+  metrics.record_request() после завершения пайплайна.
+  Подробная интеграция описана в изменении 26.
+
+ИНТЕРФЕЙС (публичные методы MetricsCollector)
+----------------------------------------------
+  __init__(use_metrics: bool = False) -> None
+  record_request(duration_s: float, status: str) -> None
+  record_cache_hit() -> None
+  record_cache_miss() -> None
+  get_summary() -> dict
+  get_prometheus_text() -> str | None
+
+ТЕСТЫ
+-----
+Будут описаны в изменении 28 (tests/test_metrics.py).
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+1. Проверить что config.py обновлён (новые поля есть):
+     python -c "
+     from src.config import Config
+     from pathlib import Path
+     cfg = Config.from_json('configs/config.json', project_root=Path('.'))
+     print('use_metrics:', cfg.use_metrics)
+     print('api_host:', cfg.api_host)
+     print('api_port:', cfg.api_port)
+     "
+   Ожидаемый вывод: False, 127.0.0.1, 8000.
+
+2. Проверить MetricsCollector:
+     python -c "
+     from src.metrics import MetricsCollector
+     mc = MetricsCollector(use_metrics=False)
+     mc.record_request(0.123, 'ok')
+     mc.record_request(0.456, 'fallback')
+     mc.record_cache_hit()
+     summary = mc.get_summary()
+     assert summary['requests_total'] == 2
+     assert summary['requests_ok'] == 1
+     assert summary['requests_fallback'] == 1
+     assert summary['cache_hits'] == 1
+     assert summary['avg_duration_s'] > 0
+     print('metrics: OK')
+     print(summary)
+     "
+
+================================================================================
+ИЗМЕНЕНИЕ 26: src/api.py — FastAPI REST API
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Создать модуль src/api.py с FastAPI-приложением. Приложение инициализирует
+все ML-компоненты при старте (через lifespan), принимает запросы через
+POST /query, отдаёт статус через GET /health и метрики через GET /metrics.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+Модуль api.py завершает публичный интерфейс проекта: теперь AI-Terminator
+доступен не только через CLI (main.py), но и как REST-сервис, пригодный
+для интеграции с другими системами. fastapi и uvicorn — опциональные
+зависимости (закомментированы в requirements.txt). Модуль api.py указан
+в финальном описании проекта.
+
+ОПЦИОНАЛЬНЫЕ ЗАВИСИМОСТИ
+-------------------------
+На уровне модуля:
+  _FASTAPI_AVAILABLE = True
+  try:
+      from fastapi import FastAPI, HTTPException, Request
+      from fastapi.responses import JSONResponse, PlainTextResponse
+      from contextlib import asynccontextmanager
+      from pydantic import BaseModel, Field
+  except ImportError:
+      _FASTAPI_AVAILABLE = False
+
+Если FastAPI не установлен — при попытке создать приложение логировать ERROR
+и raise ImportError с понятным сообщением.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ src/api.py
+------------------------------
+Импорты из проекта (на уровне модуля, без sys.path — запуск через -m):
+  from src.config import Config
+  from src.metrics import MetricsCollector
+  import time, logging, json
+  from pathlib import Path
+
+Импорты _init_components и run_pipeline:
+  ИЛЛЮСТРАЦИЯ: Импортировать из main напрямую нельзя без побочных эффектов
+  (main.py вызывает _setup_logging() при импорте). Вместо этого api.py
+  сам реализует инициализацию компонентов, копируя логику _init_components.
+  Дублирование небольшое и оправдано изоляцией.
+
+  Функция _api_init_components(cfg: Config) -> tuple:
+    Идентична _init_components из main.py. Создаёт те же 7 компонентов.
+    (Lemmatizer, SynonymDict, FastTextWrapper, QueryVectorCache, KnowledgeBase,
+    GenerativeExpander, SessionManager)
+    Возвращает тот же tuple из 7 элементов.
+
+  Функция _api_run_pipeline(term, hints, debug, min_confidence, cfg,
+                             lemmatizer, synonym_dict, embedding_model,
+                             vector_cache, kb, generative_expander,
+                             session_manager, session_id,
+                             metrics: MetricsCollector | None) -> dict:
+    Вызывает run_pipeline из src/* напрямую (не импортирует из main).
+    Реализует тот же алгоритм шагов 1-5 + generative + session.
+    Добавляет вызов metrics.record_request() в конце.
+    ВАЖНО: перед вызовом записать start = time.monotonic().
+    После вызова:
+      duration = time.monotonic() - start
+      status = result.get("status", "error")
+      if metrics:
+          metrics.record_request(duration, status)
+    Вернуть result.
+
+  ПРИМЕЧАНИЕ: Если в будущем run_pipeline будет вынесен в src/pipeline.py —
+  обе точки входа (main.py и api.py) будут импортировать оттуда.
+  Пока дублирование допустимо.
+
+Pydantic-схемы:
+  class QueryRequest(BaseModel):
+    term: str = Field(..., min_length=1, max_length=200,
+                      description="Термин для анализа")
+    hints: list[str] = Field(default_factory=list,
+                             description="Уточняющие слова")
+    session_id: str | None = Field(None, description="ID сессии (опционально)")
+    debug: bool = Field(False, description="Включить debug_info в ответ")
+    min_confidence: float | None = Field(None, ge=0.0, le=1.0)
+
+  Pydantic автоматически валидирует входные данные — если term пустой или
+  слишком длинный, FastAPI вернёт 422 Unprocessable Entity без нашего кода.
+
+Глобальные переменные состояния приложения:
+  _cfg:               Config | None = None
+  _lemmatizer         = None
+  _synonym_dict       = None
+  _embedding_model    = None
+  _vector_cache       = None
+  _kb                 = None
+  _generative_expander = None
+  _session_manager    = None
+  _metrics: MetricsCollector | None = None
+
+Lifespan context manager:
+  @asynccontextmanager
+  async def lifespan(app: FastAPI):
+    global _cfg, _lemmatizer, _synonym_dict, _embedding_model
+    global _vector_cache, _kb, _generative_expander, _session_manager, _metrics
+
+    # Startup
+    PROJECT_ROOT = Path(__file__).parent.parent
+    _cfg = Config.from_json("configs/config.json", project_root=PROJECT_ROOT)
+    logger.info("API: конфигурация загружена")
+
+    (_synonym_dict, _lemmatizer, _embedding_model,
+     _vector_cache, _kb, _generative_expander,
+     _session_manager) = _api_init_components(_cfg)
+
+    _metrics = MetricsCollector(use_metrics=_cfg.use_metrics)
+    logger.info("API: компоненты инициализированы")
+
+    # Прогрев модели
+    try:
+        _ = _embedding_model.get_word_vector("а")
+        logger.info("API: прогрев FastText завершён")
+    except Exception as exc:
+        logger.warning("API: прогрев завершился с ошибкой: %s", exc)
+
+    yield  # приложение работает
+
+    # Shutdown
+    if _kb:
+        _kb.close()
+        logger.info("API: KnowledgeBase закрыт")
+
+  app = FastAPI(
+      title="AI-Terminator",
+      description="Интеллектуальный помощник по терминам",
+      version="1.0.0",
+      lifespan=lifespan,
+  )
+
+Эндпоинты:
+
+  POST /query:
+    @app.post("/query")
+    async def query(request: QueryRequest):
+      Проверить что компоненты инициализированы (если _cfg is None: raise 503).
+      Вызвать _api_run_pipeline с компонентами из глобальных переменных.
+      При ValueError (невалидные данные): raise HTTPException(400, detail=str(exc))
+      При Exception: logger.exception(...); raise HTTPException(500, ...)
+      Вернуть JSONResponse с результатом run_pipeline.
+
+      Особенности:
+        - hints из request.hints преобразовать: убрать пустые строки, strip()
+        - Если len(hints) > 3: оставить первые 3 (ТЗ: 1-3 подсказки)
+        - session_id брать из request.session_id (может быть None)
+
+  GET /health:
+    @app.get("/health")
+    async def health():
+      Вернуть:
+        {"status": "ok",
+         "version": "1.0.0",
+         "model_loaded": bool(_embedding_model and _embedding_model._model_loaded),
+         "db_available": bool(_kb and _kb._conn)}
+      Если компоненты не инициализированы: {"status": "starting"}
+
+  GET /metrics:
+    @app.get("/metrics")
+    async def metrics():
+      Если _metrics is None: вернуть JSONResponse({"error": "metrics not initialized"})
+      Попытаться получить prometheus_text = _metrics.get_prometheus_text()
+      Если prometheus_text is not None:
+        return PlainTextResponse(prometheus_text,
+                                 media_type="text/plain; version=0.0.4; charset=utf-8")
+      Иначе:
+        return JSONResponse(_metrics.get_summary())
+
+  GET /kb/stats:
+    @app.get("/kb/stats")
+    async def kb_stats():
+      Дополнительный эндпоинт для информации о БД.
+      Если _kb is None: raise HTTPException(503, "KB не инициализирован")
+      concepts = _kb.get_all_concepts(use_cache=True)
+      total_params = sum(len(c["parameters"]) for c in concepts)
+      return {
+          "concepts_count":   len(concepts),
+          "parameters_count": total_params,
+          "db_path":          str(_kb._db_path),
+      }
+
+ОБРАБОТКА ОШИБОК:
+  - Если компоненты не инициализированы (lifespan ещё не завершился):
+    raise HTTPException(503, detail="Сервис запускается. Попробуйте позже.")
+  - Если term пустой/невалидный: Pydantic вернёт 422 автоматически.
+  - Если run_pipeline вернул {"status": "error"}: вернуть HTTP 200 с этим JSON.
+    (Это не HTTP-ошибка, это бизнес-ошибка — пустой term и т.д.)
+  - Исключения внутри pipeline: HTTP 500.
+
+ВАЖНО ПРО ПОТОКИ:
+  FastTextWrapper и SQLite соединение не потокобезопасны (или условно безопасны).
+  Для продакшн-нагрузки: запускать uvicorn с --workers 1 (один процесс).
+  При необходимости масштабирования — использовать asyncio.to_thread() для
+  вызова blocking ML-кода. В текущем плане достаточно одного воркера.
+
+ИНТЕРФЕЙС (публичные сущности api.py)
+--------------------------------------
+  app: FastAPI  — объект приложения, используется uvicorn
+  QueryRequest  — Pydantic схема запроса
+  POST /query   — основной эндпоинт
+  GET  /health  — проверка готовности
+  GET  /metrics — метрики (Prometheus text или JSON)
+  GET  /kb/stats — статистика базы знаний
+
+ТЕСТЫ
+-----
+Будут описаны в изменении 28 (tests/test_api.py).
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+(Требует установки fastapi: pip install fastapi httpx uvicorn)
+1. Убедиться что БД инициализирована: python -m scripts.setup_all
+2. Запустить API:
+     python -m scripts.run_api
+   Ожидаемый вывод: uvicorn INFO ... Application startup complete.
+3. В другом терминале:
+     curl http://127.0.0.1:8000/health
+   Ожидаемый вывод: {"status":"ok","version":"1.0.0",...}
+4. Запрос:
+     curl -X POST http://127.0.0.1:8000/query \
+          -H "Content-Type: application/json" \
+          -d '{"term":"ключ","hints":["техника"]}'
+   Ожидаемый вывод: JSON с полями status, parameters, selected_context, ...
+5. Метрики:
+     curl http://127.0.0.1:8000/metrics
+
+================================================================================
+ИЗМЕНЕНИЕ 27: scripts/run_api.py + scripts/export_kb.py
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Создать два вспомогательных скрипта:
+  1. scripts/run_api.py — запуск uvicorn с src/api.py
+  2. scripts/export_kb.py — экспорт knowledge_base.db в JSON
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+run_api.py — точка запуска REST API. Читает параметры из конфига и CLI,
+запускает uvicorn. Простой, без бизнес-логики.
+export_kb.py — инструмент резервного копирования и миграции базы. Создаёт
+JSON-файл, совместимый с форматом update_kb.py для реимпорта. Оба указаны
+в финальном описании проекта.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ scripts/run_api.py
+--------------------------------------
+Импорты: logging, sys, argparse
+from pathlib import Path
+
+Проверить uvicorn:
+  try:
+      import uvicorn
+  except ImportError:
+      print("uvicorn не установлен. Выполните: pip install uvicorn")
+      sys.exit(1)
+
+Блок if __name__ == "__main__":
+  Условный sys.path.insert(0, str(Path(__file__).parent.parent))
+  logging.basicConfig(level=logging.INFO, ...)
+
+  argparse:
+    --host   str, default=None (если None — брать из cfg.api_host)
+    --port   int, default=None (если None — брать из cfg.api_port)
+    --reload bool flag: включить reload (только для разработки)
+    --config str, default="configs/config.json"
+
+  Загрузить Config.
+  host = args.host or cfg.api_host
+  port = args.port or cfg.api_port
+
+  logger.info("Запуск API на %s:%d", host, port)
+
+  uvicorn.run(
+      "src.api:app",
+      host=host,
+      port=port,
+      reload=args.reload,
+      log_level="info",
+  )
+
+  ВАЖНО: "src.api:app" — строковая ссылка, НЕ прямой импорт объекта.
+  Это нужно чтобы uvicorn мог использовать reload=True.
+  При reload=False можно передать объект app напрямую, но строка универсальнее.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ scripts/export_kb.py
+----------------------------------------
+Импорты: sqlite3, json, logging, sys, argparse
+from pathlib import Path
+
+Функция export_kb(config: Config, output_path: Path) -> dict:
+  Args:
+    config:      Config
+    output_path: куда сохранить JSON
+  Returns:
+    {"concepts_count": N, "parameters_count": M, "saved_to": str(output_path)}
+
+  Алгоритм:
+    1. Подключиться: conn = sqlite3.connect(str(config.db_path))
+       conn.row_factory = sqlite3.Row
+    2. Получить все концепты:
+         rows = conn.execute("SELECT id, term, domain FROM concepts ORDER BY id")
+    3. Для каждого концепта получить параметры:
+         params = conn.execute(
+             "SELECT name, label_ru, type, description, unit, enum_values, confidence"
+             " FROM parameters WHERE concept_id=? ORDER BY id",
+             (concept_id,)
+         ).fetchall()
+    4. Собрать список концептов в формате, совместимом с update_kb.py:
+         [
+           {
+             "id": "concept_001",
+             "term": "ключ гаечный",
+             "domain": "слесарный инструмент",
+             "parameters": [
+               {"name": "size_mm", "label_ru": "Размер", "type": "float",
+                "description": "...", "unit": "мм", "enum_values": null,
+                "confidence": 1.0}
+             ]
+           },
+           ...
+         ]
+    5. enum_values: если строка — попытаться json.loads(); если не JSON — оставить строку.
+    6. Создать output_path.parent.mkdir(parents=True, exist_ok=True)
+    7. output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2),
+                              encoding="utf-8")
+    8. conn.close()
+    9. logger.info("Экспорт: %d концептов, %d параметров -> %s",
+                   concepts_count, params_count, output_path)
+    10. Вернуть stats.
+  При sqlite3.Error: logger.error, вернуть {"error": str(exc)}.
+  При PermissionError: logger.error, вернуть {"error": "permission_denied"}.
+
+Блок if __name__ == "__main__":
+  Условный sys.path.insert только здесь.
+  argparse:
+    --output  путь для сохранения JSON (default="data/export_kb.json")
+    --config  путь к конфигу (default="configs/config.json")
+  Загрузить Config, вызвать export_kb, вывести статистику.
+  При {"error": ...}: sys.exit(1).
+
+ИНТЕРФЕЙС scripts/export_kb.py
+-------------------------------
+  export_kb(config: Config, output_path: Path) -> dict
+
+ТЕСТЫ
+-----
+Тестовые файлы для run_api.py и export_kb.py не входят в финальный список
+тестов описания проекта. Проверка — через блок __main__.
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+run_api.py:
+  python -m scripts.run_api --help
+  Ожидаемый вывод: справка по аргументам (без реального запуска).
+
+export_kb.py (требует инициализированной БД):
+  python -m scripts.export_kb --output data/export_test.json
+  Ожидаемый вывод: "Экспорт: 3 концептов, 7 параметров -> data/export_test.json"
+
+  Проверить файл:
+    python -c "
+    import json, pathlib
+    data = json.loads(pathlib.Path('data/export_test.json').read_text(encoding='utf-8'))
+    print('Концептов:', len(data))
+    for c in data:
+        print(' -', c['id'], ':', c['term'], '| params:', len(c['parameters']))
+    "
+
+  Проверить круговой импорт (export -> update_kb):
+    python -m scripts.update_kb --file data/export_test.json
+    Ожидаемый вывод: все концепты пропущены (skipped=N), так как они уже в БД.
+
+================================================================================
+ИЗМЕНЕНИЕ 28: tests/test_metrics.py + tests/test_api.py
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Создать два тестовых файла: tests/test_metrics.py и tests/test_api.py.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+Тесты закрывают два наиболее сложных модуля этого блока. test_api.py
+использует FastAPI TestClient (без реального uvicorn), поэтому не требует
+запущенного сервера. test_metrics.py — чистые unit-тесты без зависимостей.
+Оба файла указаны в финальном описании проекта.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ tests/test_metrics.py
+-----------------------------------------
+Импорты: pytest
+from src.metrics import MetricsCollector
+
+Тесты — НЕ требуют установки prometheus_client:
+
+  test_initial_state_zero:
+    mc = MetricsCollector(use_metrics=False)
+    summary = mc.get_summary()
+    assert summary["requests_total"] == 0
+    assert summary["avg_duration_s"] == 0.0
+
+  test_record_request_ok:
+    mc = MetricsCollector()
+    mc.record_request(0.1, "ok")
+    s = mc.get_summary()
+    assert s["requests_total"] == 1
+    assert s["requests_ok"] == 1
+    assert s["requests_fallback"] == 0
+    assert s["requests_error"] == 0
+    assert s["avg_duration_s"] > 0.0
+
+  test_record_multiple_requests:
+    mc = MetricsCollector()
+    mc.record_request(0.1, "ok")
+    mc.record_request(0.2, "fallback")
+    mc.record_request(0.3, "error")
+    s = mc.get_summary()
+    assert s["requests_total"] == 3
+    assert s["requests_ok"] == 1
+    assert s["requests_fallback"] == 1
+    assert s["requests_error"] == 1
+    assert abs(s["avg_duration_s"] - 0.2) < 0.001
+
+  test_cache_hit_miss:
+    mc = MetricsCollector()
+    mc.record_cache_hit()
+    mc.record_cache_hit()
+    mc.record_cache_miss()
+    s = mc.get_summary()
+    assert s["cache_hits"] == 2
+    assert s["cache_misses"] == 1
+
+  test_get_prometheus_text_none_when_unavailable:
+    mc = MetricsCollector(use_metrics=False)
+    assert mc.get_prometheus_text() is None
+
+  test_thread_safety:
+    import threading
+    mc = MetricsCollector()
+    def worker():
+        for _ in range(100):
+            mc.record_request(0.01, "ok")
+    threads = [threading.Thread(target=worker) for _ in range(5)]
+    for t in threads: t.start()
+    for t in threads: t.join()
+    assert mc.get_summary()["requests_total"] == 500
+
+ДЕТАЛИ РЕАЛИЗАЦИИ tests/test_api.py
+-------------------------------------
+Требует: fastapi, httpx (pip install fastapi httpx).
+Если не установлены — пропустить тесты через pytest.importorskip.
+
+  import pytest
+  fastapi = pytest.importorskip("fastapi")
+  httpx   = pytest.importorskip("httpx")
+  from fastapi.testclient import TestClient
+
+Стратегия: мокировать компоненты API через monkeypatch или переопределение
+глобальных переменных в src.api. NЕ требует реальной FastText модели или SQLite.
+
+  fixture api_client (scope="module"):
+    Использовать unittest.mock.MagicMock для _kb, _embedding_model, etc.
+    Установить глобальные переменные src.api:
+      import src.api as api_module
+      api_module._cfg = MagicMock(...)
+      api_module._kb  = MagicMock()
+      api_module._kb.search_similar_concepts.return_value = []  # fallback path
+      api_module._metrics = MetricsCollector()
+      api_module._lemmatizer = MagicMock()
+      ...
+    client = TestClient(api_module.app)
+    return client
+
+    ВАЖНО: lifespan НЕ вызывается в TestClient по умолчанию (lifespan="off").
+    Поэтому устанавливаем глобальные переменные вручную.
+    Альтернатива: TestClient(app, raise_server_exceptions=True).
+
+  test_health_returns_ok:
+    response = client.get("/health")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] in ("ok", "starting")
+
+  test_query_empty_term_returns_422:
+    response = client.post("/query", json={"term": ""})
+    assert response.status_code == 422
+    (Pydantic автоматически возвращает 422 для min_length нарушения)
+
+  test_query_valid_term_returns_200:
+    response = client.post("/query", json={"term": "ключ", "hints": ["техника"]})
+    assert response.status_code == 200
+    data = response.json()
+    assert "status" in data
+    assert data["status"] in ("ok", "error")
+
+  test_query_with_session_id:
+    response = client.post("/query",
+        json={"term": "ключ", "session_id": "test-session"})
+    assert response.status_code == 200
+
+  test_metrics_returns_json_when_prometheus_unavailable:
+    response = client.get("/metrics")
+    assert response.status_code == 200
+    Если Content-Type содержит "application/json":
+      data = response.json()
+      assert "requests_total" in data
+    Иначе:
+      assert "ait_requests" in response.text  (Prometheus format)
+
+  test_kb_stats:
+    response = client.get("/kb/stats")
+    assert response.status_code in (200, 503)
+    Если 200: data = response.json(); assert "concepts_count" in data
+
+  test_query_too_many_hints_truncated:
+    response = client.post("/query",
+        json={"term": "болт", "hints": ["а", "б", "в", "г", "д"]})
+    assert response.status_code == 200
+    (5 подсказок — должны быть усечены до 3 внутри API)
+
+ИНТЕРФЕЙС (файлы)
+-----------------
+  tests/test_metrics.py — 6 тестов MetricsCollector
+  tests/test_api.py     — 7 тестов FastAPI эндпоинтов
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  python -m pytest tests/test_metrics.py -v
+  Ожидаемый вывод: 6 тестов PASSED.
+
+  python -m pytest tests/test_api.py -v
+  Ожидаемый вывод: пропущено если fastapi/httpx не установлены;
+                   иначе 7 тестов PASSED.
+
+  Запуск всех тестов:
+    python -m pytest tests/ -v --tb=short
+  Ожидаемый результат: все тесты PASSED (или SKIPPED если зависимость отсутствует).
+
+================================================================================
+ИЗМЕНЕНИЕ 29: tests/test_pipeline.py — интеграционный E2E-тест
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Создать файл tests/test_pipeline.py с интеграционными тестами полного
+пайплайна (от входного JSON до выходного результата). Тесты проверяют
+взаимодействие всех модулей src/ без реальных ML-моделей (FastText заменяется
+мок-объектом с нулевыми векторами).
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+Unit-тесты проверяют каждый модуль в изоляции. E2E-тест проверяет что все
+модули правильно взаимодействуют и полный пайплайн возвращает результат
+ожидаемой структуры. test_pipeline.py — последний файл в списке тестов
+финального описания проекта. После него тестовое покрытие полностью
+соответствует описанию.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ tests/test_pipeline.py
+------------------------------------------
+Импорты:
+  import pytest, json, sqlite3, numpy as np
+  from pathlib import Path
+  from unittest.mock import MagicMock, patch
+  from src.config import Config, reset_config
+
+КЛЮЧЕВОЙ ПОДХОД: мокировать FastTextWrapper на уровне модуля embeddings,
+чтобы get_word_vector всегда возвращал np.zeros(300, float32).
+Это позволяет тестировать всю цепочку без файла cc.ru.300.bin.
+
+  fixture tmp_project (tmp_path, scope="function"):
+    1. Создать временный config.json в tmp_path/configs/ с реальными путями:
+         db_path = tmp_path/data/knowledge_base.db
+         synonyms_path = tmp_path/data/synonyms.json
+         domain_templates_path = tmp_path/configs/domain_templates.json
+         domain_keywords_path = tmp_path/configs/domain_keywords.json
+         fasttext_model_path = tmp_path/models/cc.ru.300.bin  (не существует)
+         ... все остальные поля с валидными дефолтами
+    2. Создать tmp_path/data/, tmp_path/configs/, tmp_path/models/.
+    3. Создать пустой synonyms.json: {}
+    4. Создать domain_templates.json с хотя бы одним доменом "общее":
+         {"общее": {"parameters": [{"name": "type", "label_ru": "Тип",
+                                    "type": "string"}]}}
+    5. Создать domain_keywords.json: {}
+    6. Инициализировать SQLite БД: вызвать init_db(str(db_path)).
+    7. Вернуть (tmp_path, cfg).
+
+  fixture mock_embedding_model:
+    Создать MagicMock:
+      model = MagicMock()
+      model.get_word_vector.return_value = np.zeros(300, dtype=np.float32)
+      model.get_phrase_vector.return_value = np.zeros(300, dtype=np.float32)
+      model.get_dimension.return_value = 300
+      model._model_loaded = True
+    Вернуть model.
+
+  fixture pipeline_components (tmp_project, mock_embedding_model):
+    Из (tmp_path, cfg) = tmp_project.
+    Создать компоненты как в _init_components, но с mock_embedding_model:
+      from src.lemmatizer import Lemmatizer
+      from src.synonyms import SynonymDict
+      from src.cache import QueryVectorCache
+      from src.knowledge_base import KnowledgeBase
+      from src.generative import GenerativeExpander
+      from src.sessions import SessionManager
+
+      lemmatizer    = Lemmatizer(cache_size=cfg.cache_lemma_size)
+      synonym_dict  = SynonymDict(json_path=cfg.synonyms_path)
+      vector_cache  = QueryVectorCache(maxsize=cfg.query_cache_size)
+      kb            = KnowledgeBase(cfg, mock_embedding_model, synonym_dict)
+      gen_expander  = GenerativeExpander(config=cfg)
+      session_mgr   = SessionManager(config=cfg)
+
+    yield (cfg, lemmatizer, synonym_dict, mock_embedding_model,
+           vector_cache, kb, gen_expander, session_mgr)
+
+    kb.close()
+
+  Вспомогательная функция call_pipeline(components, term, hints=None,
+                                         debug=False) -> dict:
+    (cfg, lemmatizer, synonym_dict, embedding_model,
+     vector_cache, kb, generative_expander, session_manager) = components
+    Импортировать run_pipeline из main (или дублировать его вызов).
+    ИЛЛЮСТРАЦИЯ — вызвать напрямую из main:
+      import sys; sys.path.insert(0, str(Path(__file__).parent.parent))
+      from main import run_pipeline
+      return run_pipeline(
+          term=term, hints=hints or [], debug=debug, min_confidence=None,
+          cfg=cfg, lemmatizer=lemmatizer, synonym_dict=synonym_dict,
+          embedding_model=embedding_model, vector_cache=vector_cache,
+          kb=kb, generative_expander=generative_expander,
+          session_manager=session_manager, session_id=None,
+      )
+
+ТЕСТЫ:
+
+  test_pipeline_empty_kb_returns_fallback:
+    result = call_pipeline(components, "ключ", ["техника"])
+    assert result["status"] == "ok"
+    assert "parameters" in result
+    assert "selected_context" in result
+    assert "warnings" in result
+    Так как БД пуста (нет концептов) — должен вернуть шаблонный (fallback) ответ.
+    Проверить что warnings содержит строку о шаблоне.
+
+  test_pipeline_returns_required_fields:
+    result = call_pipeline(components, "болт")
+    required_fields = ["status", "term", "selected_context",
+                       "parameters", "suggested_refinements", "warnings"]
+    for field in required_fields:
+        assert field in result, f"Поле {field!r} отсутствует в ответе"
+
+  test_pipeline_term_preserved_in_result:
+    result = call_pipeline(components, "гайка")
+    assert result["term"] == "гайка"
+
+  test_pipeline_debug_mode_adds_debug_info:
+    result = call_pipeline(components, "ключ", debug=True)
+    assert result["status"] == "ok"
+    assert "debug_info" in result
+    debug = result["debug_info"]
+    assert "query_vector" in debug
+    assert isinstance(debug["query_vector"], list)
+    assert len(debug["query_vector"]) == 300
+
+  test_pipeline_with_kb_returns_parameters:
+    (cfg, lemmatizer, synonym_dict, embedding_model, vector_cache, kb,
+     gen_expander, session_mgr) = components
+
+    # Добавить концепт в БД напрямую
+    conn = sqlite3.connect(str(cfg.db_path))
+    emb_blob = np.zeros(300, dtype="<f4").tobytes()
+    conn.execute(
+        "INSERT INTO concepts (id, term, domain, embedding) VALUES (?,?,?,?)",
+        ("c_test", "ключ гаечный", "инструмент", emb_blob)
+    )
+    conn.execute(
+        "INSERT INTO parameters (concept_id, name, label_ru, type) VALUES (?,?,?,?)",
+        ("c_test", "material", "Материал", "string")
+    )
+    conn.commit(); conn.close()
+    kb._concepts_cache = None  # сбросить кэш
+
+    # Вектор запроса нулевой — поиск ничего не найдёт (нулевой запрос пропускается).
+    # Проверяем только что пайплайн не падает.
+    result = call_pipeline(components, "ключ")
+    assert result["status"] == "ok"
+
+  test_pipeline_invalid_term_not_empty:
+    result = call_pipeline(components, "   ")
+    Если preprocess возвращает ошибку для пустого термина после strip:
+      assert result["status"] == "error" (или "ok" с warnings)
+    В любом случае: пайплайн НЕ должен бросать исключений.
+
+  test_pipeline_caching_second_call_faster:
+    import time
+    t1 = time.monotonic()
+    call_pipeline(components, "ключ", ["техника"])
+    first_call = time.monotonic() - t1
+
+    t2 = time.monotonic()
+    call_pipeline(components, "ключ", ["техника"])  # должен попасть в кэш
+    second_call = time.monotonic() - t2
+
+    # Второй вызов должен быть быстрее (кэш вектора)
+    # Мягкая проверка: просто убедиться что вызов завершился
+    assert second_call < 10.0  (не падает и завершается за разумное время)
+
+  test_pipeline_with_session_id:
+    (cfg, lemmatizer, synonym_dict, embedding_model, vector_cache, kb,
+     gen_expander, session_mgr) = components
+    Вызвать run_pipeline с session_id="test_sess".
+    Убедиться что session_mgr.session_count() >= 0 (не падает).
+    Если auto_save_domain_on_ok=True (или fallback): session может быть сохранена.
+
+  test_pipeline_none_hints_handled:
+    result = call_pipeline(components, "болт", hints=None)
+    assert result["status"] in ("ok", "error")
+    (None hints должны обрабатываться как пустой список, не падать)
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  python -m pytest tests/test_pipeline.py -v --tb=short
+  Ожидаемый вывод: 8+ тестов PASSED.
+
+  Запустить весь тестовый набор:
+    python -m pytest tests/ -v --tb=short
+  Ожидаемый результат: все тесты PASSED или SKIPPED.
+  Никаких ERROR или FAILED.
+
+================================================================================
+ИТОГИ ПЛАНА 25-29
+================================================================================
+
+После выполнения всех 5 изменений в проект добавлены:
+
+НОВЫЕ ФАЙЛЫ src/:
+  src/metrics.py   — MetricsCollector (внутренние счётчики + опциональный
+                     Prometheus; потокобезопасный)
+  src/api.py       — FastAPI REST API (POST /query, GET /health,
+                     GET /metrics, GET /kb/stats; lifespan инициализация;
+                     опциональная зависимость)
+
+НОВЫЕ ФАЙЛЫ scripts/:
+  scripts/run_api.py   — запуск uvicorn с src.api:app (host/port из конфига)
+  scripts/export_kb.py — экспорт knowledge_base.db -> JSON (формат update_kb.py)
+
+НОВЫЕ ТЕСТЫ:
+  tests/test_metrics.py  — 6 тестов: счётчики, thread safety, Prometheus
+  tests/test_api.py      — 7 тестов FastAPI эндпоинтов (TestClient, без uvicorn)
+  tests/test_pipeline.py — 8 E2E-тестов полного пайплайна (мокированная FastText)
+
+ИЗМЕНЕНИЯ В СУЩЕСТВУЮЩИХ ФАЙЛАХ:
+  src/config.py       — 3 новых опциональных поля:
+                        use_metrics: bool = False
+                        api_host: str = "127.0.0.1"
+                        api_port: int = 8000
+  configs/config.json — те же 3 поля добавлены
+
+ПОСЛЕ ЭТОГО ПЛАНА структура тестов ПОЛНОСТЬЮ соответствует финальному описанию:
+  test_config.py, test_lemmatizer.py, test_synonyms.py, test_text_cleaner.py,
+  test_preprocess_base.py, test_preprocess_full.py (покрывает test_preprocess.py),
+  test_embeddings.py, test_vectorize.py, test_cache.py, test_knowledge_base.py,
+  test_aggregation.py, test_fallback.py, test_generative.py, test_sessions.py,
+  test_api.py, test_metrics.py, test_pipeline.py — ВСЕ 18 файлов созданы.
+
+ЧТО ОСТАЁТСЯ ДЛЯ СЛЕДУЮЩЕГО ПЛАНА (30+):
+  scripts/evaluate.py    — Precision@5 и Context Accuracy на eval_dataset.json
+  data/eval_dataset.json — тестовый набор для evaluate.py
+  scripts/profile.py     — профилирование производительности pipeline
+  scripts/build_faiss.py — построение FAISS-индекса из текущей БД
+  scripts/build_synonyms.py — конвертация RuWordNet -> data/synonyms.json

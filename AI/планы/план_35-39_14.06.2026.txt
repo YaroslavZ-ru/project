@@ -1,0 +1,932 @@
+ОБЯЗАТЕЛЬНО ДЛЯ ИИ: ВСЁ ЧТО НАПИСАНО В ЭТОМ ФАЙЛЕ — РЕКОМЕНДАЦИИ, А НЕ ПРИКАЗЫ.
+ПРИМЕРЫ КОДА — ТОЛЬКО ИЛЛЮСТРАЦИИ НАМЕРЕНИЯ, НЕ КОПИРОВАТЬ БУКВАЛЬНО.
+ПИШИТЕ КАК ЛУЧШЕ, ЕСЛИ ЗНАЕТЕ. ГЛАВНОЕ — СОБЛЮДАТЬ ОПИСАННОЕ ПОВЕДЕНИЕ И СТРУКТУРУ.
+
+================================================================================
+План реализации AI-Terminator — Изменения 35-39
+ФИНАЛЬНАЯ ВЕРСИЯ 14.06.2026
+================================================================================
+
+КОНТЕКСТ ЭТОГО ПЛАНА
+--------------------
+Все файлы из финального описания проекта созданы в планах 1-34.
+Однако в configs/config.json и src/config.py существуют 7 полей,
+которые до сих пор НЕ используются ни одним модулем:
+
+  ambiguity_threshold: 0.7      — порог неоднозначности термина
+  ambiguity_delta: 0.1          — разница confidence между доменами
+  domain_centroid_threshold: 0.3 — минимальное сходство с центроидом домена
+  domain_centroids_min_concepts: 2 — минимум концептов в домене для центроида
+  use_relations: False           — использовать граф отношений при поиске
+  relation_max_depth: 1          — глубина обхода графа отношений
+  relation_decay_factor: 0.5     — затухание веса на каждом уровне
+
+Эти поля были заложены в конфиг намеренно — как основа для трёх
+продвинутых возможностей:
+  1. Обнаружение неоднозначных (многозначных) терминов
+  2. Доменные центроиды для уточнения контекста через сессию
+  3. Расширение поиска через граф отношений (таблица relations в SQLite)
+
+Данный план реализует все три возможности и интегрирует их в пайплайн.
+
+================================================================================
+ЧТО УЖЕ ЕСТЬ (после изменений 1-34)
+================================================================================
+
+  src/config.py         — Config (ВСЕ поля; ambiguity_*, domain_centroid_*,
+                          use_relations, relation_* есть но не используются)
+  src/aggregation.py    — aggregate_parameters, determine_context
+                          (нет detect_ambiguity)
+  src/knowledge_base.py — KnowledgeBase (search_similar_concepts использует
+                          _linear_search или FAISS; НЕТ traversal отношений)
+  src/sessions.py       — SessionManager (хранит domain; НЕТ сравнения
+                          с центроидом при новом запросе)
+  main.py               — run_pipeline (НЕТ проверки неоднозначности,
+                          НЕТ использования центроидов, НЕТ relations)
+  data/knowledge_base.db — таблица relations СУЩЕСТВУЕТ (создана init_db.py)
+                            но ПУСТАЯ (нет кода для её заполнения)
+  ВСЕ остальные файлы из планов 1-34 — созданы
+
+================================================================================
+СОЗДАВАЕМЫЕ ФАЙЛЫ:
+================================================================================
+  scripts/build_centroids.py     (Изменение 36)
+  scripts/update_relations.py    (Изменение 37)
+
+ИЗМЕНЯЕМЫЕ ФАЙЛЫ:
+  src/aggregation.py     — добавить detect_ambiguity()         (Изменение 35)
+  src/knowledge_base.py  — добавить load_domain_centroids(),
+                           _search_with_relations(),
+                           get_concept_relations()             (Изменения 36, 37)
+  src/config.py          — добавить domain_centroids_path: str = ""
+                                                               (Изменение 36)
+  configs/config.json    — добавить "domain_centroids_path": ""
+                                                               (Изменение 36)
+  main.py                — интегрировать ambiguity, centroids, relations
+                           в run_pipeline                      (Изменение 38)
+  src/api.py             — обновить /query ответ: добавить поле
+                           needs_clarification                 (Изменение 38)
+  tests/test_aggregation.py — добавить тесты detect_ambiguity (Изменение 39)
+  tests/test_knowledge_base.py — добавить тесты relations      (Изменение 39)
+  tests/test_pipeline.py — добавить тест ambiguity E2E        (Изменение 39)
+
+================================================================================
+ОБЩИЕ ПРИНЦИПЫ ДЛЯ ВСЕХ ИЗМЕНЕНИЙ 35-39
+================================================================================
+
+1. Python 3.10+: X | None, list[str], dict[K,V].
+2. Все новые возможности защищены флагами конфига:
+   - Неоднозначность: всегда вычисляется (не зависит от флага)
+   - Центроиды: используются если domain_centroids_path непустой
+   - Отношения: используются только если use_relations=True
+   Если флаг выключен — код ведёт себя как раньше (обратная совместимость).
+3. try/except на всех внешних вызовах.
+4. logging.getLogger(__name__) в каждом модуле.
+5. Все изменения добавляют НОВЫЕ методы/функции.
+   Существующие методы НЕ удаляются и НЕ переписываются с нуля.
+6. Изменения в src/aggregation.py и src/knowledge_base.py — ТОЛЬКО добавление:
+   ни одна существующая публичная функция не меняет сигнатуру.
+7. Изменения в main.py — только расширение run_pipeline дополнительными блоками
+   ПОСЛЕ существующих шагов 1-5; существующий поток не нарушается.
+
+================================================================================
+ИЗМЕНЕНИЕ 35: Обнаружение неоднозначности — src/aggregation.py
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Добавить в src/aggregation.py функцию detect_ambiguity(), которая определяет,
+является ли термин неоднозначным: когда найденные концепты относятся к двум
+или более доменам с близким уровнем confidence.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+Термин "ключ" может одновременно относиться к доменам "слесарный инструмент"
+и "музыка" с похожим confidence. В таком случае система должна сигнализировать
+пользователю, что нужно уточнение, вместо того чтобы произвольно выбирать домен.
+Поля ambiguity_threshold и ambiguity_delta в конфиге были заложены именно для этого.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ (добавить в конец src/aggregation.py)
+---------------------------------------------------------
+Функция detect_ambiguity(candidates: list, threshold: float,
+                          delta: float) -> dict:
+  Args:
+    candidates:  список кандидатов из kb.search_similar_concepts
+                 (каждый содержит "domain" и "similarity")
+    threshold:   минимальный similarity чтобы домен считался "сильным"
+                 (cfg.ambiguity_threshold, дефолт 0.7)
+    delta:       максимальная разница similarity между топ-1 и топ-2 доменами,
+                 при которой считается что они "равнозначны"
+                 (cfg.ambiguity_delta, дефолт 0.1)
+  Returns:
+    {
+      "is_ambiguous":  bool,
+      "domains":       list[dict],  — топ домены с их score
+      "top_domain":    str | None,
+      "runner_up":     str | None,
+    }
+
+  Алгоритм:
+    1. Если candidates пустой: return {"is_ambiguous": False, "domains": [],
+       "top_domain": None, "runner_up": None}
+
+    2. Собрать score по доменам:
+         domain_scores: dict[str, float] = {}
+         domain_counts: dict[str, int]   = {}
+         for c in candidates:
+             d = c.get("domain") or "неизвестно"
+             domain_scores[d] = domain_scores.get(d, 0.0) + c["similarity"]
+             domain_counts[d] = domain_counts.get(d, 0) + 1
+         Нормализовать: avg_score[d] = domain_scores[d] / domain_counts[d]
+
+    3. Отсортировать домены по avg_score убыванию:
+         sorted_domains = sorted(avg_score.items(), key=lambda x: x[1], reverse=True)
+
+    4. Составить список domains для ответа:
+         domains_list = [{"domain": d, "score": round(s, 4)}
+                         for d, s in sorted_domains]
+
+    5. top_domain    = sorted_domains[0][0] если len >= 1 иначе None
+       top_score     = sorted_domains[0][1] если len >= 1 иначе 0.0
+       runner_up     = sorted_domains[1][0] если len >= 2 иначе None
+       runner_score  = sorted_domains[1][1] если len >= 2 иначе 0.0
+
+    6. Проверить неоднозначность:
+       is_ambiguous = (
+           top_score >= threshold             — оба домена достаточно сильны
+           and runner_up is not None
+           and runner_score >= threshold
+           and (top_score - runner_score) <= delta  — разница незначительная
+       )
+
+    7. logger.debug("ambiguity: is=%s top=%r(%.2f) runner=%r(%.2f)",
+                    is_ambiguous, top_domain, top_score,
+                    runner_up, runner_score)
+
+    8. return {
+           "is_ambiguous": is_ambiguous,
+           "domains":      domains_list,
+           "top_domain":   top_domain,
+           "runner_up":    runner_up,
+       }
+
+ФУНКЦИЯ generate_clarification_questions(ambiguity_info: dict,
+                                          term: str) -> list[str]:
+  Если not ambiguity_info["is_ambiguous"]: return [].
+  Генерирует вопросы для уточнения домена.
+  ИЛЛЮСТРАЦИЯ:
+    top    = ambiguity_info["top_domain"]
+    runner = ambiguity_info["runner_up"]
+    return [
+        f"Вы имеете в виду '{term}' в контексте '{top}'?",
+        f"Или '{term}' в контексте '{runner}'?",
+    ]
+
+ИНТЕРФЕЙС (новые публичные функции в aggregation.py)
+----------------------------------------------------
+  detect_ambiguity(candidates: list, threshold: float, delta: float) -> dict
+  generate_clarification_questions(ambiguity_info: dict, term: str) -> list[str]
+
+ТЕСТЫ
+-----
+Будут добавлены в Изменении 39 (расширение tests/test_aggregation.py).
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+Из корня проекта:
+  python -c "
+  from src.aggregation import detect_ambiguity
+
+  # Кандидаты из двух доменов с близким score
+  candidates = [
+      {'domain': 'музыка',              'similarity': 0.82},
+      {'domain': 'слесарный инструмент','similarity': 0.80},
+      {'domain': 'музыка',              'similarity': 0.75},
+  ]
+  result = detect_ambiguity(candidates, threshold=0.7, delta=0.1)
+  print(result)
+  assert result['is_ambiguous'] == True
+  assert result['top_domain'] in ('музыка', 'слесарный инструмент')
+
+  # Один явный домен
+  candidates2 = [
+      {'domain': 'техника', 'similarity': 0.95},
+      {'domain': 'техника', 'similarity': 0.90},
+  ]
+  result2 = detect_ambiguity(candidates2, threshold=0.7, delta=0.1)
+  assert result2['is_ambiguous'] == False
+  print('detect_ambiguity: OK')
+  "
+
+================================================================================
+ИЗМЕНЕНИЕ 36: Доменные центроиды — build_centroids.py + KnowledgeBase
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Создать scripts/build_centroids.py для вычисления центроидов доменов
+(среднее эмбеддингов концептов каждого домена) и сохранения их в JSON-файл.
+Добавить в KnowledgeBase метод load_domain_centroids() и get_closest_domain().
+Добавить поле domain_centroids_path в Config и config.json.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+Центроид домена — это "типичный вектор" для данной предметной области.
+Когда сессия сохранила домен "музыка", а следующий запрос без подсказок
+звучит как "ключ" — можно проверить: вектор запроса ближе к центроиду
+"музыка" или к "слесарный инструмент"? Это позволяет автоматически уточнять
+контекст на основе истории сессии. Поле domain_centroid_threshold в конфиге
+задаёт минимальное сходство с центроидом для подтверждения домена.
+
+ОБНОВЛЕНИЕ src/config.py
+------------------------
+Добавить одно новое опциональное поле в Config (в блок "Опциональные с дефолтами"):
+  domain_centroids_path: str = ""
+
+Добавить в configs/config.json:
+  "domain_centroids_path": ""
+
+Обновить в _validate: если domain_centroids_path задан — просто строка
+(не проверяем существование файла; он может ещё не быть создан).
+
+ДЕТАЛИ РЕАЛИЗАЦИИ scripts/build_centroids.py
+----------------------------------------------
+Импорты: logging, json, sys, argparse, numpy as np
+from pathlib import Path
+
+Функция build_domain_centroids(config: Config) -> dict:
+  Args: config — Config
+  Returns:
+    {"saved_path": str, "domains": list[str], "min_concepts": int} при успехе.
+    {"error": str} при критической ошибке.
+
+  Алгоритм:
+    1. Загрузить все концепты через KnowledgeBase:
+         kb = KnowledgeBase(config=config, embedding_model=None, synonym_dict=None)
+         concepts = kb.get_all_concepts(use_cache=False)
+         kb.close()
+         Если concepts пустой:
+           return {"error": "empty_database"}
+
+    2. Сгруппировать по доменам:
+         groups: dict[str, list[np.ndarray]] = {}
+         for c in concepts:
+             domain = c.get("domain") or "неизвестно"
+             emb    = c["embedding"]
+             if not np.all(emb == 0):
+                 groups.setdefault(domain, []).append(emb)
+
+    3. Вычислить центроиды:
+         centroids: dict[str, list] = {}
+         for domain, vecs in groups.items():
+             if len(vecs) < config.domain_centroids_min_concepts:
+                 logger.info("Домен %r: только %d концептов — пропущен",
+                             domain, len(vecs))
+                 continue
+             matrix   = np.stack(vecs).astype(np.float64)
+             centroid = matrix.mean(axis=0)
+             norm     = np.linalg.norm(centroid)
+             if norm > 1e-9:
+                 centroid = centroid / norm
+             centroids[domain] = centroid.tolist()  (для JSON-сериализации)
+             logger.info("Центроид домена %r: %d концептов", domain, len(vecs))
+
+    4. Определить output_path:
+         if config.domain_centroids_path:
+             output_path = Path(config.domain_centroids_path)
+         else:
+             output_path = Path(config.db_path).parent / "domain_centroids.json"
+             logger.warning("domain_centroids_path не задан, сохраняю в %s", output_path)
+
+    5. Сохранить:
+         output_path.parent.mkdir(parents=True, exist_ok=True)
+         output_path.write_text(
+             json.dumps(centroids, ensure_ascii=False, indent=2),
+             encoding="utf-8"
+         )
+
+    6. Вывести напоминание:
+         print(f">>> Установите в configs/config.json:")
+         print(f'>>>   "domain_centroids_path": "{output_path}"')
+
+    7. return {"saved_path": str(output_path),
+               "domains": list(centroids.keys()),
+               "min_concepts": config.domain_centroids_min_concepts}
+
+  При Exception: logger.error, return {"error": str(exc)}.
+
+Блок if __name__ == "__main__":
+  Условный sys.path.insert.
+  argparse: --config (default="configs/config.json"), --output (override path).
+  Загрузить Config, вызвать build_domain_centroids, вывести результат.
+
+НОВЫЕ МЕТОДЫ В src/knowledge_base.py
+--------------------------------------
+Добавить в класс KnowledgeBase ДВА новых метода:
+
+Метод load_domain_centroids(centroids_path: str | Path | None = None) -> dict[str, np.ndarray]:
+  Args:
+    centroids_path: путь к JSON-файлу центроидов.
+                    Если None — брать из self._config.domain_centroids_path.
+  Returns:
+    dict {domain: centroid_vector (np.ndarray float32)} или пустой dict.
+  Алгоритм:
+    1. path = Path(centroids_path or self._config.domain_centroids_path)
+    2. Если not path.exists() или path строка пустая:
+         logger.debug("domain_centroids_path не задан или файл не найден")
+         return {}
+    3. try:
+         data = json.loads(path.read_text(encoding="utf-8"))
+         result = {domain: np.array(vec, dtype=np.float32)
+                   for domain, vec in data.items()}
+         logger.info("Загружено центроидов: %d доменов", len(result))
+         return result
+       except Exception as exc:
+         logger.error("Ошибка загрузки центроидов: %s", exc)
+         return {}
+
+Метод get_closest_domain(query_vector: np.ndarray,
+                          domain_centroids: dict[str, np.ndarray],
+                          min_threshold: float | None = None) -> str | None:
+  Args:
+    query_vector:     нормализованный вектор запроса (np.ndarray float32)
+    domain_centroids: результат load_domain_centroids()
+    min_threshold:    минимальное сходство (если None — cfg.domain_centroid_threshold)
+  Returns:
+    Название домена с максимальным сходством, если оно >= min_threshold.
+    None если ни один домен не достигает порога.
+  Алгоритм:
+    1. threshold = min_threshold if min_threshold is not None                    else self._config.domain_centroid_threshold
+    2. Если domain_centroids пустой: return None.
+    3. best_domain, best_score = None, -1.0
+       for domain, centroid in domain_centroids.items():
+           score = float(np.dot(query_vector, centroid))
+           if score > best_score:
+               best_score  = score
+               best_domain = domain
+    4. Если best_score >= threshold:
+         logger.debug("Ближайший центроид: %r (%.3f)", best_domain, best_score)
+         return best_domain
+       Иначе: return None
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+1. Инициализировать БД и заполнить: python -m scripts.setup_all
+2. (Если есть FastText модель) Пересчитать эмбеддинги: они нужны для центроидов.
+3. Запустить:
+     python -m scripts.build_centroids
+   Ожидаемый вывод: список доменов, путь к файлу.
+4. Проверить файл:
+     python -c "
+     import json, pathlib
+     data = json.loads(pathlib.Path('data/domain_centroids.json').read_text())
+     for domain, vec in data.items():
+         print(domain, ':', len(vec), 'dims')
+     "
+5. Обновить config.json: "domain_centroids_path": "data/domain_centroids.json"
+
+================================================================================
+ИЗМЕНЕНИЕ 37: Граф отношений — knowledge_base.py + update_relations.py
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Добавить в KnowledgeBase метод get_concept_relations() и расширение поиска
+через граф отношений _search_with_relations(). Создать scripts/update_relations.py
+для добавления отношений между концептами.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+Таблица relations в SQLite создана init_db.py ещё в изменении 16 (схема v2),
+но никогда не заполняется и не используется. use_relations в конфиге был
+заложен для расширения поиска: если найден концепт "ключ гаечный", то концепты
+связанные с ним через is_a ("инструмент") или part_of ("набор ключей") тоже
+могут быть релевантны. Поле relation_decay_factor задаёт насколько быстро
+убывает вес при каждом переходе по графу.
+
+НОВЫЕ МЕТОДЫ В src/knowledge_base.py
+--------------------------------------
+Добавить в класс KnowledgeBase ТРИ новых метода:
+
+Метод get_concept_relations(concept_id: str,
+                             relation_types: list[str] | None = None,
+                             max_depth: int = 1) -> list[dict]:
+  Args:
+    concept_id:     id концепта-источника
+    relation_types: список типов (["is_a","part_of","related_to","synonym"])
+                    Если None — все типы
+    max_depth:      глубина обхода (1 = только прямые соседи)
+  Returns:
+    Список dict: {"concept_id", "term", "domain", "relation_type",
+                  "confidence", "depth", "embedding"}
+
+  Алгоритм BFS:
+    1. queue    = deque([(concept_id, 0)])   (id, текущая глубина)
+       visited  = {concept_id}
+       results  = []
+    2. Пока queue не пуста и current_depth <= max_depth:
+         curr_id, depth = queue.popleft()
+         Если depth >= max_depth: continue (не идти глубже)
+         Запросить relations из SQLite:
+           SELECT r.target_concept_id, r.relation_type, r.confidence,
+                  c.term, c.domain, c.embedding
+           FROM relations r JOIN concepts c ON c.id = r.target_concept_id
+           WHERE r.source_concept_id = ?
+             AND (relation_types IS NULL OR r.relation_type IN (...))
+         Для каждой строки:
+           Если target_id в visited: skip
+           visited.add(target_id)
+           queue.append((target_id, depth + 1))
+           results.append({...})
+    3. При sqlite3.Error: logger.error, return [].
+    4. return results
+
+Метод _search_with_relations(query_vector: np.ndarray,
+                              direct_results: list,
+                              min_confidence: float,
+                              max_candidates: int) -> list:
+  Args:
+    query_vector:    нормализованный вектор запроса
+    direct_results:  результаты основного поиска (уже отфильтрованные)
+    min_confidence:  порог similarity
+    max_candidates:  максимум итоговых кандидатов
+  Returns:
+    Расширенный список кандидатов (direct + relation-based), отсортированный
+    по similarity убыванию.
+
+  Алгоритм:
+    1. Если not self._config.use_relations: return direct_results.
+    2. max_depth     = self._config.relation_max_depth
+       decay_factor  = self._config.relation_decay_factor
+    3. extended = list(direct_results)  (копия)
+       seen_ids = {c["concept_id"] for c in extended}
+
+    4. Для каждого прямого кандидата c:
+         parent_sim = c["similarity"]
+         relations  = self.get_concept_relations(
+             c["concept_id"], max_depth=max_depth
+         )
+         for rel in relations:
+             rel_id = rel["concept_id"]
+             Если rel_id в seen_ids: continue
+             rel_emb = rel["embedding"]
+             Если np.all(rel_emb == 0): continue
+
+             # Вычислить similarity через вектор
+             rel_sim = float(np.dot(query_vector, rel_emb.astype(np.float32)))
+             # Применить decay: вес = rel_sim * decay_factor ^ depth
+             weighted_sim = rel_sim * (decay_factor ** rel["depth"])
+             Если weighted_sim < min_confidence: continue
+
+             seen_ids.add(rel_id)
+             extended.append({
+                 "concept_id": rel_id,
+                 "term":       rel["term"],
+                 "domain":     rel["domain"],
+                 "similarity": round(weighted_sim, 4),
+                 "parameters": rel.get("parameters", []),
+                 "via_relation": rel["relation_type"],
+             })
+
+    5. Отсортировать extended по similarity убыванию.
+    6. Вернуть extended[:max_candidates].
+
+  КРАЙНИЕ СЛУЧАИ:
+    - Таблица relations пустая: _search_with_relations вернёт direct_results.
+    - use_relations=False: немедленно return direct_results без запросов.
+    - Циклы в графе: BFS с visited предотвращает бесконечный обход.
+
+Метод интеграции search_similar_concepts:
+  В КОНЦЕ метода search_similar_concepts, ПЕРЕД return results, добавить:
+    if self._config.use_relations and results:
+        results = self._search_with_relations(
+            query_vector, results, min_confidence, max_candidates
+        )
+  Это НЕ нарушает существующую логику: если use_relations=False —
+  метод работает ровно как прежде.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ scripts/update_relations.py
+-----------------------------------------------
+Импорты: sqlite3, json, logging, sys, argparse
+from pathlib import Path
+
+ФОРМАТ JSON для импорта отношений:
+  [
+    {
+      "source_id": "concept_001",
+      "target_id": "concept_002",
+      "relation_type": "related_to",
+      "confidence": 0.9
+    },
+    ...
+  ]
+  relation_type: одно из is_a, part_of, related_to, synonym
+
+Функция validate_relation(rel: dict) -> list[str]:
+  Проверить: source_id, target_id (непустые строки), relation_type (допустимое значение),
+  confidence (float в [0, 1]). Вернуть список ошибок.
+
+Функция update_relations_from_json(path: Path, config: Config,
+                                    force: bool = False) -> dict:
+  Args:
+    path:   путь к JSON-файлу с отношениями
+    config: Config
+    force:  если True — удалить существующие и вставить заново
+  Returns:
+    {"inserted": int, "skipped": int, "errors": int}
+  Алгоритм:
+    1. Загрузить JSON.
+    2. Подключиться к SQLite.
+    3. Для каждого отношения:
+       a. validate_relation. При ошибках: errors += 1, continue.
+       b. Проверить что source_id и target_id существуют в concepts.
+          Если нет: logger.warning, errors += 1, continue.
+       c. Если source_id == target_id: пропустить (цикл на себя).
+       d. INSERT OR IGNORE INTO relations (source_concept_id, target_concept_id,
+          relation_type, confidence).
+          (таблица relations имеет UNIQUE constraint — дубли игнорируются)
+          Если rowcount == 0: skipped += 1. Иначе: inserted += 1.
+    4. conn.commit(), conn.close().
+    5. logger.info("Отношения: inserted=%d skipped=%d errors=%d", ...)
+    6. Вернуть stats.
+
+Блок if __name__ == "__main__":
+  Условный sys.path.insert.
+  argparse: --file (обязательный), --config, --force.
+  Загрузить Config, вызвать update_relations_from_json, вывести итоги.
+
+ИНТЕРФЕЙС
+----------
+  KnowledgeBase.get_concept_relations(concept_id, relation_types, max_depth)
+  KnowledgeBase._search_with_relations(query_vector, direct_results, ...)
+  update_relations_from_json(path, config, force) -> dict
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+1. Создать файл test_relations.json:
+   [{"source_id":"concept_001","target_id":"concept_002",
+     "relation_type":"related_to","confidence":0.9}]
+
+2. Выполнить:
+     python -m scripts.update_relations --file test_relations.json
+   Ожидаемый вывод: inserted=1, skipped=0, errors=0
+
+3. Проверить в БД:
+     python -c "
+     import sqlite3
+     c = sqlite3.connect('data/knowledge_base.db')
+     rows = c.execute('SELECT * FROM relations').fetchall()
+     print('Отношений:', len(rows))
+     for r in rows: print(r)
+     c.close()
+     "
+
+4. Включить use_relations в конфиге:
+   "use_relations": true
+   Запустить:
+     python main.py --input '{"term":"ключ","hints":["техника"]}'
+   Убедиться что ответ содержит параметры (граф расширил результат).
+
+================================================================================
+ИЗМЕНЕНИЕ 38: Интеграция в run_pipeline (main.py) и src/api.py
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Обновить run_pipeline в main.py: добавить три новых блока после шага 5:
+  A) Проверка неоднозначности (detect_ambiguity)
+  B) Уточнение домена через центроид сессии (если session_id + domain_centroids)
+  C) Передача use_relations в search (уже сделана в изм. 37)
+Обновить src/api.py: добавить поле needs_clarification в ответ.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+Все три возможности (ambiguity, centroids, relations) реализованы в своих
+модулях, но run_pipeline пока их не вызывает. Этот шаг "замыкает провода":
+пайплайн начинает фактически использовать конфигурационные поля, которые
+ранее были "мёртвыми". После этого изменения система становится полностью
+функциональной в соответствии с замыслом конфига.
+
+ОБНОВЛЕНИЕ main.py — функция run_pipeline
+------------------------------------------
+Добавить новые импорты в начало main.py (после существующих):
+  from src.aggregation import detect_ambiguity, generate_clarification_questions
+
+БЛОК A: Детектирование неоднозначности
+Добавить ПОСЛЕ шага 4 (Агрегация), ВНУТРИ ветки if candidates:,
+ПОСЛЕ вычисления parameters и selected_context:
+
+  # --- Блок A: Обнаружение неоднозначности ---
+  ambiguity_info = detect_ambiguity(
+      candidates,
+      threshold=cfg.ambiguity_threshold,
+      delta=cfg.ambiguity_delta,
+  )
+  needs_clarification = ambiguity_info["is_ambiguous"]
+  if needs_clarification:
+      clarification_questions = generate_clarification_questions(
+          ambiguity_info, term
+      )
+      suggested_refinements = clarification_questions
+      warnings_list.append(
+          f"Термин неоднозначен: возможны домены "
+          f"{ambiguity_info['top_domain']!r} и "
+          f"{ambiguity_info['runner_up']!r}. "
+          f"Добавьте уточняющие подсказки."
+      )
+      logger.info("Обнаружена неоднозначность для %r: %s vs %s",
+                  term, ambiguity_info["top_domain"],
+                  ambiguity_info["runner_up"])
+  else:
+      needs_clarification = False
+
+БЛОК B: Уточнение домена через центроид сессии
+Добавить В НАЧАЛЕ run_pipeline, ПОСЛЕ строки с logger.info("Запуск пайплайна..."),
+ПЕРЕД шагом 1 (preprocess):
+
+  # --- Блок B: Центроид сессии ---
+  session_hint_domain: str | None = None
+  if (session_id and session_manager and kb is not None):
+      saved_domain = session_manager.get_domain(session_id)
+      if saved_domain:
+          domain_centroids = kb.load_domain_centroids()
+          if domain_centroids:
+              # Нам нужен query_vector ДО preprocess — вычислим предварительно
+              # Это делается ПОСЛЕ шага 2 (vectorize).
+              # Сохраняем saved_domain для проверки после vectorize.
+              session_hint_domain = saved_domain
+              logger.debug("Сессия %r: сохранённый домен %r", session_id, saved_domain)
+
+ВАЖНО: Проверку вектора запроса против центроида выполнять ПОСЛЕ шага 2.
+Добавить ПОСЛЕ вычисления query_vector (шаг 2), ПЕРЕД шагом 3 (поиск):
+
+  # --- Продолжение блока B: проверка центроида ---
+  if (session_hint_domain and not np.all(query_vector == 0)):
+      domain_centroids = kb.load_domain_centroids()
+      if domain_centroids:
+          closest = kb.get_closest_domain(query_vector, domain_centroids)
+          if closest and closest != session_hint_domain:
+              logger.info(
+                  "Запрос %r ближе к домену %r (сессия: %r) — контекст изменился",
+                  term, closest, session_hint_domain
+              )
+              session_hint_domain = closest
+          elif closest == session_hint_domain:
+              logger.debug(
+                  "Запрос %r подтверждает домен сессии %r",
+                  term, session_hint_domain
+              )
+
+БЛОК C: Relations уже интегрированы в KnowledgeBase.search_similar_concepts (изм. 37).
+Дополнительных изменений в run_pipeline для relations не требуется.
+
+ОБНОВЛЕНИЕ ОТВЕТА run_pipeline:
+В шаге 5 (сборка result) добавить поле needs_clarification:
+  result = {
+      "status":                "ok",
+      "term":                  term,
+      "selected_context":      selected_context,
+      "needs_clarification":   needs_clarification,   # НОВОЕ
+      "parameters":            parameters,
+      "suggested_refinements": suggested_refinements,
+      "warnings":              warnings_list,
+  }
+
+ОБНОВЛЕНИЕ FALLBACK (ветка else в шаге 4):
+В fallback_response результате тоже добавить поле:
+  response["needs_clarification"] = False
+
+ОБНОВЛЕНИЕ src/api.py
+----------------------
+Pydantic-схему ответа формально не задавали (возвращаем dict напрямую).
+Поэтому API автоматически включит needs_clarification в JSON-ответ —
+дополнительных изменений в api.py не требуется.
+
+Однако обновить документацию эндпоинта POST /query:
+  В docstring или комментарии добавить описание поля needs_clarification:
+    "needs_clarification: bool — True если термин неоднозначен,
+     рекомендуется запросить уточнение у пользователя"
+
+ОБРАТНАЯ СОВМЕСТИМОСТЬ:
+  - Если ambiguity не обнаружена: needs_clarification=False, поведение как раньше.
+  - Если domain_centroids_path пустой: блок B пропускается без ошибок.
+  - Если use_relations=False: search работает как раньше.
+  - Клиенты, не ожидающие поля needs_clarification, просто игнорируют его.
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+1. Запустить с неоднозначным термином (нужны концепты из разных доменов в БД):
+     python main.py --input '{"term":"ключ","hints":[]}'
+   Если в БД есть "ключ гаечный" (инструмент) и "ключ скрипичный" (музыка):
+     Ожидаемый ответ: needs_clarification=true (если similarity близки)
+
+2. Проверить что обычный запрос не изменился:
+     python main.py --input '{"term":"ключ","hints":["техника"]}'
+   Ожидаемый ответ: needs_clarification=false (hints сужают к одному домену)
+
+3. Запустить все тесты — убедиться что ничего не сломалось:
+     python -m pytest tests/ -v --tb=short
+
+================================================================================
+ИЗМЕНЕНИЕ 39: Тесты новых возможностей
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Расширить три существующих тестовых файла: добавить тесты для detect_ambiguity,
+граф отношений и E2E с needs_clarification. Новых тестовых файлов НЕ создаётся —
+только расширение существующих.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+Изменения 35-38 добавили сложную логику (неоднозначность, центроиды, отношения).
+Без тестов регрессии очень легко сломать. Расширение существующих файлов (не
+создание новых) — правильно, потому что тесты тематически связаны с модулями
+которые уже тестируются этими файлами.
+
+РАСШИРЕНИЕ tests/test_aggregation.py
+--------------------------------------
+Добавить в конец файла (после существующих тестов):
+
+  class TestDetectAmbiguity:
+    (или отдельные функции-тесты если файл использует функциональный стиль)
+
+  test_detect_ambiguity_two_equal_domains:
+    candidates = [
+        {"domain": "музыка",    "similarity": 0.85},
+        {"domain": "техника",   "similarity": 0.83},
+        {"domain": "музыка",    "similarity": 0.79},
+        {"domain": "техника",   "similarity": 0.78},
+    ]
+    result = detect_ambiguity(candidates, threshold=0.7, delta=0.1)
+    assert result["is_ambiguous"] == True
+    assert result["top_domain"] in ("музыка", "техника")
+    assert result["runner_up"] is not None
+    assert result["top_domain"] != result["runner_up"]
+    assert len(result["domains"]) >= 2
+
+  test_detect_ambiguity_one_clear_domain:
+    candidates = [
+        {"domain": "техника", "similarity": 0.95},
+        {"domain": "техника", "similarity": 0.90},
+        {"domain": "музыка",  "similarity": 0.50},
+    ]
+    result = detect_ambiguity(candidates, threshold=0.7, delta=0.1)
+    assert result["is_ambiguous"] == False
+    assert result["top_domain"] == "техника"
+
+  test_detect_ambiguity_empty_candidates:
+    result = detect_ambiguity([], threshold=0.7, delta=0.1)
+    assert result["is_ambiguous"] == False
+    assert result["top_domain"] is None
+    assert result["runner_up"] is None
+
+  test_detect_ambiguity_below_threshold:
+    # Оба домена слабые — не неоднозначность, просто слабый поиск
+    candidates = [
+        {"domain": "музыка",  "similarity": 0.55},
+        {"domain": "техника", "similarity": 0.53},
+    ]
+    result = detect_ambiguity(candidates, threshold=0.7, delta=0.1)
+    assert result["is_ambiguous"] == False
+
+  test_generate_clarification_questions_when_ambiguous:
+    from src.aggregation import generate_clarification_questions
+    info = {"is_ambiguous": True, "top_domain": "техника",
+            "runner_up": "музыка", "domains": []}
+    questions = generate_clarification_questions(info, "ключ")
+    assert isinstance(questions, list)
+    assert len(questions) >= 1
+    assert any("техника" in q or "музыка" in q for q in questions)
+
+  test_generate_clarification_questions_not_ambiguous:
+    info = {"is_ambiguous": False, "top_domain": "техника",
+            "runner_up": None, "domains": []}
+    questions = generate_clarification_questions(info, "ключ")
+    assert questions == []
+
+РАСШИРЕНИЕ tests/test_knowledge_base.py
+-----------------------------------------
+Добавить в конец файла (после существующих тестов):
+Использовать ту же tmp_db fixture что уже есть в файле.
+
+  test_get_concept_relations_empty:
+    kb = KnowledgeBase(config, ...)
+    relations = kb.get_concept_relations("nonexistent_id")
+    assert relations == []
+    kb.close()
+
+  test_get_concept_relations_after_insert:
+    # Вставить два концепта и одно отношение
+    conn = sqlite3.connect(str(config.db_path))
+    emb = np.zeros(300, "<f4").tobytes()
+    conn.execute("INSERT INTO concepts (id,term,domain,embedding) VALUES (?,?,?,?)",
+                 ("c_a","термин А","домен А", emb))
+    conn.execute("INSERT INTO concepts (id,term,domain,embedding) VALUES (?,?,?,?)",
+                 ("c_b","термин Б","домен Б", emb))
+    conn.execute("INSERT INTO relations "
+                 "(source_concept_id,target_concept_id,relation_type,confidence)"
+                 " VALUES (?,?,?,?)", ("c_a","c_b","related_to", 0.9))
+    conn.commit(); conn.close()
+
+    kb = KnowledgeBase(config, mock_embedding, synonym_dict)
+    relations = kb.get_concept_relations("c_a")
+    assert len(relations) == 1
+    assert relations[0]["concept_id"] == "c_b"
+    assert relations[0]["relation_type"] == "related_to"
+    kb.close()
+
+  test_search_with_relations_use_relations_false:
+    # При use_relations=False метод должен вернуть direct_results без изменений
+    config.use_relations = False
+    direct = [{"concept_id": "c1", "similarity": 0.8, "term": "а",
+               "domain": "д", "parameters": []}]
+    kb = KnowledgeBase(config, mock_embedding, synonym_dict)
+    result = kb._search_with_relations(np.zeros(300), direct, 0.3, 20)
+    assert result == direct
+    kb.close()
+
+  test_load_domain_centroids_missing_file:
+    kb = KnowledgeBase(config, mock_embedding, synonym_dict)
+    centroids = kb.load_domain_centroids("/nonexistent/path.json")
+    assert centroids == {}
+    kb.close()
+
+  test_get_closest_domain_empty_centroids:
+    kb = KnowledgeBase(config, mock_embedding, synonym_dict)
+    result = kb.get_closest_domain(np.zeros(300), {})
+    assert result is None
+    kb.close()
+
+РАСШИРЕНИЕ tests/test_pipeline.py
+-----------------------------------
+Добавить в конец файла:
+
+  test_pipeline_returns_needs_clarification_field:
+    result = call_pipeline(components, "ключ")
+    assert "needs_clarification" in result, (
+        "Поле needs_clarification должно быть в ответе"
+    )
+    assert isinstance(result["needs_clarification"], bool)
+
+  test_pipeline_needs_clarification_false_by_default:
+    # При пустой БД — fallback, needs_clarification=False
+    result = call_pipeline(components, "ключ")
+    assert result["needs_clarification"] == False
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  python -m pytest tests/test_aggregation.py -v -k "ambiguity" --tb=short
+  Ожидаемый вывод: 6 тестов PASSED.
+
+  python -m pytest tests/test_knowledge_base.py -v -k "relation or centroid" --tb=short
+  Ожидаемый вывод: 5 тестов PASSED.
+
+  python -m pytest tests/test_pipeline.py -v -k "clarification" --tb=short
+  Ожидаемый вывод: 2 теста PASSED.
+
+  python -m pytest tests/ -v --tb=short
+  Ожидаемый вывод: ВСЕ тесты PASSED (или SKIPPED для опциональных зависимостей).
+
+================================================================================
+ИТОГИ ПЛАНА 35-39 — ЗАКРЫТИЕ ВСЕХ CONFIG-ПОЛЕЙ
+================================================================================
+
+После выполнения этих 5 изменений ВСЕ поля configs/config.json
+задействованы в реальной логике:
+
+БЫЛО (нереализовано):
+  ambiguity_threshold        → теперь: detect_ambiguity() в aggregation.py
+  ambiguity_delta            → теперь: detect_ambiguity()
+  domain_centroid_threshold  → теперь: kb.get_closest_domain()
+  domain_centroids_min_concepts → теперь: build_centroids.py
+  use_relations              → теперь: kb._search_with_relations()
+  relation_max_depth         → теперь: kb.get_concept_relations()
+  relation_decay_factor      → теперь: kb._search_with_relations()
+
+НОВЫЕ ФАЙЛЫ:
+  scripts/build_centroids.py   — вычисление центроидов доменов
+  scripts/update_relations.py  — импорт отношений в таблицу relations
+
+ИЗМЕНЁННЫЕ ФАЙЛЫ (только добавления, нет переписывания):
+  src/aggregation.py       — +detect_ambiguity, +generate_clarification_questions
+  src/knowledge_base.py    — +load_domain_centroids, +get_closest_domain,
+                              +get_concept_relations, +_search_with_relations;
+                              расширено search_similar_concepts
+  src/config.py            — +domain_centroids_path: str = ""
+  configs/config.json      — +"domain_centroids_path": ""
+  main.py                  — +Блок A (ambiguity), +Блок B (centroids);
+                              +needs_clarification в результате
+  tests/test_aggregation.py    — +6 тестов detect_ambiguity
+  tests/test_knowledge_base.py — +5 тестов relations и centroids
+  tests/test_pipeline.py       — +2 теста needs_clarification
+
+ПОЛНАЯ ТАБЛИЦА ВСЕХ КОНФИГ-ПОЛЕЙ И ИХ РЕАЛИЗАЦИИ (после планов 1-39):
+  Каждое поле Config задействовано хотя бы в одном модуле src/ или скрипте scripts/.
+  Проект реализован полностью.
+
+ФИНАЛЬНАЯ КОМАНДА ПРОВЕРКИ ВСЕГО ПРОЕКТА:
+  python setup_project.py
+  python -m scripts.setup_all
+  python -m pytest tests/ -v --tb=short
+  python main.py --input '{"term":"ключ","hints":["техника"]}'
