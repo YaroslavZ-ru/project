@@ -487,8 +487,7 @@ else:
         except Exception as exc:
             logger.exception("Необработанная ошибка в /v1/query: %s", exc)
             raise HTTPException(500, detail="Внутренняя ошибка сервера") from None
-        result_dict: dict = result  # помощь mypy: asyncio.to_thread -> dict
-        return QueryResponse.model_validate(result_dict)
+        return _cast(QueryResponse, QueryResponse.model_validate(result))
 
     @app.post("/query", response_model=QueryResponse, include_in_schema=False)
     async def query_legacy(request: Request, body: QueryRequest) -> QueryResponse:
