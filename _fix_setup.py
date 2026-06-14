@@ -200,8 +200,8 @@ def main() -> None:
 
     print("\n[6/6] Создание .gitkeep для пустых папок...")
     create_gitkeep_files()
-
-    print("\n[7/7] Создание .env.example...")
+    print("
+[7/7] Создание .env.example...")
     create_env_example()
 
     ok = verify_structure()

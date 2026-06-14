@@ -276,6 +276,39 @@ def _api_run_pipeline(
 # FastAPI приложение
 # ---------------------------------------------------------------------------
 
+def _configure_api_logging(log_level: str, project_root) -> None:
+    """Настроить логирование API: StreamHandler + RotatingFileHandler.
+
+    Args:
+        log_level:    уровень логирования.
+        project_root: корень проекта.
+    """
+    import logging, sys
+    from pathlib import Path
+    from logging.handlers import RotatingFileHandler
+    FORMAT = "[%(asctime)s] %(levelname)s %(name)s: %(message)s"
+    root_logger = logging.getLogger()
+    if root_logger.handlers:
+        return
+    root_logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
+    sh = logging.StreamHandler(sys.stdout)
+    sh.setFormatter(logging.Formatter(FORMAT))
+    root_logger.addHandler(sh)
+    logs_dir = Path(project_root) / "logs"
+    if logs_dir.exists():
+        try:
+            fh = RotatingFileHandler(
+                str(logs_dir / "api.log"),
+                maxBytes=5 * 1024 * 1024,
+                backupCount=3,
+                encoding="utf-8",
+            )
+            fh.setFormatter(logging.Formatter(FORMAT))
+            root_logger.addHandler(fh)
+        except (OSError, PermissionError):
+            pass
+
+
 if not _FASTAPI_AVAILABLE:
     logger.warning(
         "fastapi не установлен. Модуль src.api загружен, но app недоступен. "
@@ -284,6 +317,12 @@ if not _FASTAPI_AVAILABLE:
     app = None  # type: ignore[assignment]
 
 else:
+    pass  # FastAPI доступен
+
+
+
+
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Lifespan: инициализация при старте, очистка при завершении."""
@@ -292,6 +331,10 @@ else:
 
         # --- Startup ---
         PROJECT_ROOT = Path(__file__).parent.parent
+        _configure_api_logging(
+            getattr(_cfg, "log_level", "INFO") if _cfg else "INFO",
+            PROJECT_ROOT,
+        )
         try:
             _cfg = Config.from_json("configs/config.json", project_root=PROJECT_ROOT)
             logger.info("API: конфигурация загружена")

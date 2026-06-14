@@ -18,6 +18,7 @@ import logging
 import sys
 from pathlib import Path
 
+import os
 import time
 import numpy as np
 
@@ -46,39 +47,52 @@ LOG_FILE: Path = PROJECT_ROOT / "logs" / "ai_terminator.log"
 # Настройка логирования
 # ---------------------------------------------------------------------------
 
-def _setup_logging() -> logging.Logger:
-    """Инициализирует логгер с двумя handler-ами.
+def _setup_logging(log_level: str = "INFO") -> logging.Logger:
+    """Инициализировать логгер с StreamHandler и RotatingFileHandler.
 
-    FileHandler  -- logs/ai_terminator.log, уровень DEBUG (всё детально).
-    StreamHandler -- stderr, уровень WARNING (только важное).
+    Args:
+        log_level: уровень логирования (из конфига, например DEBUG).
 
     Returns:
         Настроенный логгер приложения.
     """
-    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    LOG_FORMAT = "[%(asctime)s] %(levelname)s %(name)s: %(message)s"
+    DATE_FMT   = "%Y-%m-%d %H:%M:%S"
+    fmt = logging.Formatter(LOG_FORMAT, DATE_FMT)
 
-    fmt = logging.Formatter(
-        fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-
-    file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(fmt)
-
-    stream_handler = logging.StreamHandler(sys.stderr)
-    stream_handler.setLevel(logging.WARNING)
-    stream_handler.setFormatter(fmt)
-
+    level = getattr(logging, log_level.upper(), logging.INFO)
     logger = logging.getLogger("ai_terminator")
-    logger.setLevel(logging.DEBUG)
-    logger.addHandler(file_handler)
-    logger.addHandler(stream_handler)
+    logger.setLevel(level)
+
+    if logger.handlers:
+        return logger
+
+    sh = logging.StreamHandler(sys.stdout)
+    sh.setFormatter(fmt)
+    logger.addHandler(sh)
+
+    logs_dir = LOG_FILE.parent
+    if logs_dir.exists() and os.access(str(logs_dir), os.W_OK):
+        try:
+            from logging.handlers import RotatingFileHandler
+            fh = RotatingFileHandler(
+                str(LOG_FILE),
+                maxBytes=5 * 1024 * 1024,
+                backupCount=3,
+                encoding="utf-8",
+            )
+            fh.setFormatter(fmt)
+            logger.addHandler(fh)
+            logger.debug("Логирование в файл: %s", LOG_FILE)
+        except (OSError, PermissionError) as exc:
+            logger.warning("Не удалось создать файловый лог: %s", exc)
+    else:
+        logger.debug("logs/ недоступна — только консоль")
 
     return logger
 
 
-logger = _setup_logging()
+logger = _setup_logging(log_level="INFO")
 
 
 # ---------------------------------------------------------------------------
