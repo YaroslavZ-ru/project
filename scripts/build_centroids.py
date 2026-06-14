@@ -72,7 +72,7 @@ def build_domain_centroids(config) -> dict:
         output_path.write_text(
             json.dumps(centroids, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-        print(f">>> Установите в configs/config.json:")
+        print(">>> Установите в configs/config.json:")
         print(f'>>>   "domain_centroids_path": "{output_path}"')
         return {
             "saved_path": str(output_path),

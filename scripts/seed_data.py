@@ -61,7 +61,7 @@ def seed(config, force: bool = False) -> None:
     from src.embeddings import FastTextWrapper
     from src.knowledge_base import KnowledgeBase
 
-    lemmatizer = Lemmatizer(cache_size=config.cache_lemma_size)
+    Lemmatizer(cache_size=config.cache_lemma_size)
     synonym_dict = SynonymDict(config.synonyms_path)
     fallback_path = Path(config.fallback_embeddings_path) if config.fallback_embeddings_path else None
     embedding_model = FastTextWrapper(

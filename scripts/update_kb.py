@@ -158,7 +158,7 @@ def update_from_concepts(
     stats = {"inserted": 0, "updated": 0, "skipped": 0, "errors": 0}
 
     # Инициализация компонентов для эмбеддингов
-    lemmatizer = Lemmatizer(cache_size=config.cache_lemma_size)
+    Lemmatizer(cache_size=config.cache_lemma_size)
     synonym_dict = SynonymDict(json_path=config.synonyms_path)
     fallback_path = config.fallback_embeddings_path if config.fallback_embeddings_path else None
     embedding_model = FastTextWrapper(

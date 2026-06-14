@@ -5,10 +5,7 @@ import logging
 import time
 import numpy as np
 from pathlib import Path
-from src.config import Config
 from src.lemmatizer import Lemmatizer
-from src.synonyms import SynonymDict
-from src.embeddings import FastTextWrapper
 
 logger = logging.getLogger(__name__)
 
@@ -400,20 +397,20 @@ class KnowledgeBase:
                 if not self._load_faiss_index_from_disk():
                     self._build_faiss_index(concepts)
             if self._faiss_index is not None:
-                D, I = self._faiss_index["index"].search(
+                D, indices = self._faiss_index["index"].search(
                     query_vector.reshape(1, -1), max_candidates
                 )
                 fc = self._faiss_index["concepts"]
                 results = [
                     {
-                        "concept_id": fc[i]["id"],
-                        "term":       fc[i]["term"],
-                        "domain":     fc[i]["domain"],
+                        "concept_id": fc[idx]["id"],
+                        "term":       fc[idx]["term"],
+                        "domain":     fc[idx]["domain"],
                         "similarity": float(d),
-                        "parameters": fc[i]["parameters"],
+                        "parameters": fc[idx]["parameters"],
                     }
-                    for d, i in zip(D[0], I[0])
-                    if i != -1 and float(d) >= min_confidence
+                    for d, idx in zip(D[0], indices[0])
+                    if idx != -1 and float(d) >= min_confidence
                 ]
             else:
                 results = self._linear_search(query_vector, concepts, min_confidence, max_candidates)

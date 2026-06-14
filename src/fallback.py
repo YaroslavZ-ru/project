@@ -35,7 +35,7 @@ def detect_domain(all_lemmas: set, keywords_path) -> str:
 def fallback_response(term: str, processed: dict, config: Config) -> dict:
     term_lemmas  = processed.get("term_lemmas", [])
     hints_nested = processed.get("hints_lemmas", [])
-    hints_flat   = [l for sub in hints_nested for l in sub]
+    hints_flat   = [lemma for sub in hints_nested for lemma in sub]
     all_lemmas   = set(term_lemmas + hints_flat)
 
     if not all_lemmas:

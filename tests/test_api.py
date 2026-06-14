@@ -12,9 +12,9 @@ from pathlib import Path
 fastapi_mod  = pytest.importorskip("fastapi",  reason="fastapi не установлен")
 httpx_mod    = pytest.importorskip("httpx",   reason="httpx не установлен")
 
-from fastapi.testclient import TestClient
-from src.metrics import MetricsCollector
-import src.api as api_module
+from fastapi.testclient import TestClient  # noqa: E402
+from src.metrics import MetricsCollector  # noqa: E402
+import src.api as api_module  # noqa: E402
 
 
 @pytest.fixture(scope="module")

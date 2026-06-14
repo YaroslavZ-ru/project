@@ -7,8 +7,10 @@ from src.vectorize import vectorize
 class MockEmbedding:
     def get_phrase_vector(self, phrase):
         v = np.zeros(300, dtype=np.float32)
-        if phrase == 'a': v[0] = 1.0
-        elif phrase == 'b': v[1] = 1.0
+        if phrase == 'a':
+            v[0] = 1.0
+        elif phrase == 'b':
+            v[1] = 1.0
         return v
     def get_dimension(self): return 300
 

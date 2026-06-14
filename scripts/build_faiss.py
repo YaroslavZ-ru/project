@@ -85,8 +85,8 @@ def build_faiss_index(config) -> dict:
         faiss.write_index(index, str(output_path))
         logger.info("Индекс сохранён: %s", output_path)
         logger.info("Маппинг ID сохранён: %s", id_map_path)
-        print(f"НАПОМИНАНИЕ: установите в configs/config.json:")
-        print(f"  \"use_faiss\": true")
+        print("НАПОМИНАНИЕ: установите в configs/config.json:")
+        print("  \"use_faiss\": true")
         print(f"  \"faiss_index_path\": \"{output_path}\"")
 
         return {"index_path": str(output_path), "vectors_count": index.ntotal}

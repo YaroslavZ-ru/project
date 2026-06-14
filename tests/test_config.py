@@ -2,7 +2,7 @@
 import json
 import pytest
 from pathlib import Path
-from src.config import Config, reset_config
+from src.config import Config
 
 PROJECT_ROOT = Path(__file__).parent.parent
 CONFIG_PATH = PROJECT_ROOT / "configs" / "config.json"

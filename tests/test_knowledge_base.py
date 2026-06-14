@@ -111,7 +111,8 @@ def test_get_all_concepts_cache(db_path, cfg):
     cfg2 = replace(cfg, db_path=db_path)
     conn = sqlite3.connect(db_path)
     conn.execute("INSERT INTO concepts (id,term,domain) VALUES (?,?,?)", ("c1", "ключ", "техника"))
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     with KnowledgeBase(config=cfg2) as kb2:
         r1 = kb2.get_all_concepts()
         r2 = kb2.get_all_concepts()
@@ -167,7 +168,8 @@ def test_search_finds_candidate(db_path, cfg):
     conn = sqlite3.connect(db_path)
     conn.execute("INSERT INTO concepts (id,term,domain,embedding) VALUES (?,?,?,?)",
                  ("c1", "ключ", "техника", vec.tobytes()))
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
     with KnowledgeBase(config=cfg2) as kb2:
         results = kb2.search_similar_concepts(vec, min_confidence=0.0)
         assert len(results) == 1

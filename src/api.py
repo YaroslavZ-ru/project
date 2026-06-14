@@ -283,7 +283,8 @@ def _configure_api_logging(log_level: str, project_root) -> None:
         log_level:    уровень логирования.
         project_root: корень проекта.
     """
-    import logging, sys
+    import logging
+    import sys
     from pathlib import Path
     from logging.handlers import RotatingFileHandler
     FORMAT = "[%(asctime)s] %(levelname)s %(name)s: %(message)s"

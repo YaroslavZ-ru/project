@@ -29,8 +29,10 @@ def test_hints_order_independent(cache, cfg):
 
 def test_different_synonyms_flag_is_miss(cache):
     vec = np.zeros(300, dtype=np.float32)
-    c1 = CfgMock(); c1.use_synonyms = True
-    c2 = CfgMock(); c2.use_synonyms = False
+    c1 = CfgMock()
+    c1.use_synonyms = True
+    c2 = CfgMock()
+    c2.use_synonyms = False
     cache.put('ключ', [], c1, vec)
     assert cache.get('ключ', [], c2) is None
 

@@ -1,7 +1,5 @@
 import numpy as np
-import pytest
 from src.embeddings import FastTextWrapper
-from pathlib import Path
 
 
 def make_wrapper(tmp_path, cache_size=100):

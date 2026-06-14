@@ -16,8 +16,8 @@ _ROOT = Path(__file__).parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from src.config import Config
-from src.generative import GenerativeExpander
+from src.config import Config  # noqa: E402
+from src.generative import GenerativeExpander  # noqa: E402
 
 
 @pytest.fixture

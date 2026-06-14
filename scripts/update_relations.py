@@ -16,8 +16,10 @@ def validate_relation(rel: dict) -> list[str]:
     Returns: список ошибок.
     """
     errors = []
-    if not rel.get("source_id"): errors.append("пустой source_id")
-    if not rel.get("target_id"): errors.append("пустой target_id")
+    if not rel.get("source_id"):
+        errors.append("пустой source_id")
+    if not rel.get("target_id"):
+        errors.append("пустой target_id")
     if rel.get("relation_type") not in VALID_RELATION_TYPES:
         errors.append(f"недопустимый relation_type: {rel.get('relation_type')} допустимые={VALID_RELATION_TYPES}")
     conf = rel.get("confidence",0)
@@ -69,8 +71,10 @@ def update_relations_from_json(path: Path, config, force: bool=False) -> dict:
                 "INSERT OR IGNORE INTO relations(source_concept_id,target_concept_id,relation_type,confidence) VALUES(?,?,?,?)",
                 (src,tgt,rel["relation_type"],float(rel.get("confidence",1.0)))
             )
-            if cur.rowcount==0: skipped+=1
-            else: inserted+=1
+            if cur.rowcount == 0:
+                skipped += 1
+            else:
+                inserted += 1
         conn.commit()
         conn.close()
         logger.info("Отношения: inserted=%d skipped=%d errors=%d",inserted,skipped,errors)
@@ -88,7 +92,10 @@ if __name__=="__main__":
     parser.add_argument("--config",default="configs/config.json")
     parser.add_argument("--force",action="store_true")
     args=parser.parse_args()
-    try: cfg=Config.from_json(args.config,project_root=Path("."))
-    except Exception as exc: print(f"ERROR: {exc}",file=sys.stderr); sys.exit(1)
-    result=update_relations_from_json(Path(args.file),cfg,force=args.force)
-    print(f"inserted={result['inserted']} skipped={result['skipped']} errors={result['errors']}")+nl
+    try:
+        cfg = Config.from_json(args.config, project_root=Path("."))
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
+    result = update_relations_from_json(Path(args.file), cfg, force=args.force)
+    print(f"inserted={result['inserted']} skipped={result['skipped']} errors={result['errors']}")

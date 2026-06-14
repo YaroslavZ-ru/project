@@ -19,7 +19,7 @@ def setup_all(config, force: bool = False) -> None:
     seed(config, force=force)
     logger.info("Шаг 2/3: данные вставлены.")
 
-    lemmatizer = Lemmatizer(cache_size=config.cache_lemma_size)
+    Lemmatizer(cache_size=config.cache_lemma_size)
     synonym_dict = SynonymDict(config.synonyms_path)
     fallback_path = Path(config.fallback_embeddings_path) if config.fallback_embeddings_path else None
     embedding_model = FastTextWrapper(

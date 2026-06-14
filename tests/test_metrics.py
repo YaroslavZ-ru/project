@@ -5,7 +5,6 @@
 
 import threading
 
-import pytest
 
 from src.metrics import MetricsCollector
 

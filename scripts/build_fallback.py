@@ -42,8 +42,8 @@ def collect_words_from_db(db_path: Path, lemmatizer: Lemmatizer) -> set[str]:
         # Леммы
         try:
             lemmas = lemmatizer.lemmatize_phrase(text)
-            for l in lemmas:
-                words.add(l.lower())
+            for lemma in lemmas:
+                words.add(lemma.lower())
         except Exception:  # noqa: BLE001
             pass
 

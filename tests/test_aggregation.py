@@ -1,5 +1,5 @@
 import pytest
-from src.aggregation import aggregate_parameters, determine_context
+from src.aggregation import aggregate_parameters, determine_context, detect_ambiguity, generate_clarification_questions
 
 
 def make_param(name, label="Парам", desc=""):
@@ -70,7 +70,6 @@ def test_hint_match_affects_rank():
     assert result[0]["name"] == "material"
 
 # --- Тесты detect_ambiguity и generate_clarification_questions ---
-from src.aggregation import detect_ambiguity, generate_clarification_questions
 
 
 def test_detect_ambiguity_two_equal_domains():
@@ -82,7 +81,7 @@ def test_detect_ambiguity_two_equal_domains():
         {"domain": "техника", "similarity": 0.78},
     ]
     result = detect_ambiguity(candidates, threshold=0.7, delta=0.1)
-    assert result["is_ambiguous"] == True
+    assert result["is_ambiguous"]
     assert result["top_domain"] in ("музыка", "техника")
     assert result["runner_up"] is not None
     assert result["top_domain"] != result["runner_up"]
@@ -97,14 +96,14 @@ def test_detect_ambiguity_one_clear_domain():
         {"domain": "музыка",  "similarity": 0.50},
     ]
     result = detect_ambiguity(candidates, threshold=0.7, delta=0.1)
-    assert result["is_ambiguous"] == False
+    assert not result["is_ambiguous"]
     assert result["top_domain"] == "техника"
 
 
 def test_detect_ambiguity_empty_candidates():
     """Пустой список — не неоднозначность."""
     result = detect_ambiguity([], threshold=0.7, delta=0.1)
-    assert result["is_ambiguous"] == False
+    assert not result["is_ambiguous"]
     assert result["top_domain"] is None
     assert result["runner_up"] is None
 
@@ -116,7 +115,7 @@ def test_detect_ambiguity_below_threshold():
         {"domain": "техника", "similarity": 0.53},
     ]
     result = detect_ambiguity(candidates, threshold=0.7, delta=0.1)
-    assert result["is_ambiguous"] == False
+    assert not result["is_ambiguous"]
 
 
 def test_generate_clarification_questions_when_ambiguous():

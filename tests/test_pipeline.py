@@ -34,7 +34,7 @@ def tmp_project(tmp_path):
     synonyms_path = tmp_path / "data" / "synonyms.json"
     domain_templates_path = tmp_path / "configs" / "domain_templates.json"
     domain_keywords_path = tmp_path / "configs" / "domain_keywords.json"
-    fasttext_path = tmp_path / "models" / "cc.ru.300.bin"
+    tmp_path / "models" / "cc.ru.300.bin"
 
     # Файлы данных
     synonyms_path.write_text("{}", encoding="utf-8")
@@ -303,4 +303,4 @@ def test_pipeline_returns_needs_clarification_field(pipeline_components):
 def test_pipeline_needs_clarification_false_by_default(pipeline_components):
     """fallback-ответ должен содержать needs_clarification=False."""
     result = call_pipeline(pipeline_components, "ключ")
-    assert result.get("needs_clarification") == False
+    assert not result.get("needs_clarification")

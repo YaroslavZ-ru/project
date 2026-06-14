@@ -21,6 +21,10 @@ class Lemmatizer:
     """
 
     _instance: "Lemmatizer | None" = None
+    # Аннотации атрибутов экземпляра (задаются в __new__)
+    _morph: "pymorphy3.MorphAnalyzer"
+    _cache: "OrderedDict[str, str]"
+    _cache_size: int
 
     def __new__(cls, cache_size: int = 1000) -> "Lemmatizer":
         if cls._instance is None:

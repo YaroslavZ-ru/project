@@ -94,7 +94,7 @@ def preprocess_base(
         hints_lemmas.append(hl)
 
     # Шаг 5. Сборка all_lemmas
-    all_lemmas = term_lemmas + [l for sub in hints_lemmas for l in sub]
+    all_lemmas = term_lemmas + [lemma for sub in hints_lemmas for lemma in sub]
 
     result = {
         "status": "ok",
@@ -164,7 +164,7 @@ def preprocess_full(
     if not config.use_synonyms:
         logger.info("Использование синонимов отключено конфигом")
     else:
-        all_source = term_lemmas + [l for sub in hints_lemmas for l in sub]
+        all_source = term_lemmas + [lemma for sub in hints_lemmas for lemma in sub]
         max_syn = config.max_synonyms_per_token
         unique_synonyms: set[str] = set()
         for lemma in all_source:

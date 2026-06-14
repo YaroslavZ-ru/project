@@ -8,13 +8,12 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 
 _ROOT = Path(__file__).parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from src.sessions import SessionManager
+from src.sessions import SessionManager  # noqa: E402
 
 
 def make_config(
