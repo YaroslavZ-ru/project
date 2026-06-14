@@ -62,13 +62,16 @@ _metrics: MetricsCollector | None = None
 # ---------------------------------------------------------------------------
 
 if _FASTAPI_AVAILABLE:
+
     class QueryRequest(BaseModel):
         """Схема входящего запроса к API."""
 
-        term: str = Field(..., min_length=1, max_length=200,
-                          description="Термин для анализа")
-        hints: list[str] = Field(default_factory=list,
-                                 description="Уточняющие слова (до 3)")
+        term: str = Field(
+            ..., min_length=1, max_length=200, description="Термин для анализа"
+        )
+        hints: list[str] = Field(
+            default_factory=list, description="Уточняющие слова (до 3)"
+        )
         session_id: str | None = Field(None, description="ID сессии (опционально)")
         debug: bool = Field(False, description="Включить debug_info в ответ")
         min_confidence: float | None = Field(
@@ -79,6 +82,7 @@ if _FASTAPI_AVAILABLE:
 # ---------------------------------------------------------------------------
 # Инициализация компонентов (дублирует _init_components из main.py)
 # ---------------------------------------------------------------------------
+
 
 def _api_init_components(cfg: Config) -> tuple:
     """Создать все ML-компоненты для API.
@@ -96,26 +100,35 @@ def _api_init_components(cfg: Config) -> tuple:
     """
     lemmatizer = Lemmatizer(cache_size=cfg.cache_lemma_size)
     synonym_dict = SynonymDict(json_path=cfg.synonyms_path)
-    fallback_path = cfg.fallback_embeddings_path if cfg.fallback_embeddings_path else None
+    fallback_path = (
+        cfg.fallback_embeddings_path if cfg.fallback_embeddings_path else None
+    )
     embedding_model = FastTextWrapper(
         model_path=cfg.fasttext_model_path,
         fallback_path=fallback_path,
         cache_size=cfg.word_vector_cache_size,
     )
     vector_cache = QueryVectorCache(maxsize=cfg.query_cache_size)
-    kb = KnowledgeBase(config=cfg, embedding_model=embedding_model,
-                       synonym_dict=synonym_dict)
+    kb = KnowledgeBase(
+        config=cfg, embedding_model=embedding_model, synonym_dict=synonym_dict
+    )
     generative_expander = GenerativeExpander(config=cfg)
     session_manager = SessionManager(config=cfg)
     return (
-        synonym_dict, lemmatizer, embedding_model,
-        vector_cache, kb, generative_expander, session_manager,
+        synonym_dict,
+        lemmatizer,
+        embedding_model,
+        vector_cache,
+        kb,
+        generative_expander,
+        session_manager,
     )
 
 
 # ---------------------------------------------------------------------------
 # Пайплайн для API (с записью метрик)
 # ---------------------------------------------------------------------------
+
 
 def _api_run_pipeline(
     term: str,
@@ -206,7 +219,9 @@ def _api_run_pipeline(
         # Шаг 4: агрегация или fallback
         if candidates:
             hints_lemmas = processed.get("hints_lemmas", [])
-            parameters = aggregate_parameters(candidates, hints_lemmas, cfg.max_parameters)
+            parameters = aggregate_parameters(
+                candidates, hints_lemmas, cfg.max_parameters
+            )
             selected_context = determine_context(candidates)
             suggested_refinements: list = []
 
@@ -228,19 +243,19 @@ def _api_run_pipeline(
                 )
 
             result = {
-                "status":                "ok",
-                "term":                  term,
-                "selected_context":      selected_context,
-                "parameters":            parameters,
+                "status": "ok",
+                "term": term,
+                "selected_context": selected_context,
+                "parameters": parameters,
                 "suggested_refinements": suggested_refinements,
-                "warnings":              warnings_list,
+                "warnings": warnings_list,
             }
         else:
             result = fallback_response(term, processed, cfg)
 
         if debug and "debug_info" not in result:
             result["debug_info"] = {
-                "query_vector":   query_vector.tolist(),
+                "query_vector": query_vector.tolist(),
                 "candidates_raw": candidates,
             }
 
@@ -276,6 +291,7 @@ def _api_run_pipeline(
 # FastAPI приложение
 # ---------------------------------------------------------------------------
 
+
 def _configure_api_logging(log_level: str, project_root) -> None:
     """Настроить логирование API: StreamHandler + RotatingFileHandler.
 
@@ -287,6 +303,7 @@ def _configure_api_logging(log_level: str, project_root) -> None:
     import sys
     from pathlib import Path
     from logging.handlers import RotatingFileHandler
+
     FORMAT = "[%(asctime)s] %(levelname)s %(name)s: %(message)s"
     root_logger = logging.getLogger()
     if root_logger.handlers:
@@ -320,10 +337,6 @@ if not _FASTAPI_AVAILABLE:
 else:
     pass  # FastAPI доступен
 
-
-
-
-
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Lifespan: инициализация при старте, очистка при завершении."""
@@ -346,8 +359,13 @@ else:
 
         try:
             (
-                _synonym_dict, _lemmatizer, _embedding_model,
-                _vector_cache, _kb, _generative_expander, _session_manager,
+                _synonym_dict,
+                _lemmatizer,
+                _embedding_model,
+                _vector_cache,
+                _kb,
+                _generative_expander,
+                _session_manager,
             ) = _api_init_components(_cfg)
             logger.info("API: все компоненты инициализированы")
         except Exception as exc:
@@ -430,12 +448,14 @@ else:
         )
         db_available = bool(_kb is not None and _kb._conn)
 
-        return JSONResponse({
-            "status":       "ok",
-            "version":      "1.0.0",
-            "model_loaded": model_loaded,
-            "db_available": db_available,
-        })
+        return JSONResponse(
+            {
+                "status": "ok",
+                "version": "1.0.0",
+                "model_loaded": model_loaded,
+                "db_available": db_available,
+            }
+        )
 
     @app.get("/metrics")
     async def metrics_endpoint():
@@ -460,11 +480,13 @@ else:
         try:
             concepts = _kb.get_all_concepts(use_cache=True)
             total_params = sum(len(c["parameters"]) for c in concepts)
-            return JSONResponse({
-                "concepts_count":   len(concepts),
-                "parameters_count": total_params,
-                "db_path":          str(_kb._db_path),
-            })
+            return JSONResponse(
+                {
+                    "concepts_count": len(concepts),
+                    "parameters_count": total_params,
+                    "db_path": str(_kb._db_path),
+                }
+            )
         except Exception as exc:
             logger.error("Ошибка в /kb/stats: %s", exc)
             raise HTTPException(500, detail="Ошибка получения статистики БД")

@@ -1,4 +1,4 @@
-﻿"""tests/test_generative.py -- тесты GenerativeExpander.
+"""tests/test_generative.py -- тесты GenerativeExpander.
 
 Все тесты работают БЕЗ реальной LLM (transformers не требуется).
 Использует unittest.mock для подмены pipeline.
@@ -27,7 +27,9 @@ def cfg():
     c = Config.from_json(str(config_path), project_root=_ROOT)
     # Переопределяем поля для тестов
     object.__setattr__(c, "use_generative", True)
-    object.__setattr__(c, "generative_keywords", ["материал", "размер", "тип", "форма", "цвет"])
+    object.__setattr__(
+        c, "generative_keywords", ["материал", "размер", "тип", "форма", "цвет"]
+    )
     object.__setattr__(c, "generative_max_new_params", 5)
     object.__setattr__(c, "generative_timeout_seconds", 30.0)
     return c

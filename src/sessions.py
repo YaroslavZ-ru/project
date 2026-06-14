@@ -1,4 +1,4 @@
-﻿"""src/sessions.py -- менеджер пользовательских сессий AI-Terminator.
+"""src/sessions.py -- менеджер пользовательских сессий AI-Terminator.
 
 Хранит состояние между запросами одного пользователя:
 -- последний определённый домент учитывается в следующем запросе
@@ -51,7 +51,7 @@ class SessionManager:
 
     def __init__(self, config: Config) -> None:
         """Args:
-            config: конфигурация AI-Terminator.
+        config: конфигурация AI-Terminator.
         """
         self._ttl: int = config.session_ttl_seconds
         self._maxsize: int = config.session_cache_size
@@ -131,9 +131,7 @@ class SessionManager:
                 entry.last_term = term if term is not None else entry.last_term
                 entry.updated_at = now
 
-            logger.debug(
-                "Сессия обновлена: %s, domain=%s", session_id, domain
-            )
+            logger.debug("Сессия обновлена: %s, domain=%s", session_id, domain)
 
     def get_domain(self, session_id: str) -> str | None:
         """Возвращает домен для сессии или None.
@@ -173,8 +171,7 @@ class SessionManager:
         """
         now = time.monotonic()
         expired = [
-            sid for sid, e in self._sessions.items()
-            if now - e.updated_at > self._ttl
+            sid for sid, e in self._sessions.items() if now - e.updated_at > self._ttl
         ]
         for sid in expired:
             del self._sessions[sid]

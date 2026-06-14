@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 main.py -- точка входа AI-Terminator.
 
@@ -30,7 +30,12 @@ from src.embeddings import FastTextWrapper
 from src.vectorize import vectorize
 from src.cache import QueryVectorCache
 from src.knowledge_base import KnowledgeBase
-from src.aggregation import aggregate_parameters, determine_context, detect_ambiguity, generate_clarification_questions
+from src.aggregation import (
+    aggregate_parameters,
+    determine_context,
+    detect_ambiguity,
+    generate_clarification_questions,
+)
 from src.fallback import fallback_response
 from src.generative import GenerativeExpander
 from src.sessions import SessionManager
@@ -47,6 +52,7 @@ LOG_FILE: Path = PROJECT_ROOT / "logs" / "ai_terminator.log"
 # Настройка логирования
 # ---------------------------------------------------------------------------
 
+
 def _setup_logging(log_level: str = "INFO") -> logging.Logger:
     """Инициализировать логгер с StreamHandler и RotatingFileHandler.
 
@@ -57,7 +63,7 @@ def _setup_logging(log_level: str = "INFO") -> logging.Logger:
         Настроенный логгер приложения.
     """
     LOG_FORMAT = "[%(asctime)s] %(levelname)s %(name)s: %(message)s"
-    DATE_FMT   = "%Y-%m-%d %H:%M:%S"
+    DATE_FMT = "%Y-%m-%d %H:%M:%S"
     fmt = logging.Formatter(LOG_FORMAT, DATE_FMT)
 
     level = getattr(logging, log_level.upper(), logging.INFO)
@@ -75,6 +81,7 @@ def _setup_logging(log_level: str = "INFO") -> logging.Logger:
     if logs_dir.exists() and os.access(str(logs_dir), os.W_OK):
         try:
             from logging.handlers import RotatingFileHandler
+
             fh = RotatingFileHandler(
                 str(LOG_FILE),
                 maxBytes=5 * 1024 * 1024,
@@ -98,6 +105,7 @@ logger = _setup_logging(log_level="INFO")
 # ---------------------------------------------------------------------------
 # Парсинг входных данных
 # ---------------------------------------------------------------------------
+
 
 def parse_input(raw: str) -> dict:
     """Парсит и нормализует входной JSON.
@@ -141,7 +149,10 @@ def parse_input(raw: str) -> dict:
 
     logger.debug(
         "Парсинг входа: term=%r hints=%r debug=%s min_confidence=%s",
-        term, hints, debug, min_confidence,
+        term,
+        hints,
+        debug,
+        min_confidence,
     )
 
     session_id: str | None = data.get("session_id", None)
@@ -158,6 +169,7 @@ def parse_input(raw: str) -> dict:
 # ---------------------------------------------------------------------------
 # Пайплайн
 # ---------------------------------------------------------------------------
+
 
 def run_pipeline(
     term: str,
@@ -207,7 +219,9 @@ def run_pipeline(
         saved_domain = session_manager.get_domain(session_id)
         if saved_domain:
             logger.debug("Использую домен из сессии %r: %s", session_id, saved_domain)
-    effective_min_confidence = min_confidence if min_confidence is not None else cfg.min_confidence
+    effective_min_confidence = (
+        min_confidence if min_confidence is not None else cfg.min_confidence
+    )
 
     # Шаг 1: предобработка
     processed = preprocess(term, hints, cfg, synonym_dict, lemmatizer)
@@ -227,7 +241,9 @@ def run_pipeline(
             vector_cache.put(term, hints, cfg, query_vector)
         logger.info("Вычислен новый вектор для: %r", term)
     if np.all(query_vector == 0):
-        warnings_list.append("Вектор запроса нулевой. Модель эмбеддингов недоступна. Поиск не выполнен.")
+        warnings_list.append(
+            "Вектор запроса нулевой. Модель эмбеддингов недоступна. Поиск не выполнен."
+        )
 
     # --- Проверка центроида сессии после vectorize ---
     if session_hint_domain and kb is not None and not np.all(query_vector == 0):
@@ -235,10 +251,17 @@ def run_pipeline(
         if domain_centroids:
             closest = kb.get_closest_domain(query_vector, domain_centroids)
             if closest and closest != session_hint_domain:
-                logger.info("Запрос %r ближе к домену %r (сессия: %r)", term, closest, session_hint_domain)
+                logger.info(
+                    "Запрос %r ближе к домену %r (сессия: %r)",
+                    term,
+                    closest,
+                    session_hint_domain,
+                )
                 session_hint_domain = closest
             elif closest == session_hint_domain:
-                logger.debug("Запрос %r подтверждает домен сессии %r", term, session_hint_domain)
+                logger.debug(
+                    "Запрос %r подтверждает домен сессии %r", term, session_hint_domain
+                )
 
     # --- Шаг 3: Поиск кандидатов ---
     candidates: list = []
@@ -249,21 +272,25 @@ def run_pipeline(
             min_confidence=effective_min_confidence,
             max_candidates=cfg.max_candidates,
         )
-        logger.info("Поиск: %d кандидатов за %.3fс", len(candidates), time.monotonic() - t0)
+        logger.info(
+            "Поиск: %d кандидатов за %.3fс", len(candidates), time.monotonic() - t0
+        )
     elif kb is None:
         warnings_list.append("KnowledgeBase не инициализирован. Поиск пропущен.")
 
     # --- Шаг 4: Агрегация или fallback ---
     if candidates:
         hints_lemmas = processed.get("hints_lemmas", [])
-        parameters   = aggregate_parameters(candidates, hints_lemmas, cfg.max_parameters)
-        selected_context      = determine_context(candidates)
+        parameters = aggregate_parameters(candidates, hints_lemmas, cfg.max_parameters)
+        selected_context = determine_context(candidates)
         suggested_refinements = []
 
         # Генеративное расширение при нехватке параметров
-        if (cfg.use_generative
-                and generative_expander is not None
-                and len(parameters) < cfg.min_parameters_for_generative):
+        if (
+            cfg.use_generative
+            and generative_expander is not None
+            and len(parameters) < cfg.min_parameters_for_generative
+        ):
             gen_params = generative_expander.expand(term, hints, parameters, cfg)
             if gen_params:
                 parameters.extend(gen_params)
@@ -274,8 +301,7 @@ def run_pipeline(
 
         if len(parameters) < 3:
             warnings_list.append(
-                "Найдено мало параметров. "
-                "Рекомендуется добавить уточняющие подсказки."
+                "Найдено мало параметров. Рекомендуется добавить уточняющие подсказки."
             )
 
         # --- Блок A: Обнаружение неоднозначности ---
@@ -286,42 +312,48 @@ def run_pipeline(
         )
         needs_clarification: bool = ambiguity_info["is_ambiguous"]
         if needs_clarification:
-            clarification_questions = generate_clarification_questions(ambiguity_info, term)
+            clarification_questions = generate_clarification_questions(
+                ambiguity_info, term
+            )
             suggested_refinements = clarification_questions
             warnings_list.append(
                 f"Термин неоднозначен: возможны домены "
                 f"{ambiguity_info['top_domain']}!r и {ambiguity_info['runner_up']}!r. "
                 f"Добавьте уточняющие подсказки."
             )
-            logger.info("Обнаружена неоднозначность для %r: %s vs %s",
-                         term, ambiguity_info["top_domain"], ambiguity_info["runner_up"])
+            logger.info(
+                "Обнаружена неоднозначность для %r: %s vs %s",
+                term,
+                ambiguity_info["top_domain"],
+                ambiguity_info["runner_up"],
+            )
     else:
         needs_clarification = False
         response = fallback_response(term, processed, cfg)
         response["needs_clarification"] = False
         if debug:
             response["debug_info"] = {
-                "query_vector":        query_vector.tolist(),
-                "candidates_raw":      [],
+                "query_vector": query_vector.tolist(),
+                "candidates_raw": [],
                 "scores_distribution": [],
             }
         return response
 
     # --- Шаг 5: Сборка ответа ---
     result: dict = {
-        "status":                "ok",
-        "term":                  term,
-        "selected_context":      selected_context,
-        "needs_clarification":   needs_clarification,
-        "parameters":            parameters,
+        "status": "ok",
+        "term": term,
+        "selected_context": selected_context,
+        "needs_clarification": needs_clarification,
+        "parameters": parameters,
         "suggested_refinements": suggested_refinements,
-        "warnings":              warnings_list,
+        "warnings": warnings_list,
     }
 
     if debug:
         result["debug_info"] = {
-            "query_vector":        query_vector.tolist(),
-            "candidates_raw":      candidates,
+            "query_vector": query_vector.tolist(),
+            "candidates_raw": candidates,
             "scores_distribution": [p["confidence"] for p in parameters],
         }
 
@@ -331,9 +363,9 @@ def run_pipeline(
         result_domain = result.get("selected_context", {}).get("domain")
         if result_status == "ok" and cfg.auto_save_domain_on_ok and result_domain:
             session_manager.update_session(session_id, result_domain, term)
-        elif (result_status == "ok"
-              and cfg.auto_save_domain_on_fallback
-              and result_domain):
+        elif (
+            result_status == "ok" and cfg.auto_save_domain_on_fallback and result_domain
+        ):
             session_manager.update_session(session_id, result_domain, term)
 
     logger.debug("Пайплайн завершён: %r", result)
@@ -348,7 +380,9 @@ def run_pipeline(
 def _init_components(cfg):
     lemmatizer = Lemmatizer(cache_size=cfg.cache_lemma_size)
     synonym_dict = SynonymDict(json_path=cfg.synonyms_path)
-    fallback_path = cfg.fallback_embeddings_path if cfg.fallback_embeddings_path else None
+    fallback_path = (
+        cfg.fallback_embeddings_path if cfg.fallback_embeddings_path else None
+    )
     embedding_model = FastTextWrapper(
         model_path=cfg.fasttext_model_path,
         fallback_path=fallback_path,
@@ -363,9 +397,15 @@ def _init_components(cfg):
     generative_expander = GenerativeExpander(config=cfg)
     session_manager = SessionManager(config=cfg)
     return (
-        synonym_dict, lemmatizer, embedding_model,
-        vector_cache, kb, generative_expander, session_manager
+        synonym_dict,
+        lemmatizer,
+        embedding_model,
+        vector_cache,
+        kb,
+        generative_expander,
+        session_manager,
     )
+
 
 def main() -> None:
     """Читает вход, запускает пайплайн, выводит JSON в stdout.
@@ -410,12 +450,19 @@ def main() -> None:
             raw = sys.stdin.read()
 
         if not raw.strip():
-            raise ValueError("Входные данные пустые. Передайте JSON через --input или stdin.")
+            raise ValueError(
+                "Входные данные пустые. Передайте JSON через --input или stdin."
+            )
 
         parsed = parse_input(raw)
         (
-            synonym_dict, lemmatizer, embedding_model,
-            vector_cache, kb, generative_expander, session_manager
+            synonym_dict,
+            lemmatizer,
+            embedding_model,
+            vector_cache,
+            kb,
+            generative_expander,
+            session_manager,
         ) = _init_components(cfg)
         logger.info("Прогрев модели...")
         _ = embedding_model.get_word_vector("а")
@@ -454,13 +501,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
-
-

@@ -1,4 +1,4 @@
-﻿"""scripts/update_kb.py -- импорт новых понятий в knowledge_base.db.
+"""scripts/update_kb.py -- импорт новых понятий в knowledge_base.db.
 
 Поддерживает форматы JSON и CSV.
 Вычисляет эмбеддинги через KnowledgeBase.compute_concept_embedding.
@@ -35,7 +35,9 @@ def validate_concept(concept: dict) -> list[str]:
     # id
     cid = concept.get("id")
     if not cid or not isinstance(cid, str) or cid != cid.strip():
-        errors.append("Поле 'id' обязательно, должно быть непустой строкой без пробелов по краям")
+        errors.append(
+            "Поле 'id' обязательно, должно быть непустой строкой без пробелов по краям"
+        )
 
     # term
     term = concept.get("term")
@@ -50,9 +52,13 @@ def validate_concept(concept: dict) -> list[str]:
         else:
             for i, p in enumerate(params):
                 if not p.get("name") or not str(p["name"]).strip():
-                    errors.append(f"Параметр [{i}]: 'name' обязателен и не должен быть пустым")
+                    errors.append(
+                        f"Параметр [{i}]: 'name' обязателен и не должен быть пустым"
+                    )
                 if not p.get("label_ru") or not str(p["label_ru"]).strip():
-                    errors.append(f"Параметр [{i}]: 'label_ru' обязателен и не должен быть пустым")
+                    errors.append(
+                        f"Параметр [{i}]: 'label_ru' обязателен и не должен быть пустым"
+                    )
                 ptype = p.get("type")
                 if ptype is not None and ptype not in _VALID_PARAM_TYPES:
                     errors.append(
@@ -87,7 +93,9 @@ def load_concepts_from_json(path: Path) -> list[dict]:
         return []
 
     if not isinstance(data, list):
-        logger.error("Корневой элемент JSON должен быть списком, получен %s", type(data).__name__)
+        logger.error(
+            "Корневой элемент JSON должен быть списком, получен %s", type(data).__name__
+        )
         return []
 
     return data
@@ -124,14 +132,17 @@ def load_concepts_from_csv(path: Path) -> list[dict]:
                     }
                 param_name = row.get("param_name", "").strip()
                 if param_name:
-                    concepts_map[cid]["parameters"].append({
-                        "name": param_name,
-                        "label_ru": row.get("param_label_ru", "").strip(),
-                        "type": row.get("param_type", "string").strip() or "string",
-                        "description": row.get("param_description", "").strip() or None,
-                        "unit": row.get("param_unit", "").strip() or None,
-                        "enum_values": None,
-                    })
+                    concepts_map[cid]["parameters"].append(
+                        {
+                            "name": param_name,
+                            "label_ru": row.get("param_label_ru", "").strip(),
+                            "type": row.get("param_type", "string").strip() or "string",
+                            "description": row.get("param_description", "").strip()
+                            or None,
+                            "unit": row.get("param_unit", "").strip() or None,
+                            "enum_values": None,
+                        }
+                    )
         return list(concepts_map.values())
     except Exception as exc:  # noqa: BLE001
         logger.error("Ошибка чтения CSV %s: %s", path, exc)
@@ -160,7 +171,9 @@ def update_from_concepts(
     # Инициализация компонентов для эмбеддингов
     Lemmatizer(cache_size=config.cache_lemma_size)
     synonym_dict = SynonymDict(json_path=config.synonyms_path)
-    fallback_path = config.fallback_embeddings_path if config.fallback_embeddings_path else None
+    fallback_path = (
+        config.fallback_embeddings_path if config.fallback_embeddings_path else None
+    )
     embedding_model = FastTextWrapper(
         model_path=config.fasttext_model_path,
         fallback_path=fallback_path,
@@ -201,9 +214,7 @@ def update_from_concepts(
             try:
                 emb = kb.compute_concept_embedding(concept["term"])
             except Exception as exc:  # noqa: BLE001
-                logger.error(
-                    "Ошибка вычисления эмбеддинга для %r: %s", cid, exc
-                )
+                logger.error("Ошибка вычисления эмбеддинга для %r: %s", cid, exc)
                 stats["errors"] += 1
                 continue
 
@@ -222,9 +233,7 @@ def update_from_concepts(
                     "UPDATE concepts SET term=?, domain=?, embedding=? WHERE id=?",
                     (term_val, domain, blob, cid),
                 )
-                cursor.execute(
-                    "DELETE FROM parameters WHERE concept_id=?", (cid,)
-                )
+                cursor.execute("DELETE FROM parameters WHERE concept_id=?", (cid,))
                 stats["updated"] += 1
 
             # Вставляем параметры
@@ -268,7 +277,10 @@ def update_from_concepts(
 
     logger.info(
         "Импорт: inserted=%d updated=%d skipped=%d errors=%d",
-        stats["inserted"], stats["updated"], stats["skipped"], stats["errors"],
+        stats["inserted"],
+        stats["updated"],
+        stats["skipped"],
+        stats["errors"],
     )
     return stats
 
@@ -283,6 +295,7 @@ if __name__ == "__main__":
         sys.path.insert(0, str(_root))
 
     import logging as _logging
+
     _logging.basicConfig(
         level=_logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -293,10 +306,13 @@ if __name__ == "__main__":
     )
     parser.add_argument("--file", required=True, help="Путь к файлу для импорта")
     parser.add_argument("--force", action="store_true", help="Обновлять существующие")
-    parser.add_argument("--config", default="configs/config.json", help="Путь к конфигу")
+    parser.add_argument(
+        "--config", default="configs/config.json", help="Путь к конфигу"
+    )
     args = parser.parse_args()
 
     from src.config import Config as _Config
+
     try:
         cfg = _Config.from_json(args.config, project_root=_root)
     except Exception as e:
@@ -310,7 +326,10 @@ if __name__ == "__main__":
     elif suffix == ".csv":
         concepts = load_concepts_from_csv(input_path)
     else:
-        print(f"Неподдерживаемый формат файла: {suffix}. Ожидаются .json или .csv", file=sys.stderr)
+        print(
+            f"Неподдерживаемый формат файла: {suffix}. Ожидаются .json или .csv",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     if not concepts:

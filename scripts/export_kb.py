@@ -60,23 +60,27 @@ def export_kb(config, output_path: Path) -> dict:
                 else:
                     enum_val = None
 
-                parameters.append({
-                    "name":        pr["name"],
-                    "label_ru":    pr["label_ru"],
-                    "type":        pr["type"],
-                    "description": pr["description"],
-                    "unit":        pr["unit"],
-                    "enum_values": enum_val,
-                    "confidence":  pr["confidence"],
-                })
+                parameters.append(
+                    {
+                        "name": pr["name"],
+                        "label_ru": pr["label_ru"],
+                        "type": pr["type"],
+                        "description": pr["description"],
+                        "unit": pr["unit"],
+                        "enum_values": enum_val,
+                        "confidence": pr["confidence"],
+                    }
+                )
 
             total_params += len(parameters)
-            concepts_list.append({
-                "id":         concept_id,
-                "term":       concept_row["term"],
-                "domain":     concept_row["domain"],
-                "parameters": parameters,
-            })
+            concepts_list.append(
+                {
+                    "id": concept_id,
+                    "term": concept_row["term"],
+                    "domain": concept_row["domain"],
+                    "parameters": parameters,
+                }
+            )
 
         conn.close()
 
@@ -89,13 +93,15 @@ def export_kb(config, output_path: Path) -> dict:
 
         concepts_count = len(concepts_list)
         stats = {
-            "concepts_count":   concepts_count,
+            "concepts_count": concepts_count,
             "parameters_count": total_params,
-            "saved_to":         str(output_path),
+            "saved_to": str(output_path),
         }
         logger.info(
             "Экспорт: %d концептов, %d параметров -> %s",
-            concepts_count, total_params, output_path,
+            concepts_count,
+            total_params,
+            output_path,
         )
         return stats
 

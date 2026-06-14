@@ -21,6 +21,7 @@ from scripts.init_db import init_db
 # Фикстуры
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="function")
 def tmp_project(tmp_path):
     """Создать временный проект с реальными путями, но мок моделью."""
@@ -39,65 +40,68 @@ def tmp_project(tmp_path):
     # Файлы данных
     synonyms_path.write_text("{}", encoding="utf-8")
     domain_templates_path.write_text(
-        json.dumps({
-            "общее": {
-                "parameters": [
-                    {"name": "type", "label_ru": "Тип", "type": "string"}
-                ]
-            }
-        }, ensure_ascii=False),
+        json.dumps(
+            {
+                "общее": {
+                    "parameters": [
+                        {"name": "type", "label_ru": "Тип", "type": "string"}
+                    ]
+                }
+            },
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
     domain_keywords_path.write_text("{}", encoding="utf-8")
 
     # Конфиг
     config_data = {
-        "db_path":                    "data/knowledge_base.db",
-        "fasttext_model_path":        "models/cc.ru.300.bin",
-        "synonyms_path":              "data/synonyms.json",
-        "domain_templates_path":      "configs/domain_templates.json",
-        "domain_keywords_path":       "configs/domain_keywords.json",
-        "fallback_embeddings_path":   "",
-        "min_confidence":             0.3,
-        "max_candidates":             20,
-        "max_parameters":             15,
-        "use_generative":             False,
-        "generative_model":           "test-model",
-        "generative_max_new_tokens":  50,
-        "generative_temperature":     0.7,
-        "generative_max_new_params":  3,
+        "db_path": "data/knowledge_base.db",
+        "fasttext_model_path": "models/cc.ru.300.bin",
+        "synonyms_path": "data/synonyms.json",
+        "domain_templates_path": "configs/domain_templates.json",
+        "domain_keywords_path": "configs/domain_keywords.json",
+        "fallback_embeddings_path": "",
+        "min_confidence": 0.3,
+        "max_candidates": 20,
+        "max_parameters": 15,
+        "use_generative": False,
+        "generative_model": "test-model",
+        "generative_max_new_tokens": 50,
+        "generative_temperature": 0.7,
+        "generative_max_new_params": 3,
         "generative_timeout_seconds": 5.0,
         "min_parameters_for_generative": 5,
-        "generative_keywords":        ["материал"],
-        "timeout_seconds":            5.0,
-        "cache_embeddings":           True,
-        "log_level":                  "INFO",
-        "cache_lemma_size":           100,
-        "max_synonyms_per_token":     2,
-        "use_synonyms":               True,
-        "max_term_length":            100,
-        "max_hint_length":            50,
-        "word_vector_cache_size":     100,
-        "query_cache_size":           10,
-        "use_faiss":                  False,
-        "faiss_threshold":            1000,
+        "generative_keywords": ["материал"],
+        "timeout_seconds": 5.0,
+        "cache_embeddings": True,
+        "log_level": "INFO",
+        "cache_lemma_size": 100,
+        "max_synonyms_per_token": 2,
+        "use_synonyms": True,
+        "max_term_length": 100,
+        "max_hint_length": 50,
+        "word_vector_cache_size": 100,
+        "query_cache_size": 10,
+        "use_faiss": False,
+        "faiss_threshold": 1000,
         "fallback_domain_keywords_path": "configs/domain_keywords.json",
-        "faiss_index_path":           "",
-        "session_ttl_seconds":        300,
-        "session_cache_size":         50,
+        "faiss_index_path": "",
+        "session_ttl_seconds": 300,
+        "session_cache_size": 50,
         "session_cleanup_interval_seconds": 60,
-        "auto_save_domain_on_ok":     True,
-        "ambiguity_threshold":        0.7,
-        "ambiguity_delta":            0.1,
+        "auto_save_domain_on_ok": True,
+        "ambiguity_threshold": 0.7,
+        "ambiguity_delta": 0.1,
         "domain_centroid_threshold": 0.3,
         "auto_save_domain_on_fallback": False,
-        "use_relations":              False,
-        "relation_max_depth":         1,
-        "relation_decay_factor":      0.5,
+        "use_relations": False,
+        "relation_max_depth": 1,
+        "relation_decay_factor": 0.5,
         "domain_centroids_min_concepts": 2,
-        "use_metrics":                False,
-        "api_host":                   "127.0.0.1",
-        "api_port":                   8000,
+        "use_metrics": False,
+        "api_host": "127.0.0.1",
+        "api_port": 8000,
     }
     config_path = tmp_path / "configs" / "config.json"
     config_path.write_text(json.dumps(config_data), encoding="utf-8")
@@ -133,15 +137,23 @@ def pipeline_components(tmp_project, mock_embedding_model):
 
     _, cfg = tmp_project
 
-    lemmatizer   = Lemmatizer(cache_size=cfg.cache_lemma_size)
+    lemmatizer = Lemmatizer(cache_size=cfg.cache_lemma_size)
     synonym_dict = SynonymDict(json_path=cfg.synonyms_path)
     vector_cache = QueryVectorCache(maxsize=cfg.query_cache_size)
-    kb           = KnowledgeBase(cfg, mock_embedding_model, synonym_dict)
+    kb = KnowledgeBase(cfg, mock_embedding_model, synonym_dict)
     gen_expander = GenerativeExpander(config=cfg)
-    session_mgr  = SessionManager(config=cfg)
+    session_mgr = SessionManager(config=cfg)
 
-    yield (cfg, lemmatizer, synonym_dict, mock_embedding_model,
-           vector_cache, kb, gen_expander, session_mgr)
+    yield (
+        cfg,
+        lemmatizer,
+        synonym_dict,
+        mock_embedding_model,
+        vector_cache,
+        kb,
+        gen_expander,
+        session_mgr,
+    )
 
     kb.close()
 
@@ -149,6 +161,7 @@ def pipeline_components(tmp_project, mock_embedding_model):
 # ---------------------------------------------------------------------------
 # Вспомогательная функция
 # ---------------------------------------------------------------------------
+
 
 def call_pipeline(components, term, hints=None, debug=False, session_id=None):
     """Вызвать run_pipeline с заданными компонентами.
@@ -161,12 +174,19 @@ def call_pipeline(components, term, hints=None, debug=False, session_id=None):
         session_id: ID сессии (None = без сессии).
     """
     import sys
+
     sys.path.insert(0, str(Path(__file__).parent.parent))
     from main import run_pipeline
 
     (
-        cfg, lemmatizer, synonym_dict, embedding_model,
-        vector_cache, kb, generative_expander, session_manager,
+        cfg,
+        lemmatizer,
+        synonym_dict,
+        embedding_model,
+        vector_cache,
+        kb,
+        generative_expander,
+        session_manager,
     ) = components
 
     return run_pipeline(
@@ -190,6 +210,7 @@ def call_pipeline(components, term, hints=None, debug=False, session_id=None):
 # Тесты
 # ---------------------------------------------------------------------------
 
+
 def test_pipeline_empty_kb_returns_fallback(pipeline_components):
     """Пустая БД -- должен вернуть шаблонный (fallback) ответ."""
     result = call_pipeline(pipeline_components, "ключ", ["техника"])
@@ -207,8 +228,12 @@ def test_pipeline_returns_required_fields(pipeline_components):
     """Ответ содержит все обязательные поля."""
     result = call_pipeline(pipeline_components, "болт")
     required_fields = [
-        "status", "term", "selected_context",
-        "parameters", "suggested_refinements", "warnings",
+        "status",
+        "term",
+        "selected_context",
+        "parameters",
+        "suggested_refinements",
+        "warnings",
     ]
     for field in required_fields:
         assert field in result, f"Поле {field!r} отсутствует в ответе"
@@ -234,8 +259,14 @@ def test_pipeline_debug_mode_adds_debug_info(pipeline_components):
 def test_pipeline_with_kb_returns_parameters(pipeline_components):
     """Пайплайн не падает даже при заполненной БД (нулевой вектор => fallback)."""
     (
-        cfg, lemmatizer, synonym_dict, embedding_model, vector_cache, kb,
-        gen_expander, session_mgr,
+        cfg,
+        lemmatizer,
+        synonym_dict,
+        embedding_model,
+        vector_cache,
+        kb,
+        gen_expander,
+        session_mgr,
     ) = pipeline_components
 
     # Добавить концепт напрямую в БД
@@ -277,8 +308,14 @@ def test_pipeline_caching_second_call_faster(pipeline_components):
 def test_pipeline_with_session_id(pipeline_components):
     """run_pipeline с session_id не падает; сессия сохраняется корректно."""
     (
-        cfg, lemmatizer, synonym_dict, embedding_model, vector_cache, kb,
-        gen_expander, session_mgr,
+        cfg,
+        lemmatizer,
+        synonym_dict,
+        embedding_model,
+        vector_cache,
+        kb,
+        gen_expander,
+        session_mgr,
     ) = pipeline_components
 
     result = call_pipeline(pipeline_components, "ключ", session_id="test_sess")
@@ -296,7 +333,9 @@ def test_pipeline_none_hints_handled(pipeline_components):
 def test_pipeline_returns_needs_clarification_field(pipeline_components):
     """Поле needs_clarification должно присутствовать в ответе."""
     result = call_pipeline(pipeline_components, "ключ")
-    assert "needs_clarification" in result, "Поле needs_clarification должно быть в ответе"
+    assert "needs_clarification" in result, (
+        "Поле needs_clarification должно быть в ответе"
+    )
     assert isinstance(result["needs_clarification"], bool)
 
 

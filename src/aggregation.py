@@ -28,9 +28,9 @@ def aggregate_parameters(
             name = param["name"]
             if name not in groups:
                 groups[name] = {
-                    "param":        param.copy(),
+                    "param": param.copy(),
                     "similarities": [],
-                    "freq":         0,
+                    "freq": 0,
                 }
             groups[name]["similarities"].append(sim)
             groups[name]["freq"] += 1
@@ -42,13 +42,13 @@ def aggregate_parameters(
     hint_set = {lemma for sub in hints_lemmas for lemma in sub}
 
     for g in groups.values():
-        freq_norm  = g["freq"] / max_freq
-        avg_sim    = sum(g["similarities"]) / len(g["similarities"])
+        freq_norm = g["freq"] / max_freq
+        avg_sim = sum(g["similarities"]) / len(g["similarities"])
         hint_match = _compute_hint_match(g["param"], hint_set)
         g["score"] = 0.6 * freq_norm + 0.3 * avg_sim + 0.1 * hint_match
 
     sorted_groups = sorted(groups.values(), key=lambda g: g["score"], reverse=True)
-    top_groups    = sorted_groups[:max_parameters]
+    top_groups = sorted_groups[:max_parameters]
 
     max_score = top_groups[0]["score"] if top_groups else 1.0
     if max_score <= 0:
@@ -58,10 +58,12 @@ def aggregate_parameters(
     for g in top_groups:
         p = g["param"].copy()
         p["confidence"] = round(g["score"] / max_score, 4)
-        p["source"]     = "knowledge_base"
+        p["source"] = "knowledge_base"
         result.append(p)
 
-    logger.info("aggregate: %d кандидатов -> %d параметров", len(candidates), len(result))
+    logger.info(
+        "aggregate: %d кандидатов -> %d параметров", len(candidates), len(result)
+    )
     return result
 
 
@@ -76,7 +78,7 @@ def determine_context(candidates: list) -> dict:
         domain_scores[d] = domain_scores.get(d, 0.0) + c["similarity"]
         domain_counts[d] = domain_counts.get(d, 0) + 1
 
-    best     = max(domain_scores, key=domain_scores.get)
+    best = max(domain_scores, key=lambda k: domain_scores.get(k, 0.0))
     avg_conf = domain_scores[best] / domain_counts[best]
     return {"domain": best, "confidence": round(avg_conf, 4)}
 
@@ -124,21 +126,17 @@ def detect_ambiguity(
 
     # Средний score по домену
     avg_score: dict[str, float] = {
-        d: domain_scores[d] / domain_counts[d]
-        for d in domain_scores
+        d: domain_scores[d] / domain_counts[d] for d in domain_scores
     }
 
     # Сортировка убыванием
     sorted_domains = sorted(avg_score.items(), key=lambda x: x[1], reverse=True)
 
-    domains_list = [
-        {"domain": d, "score": round(s, 4)}
-        for d, s in sorted_domains
-    ]
+    domains_list = [{"domain": d, "score": round(s, 4)} for d, s in sorted_domains]
 
-    top_domain   = sorted_domains[0][0] if len(sorted_domains) >= 1 else None
-    top_score    = sorted_domains[0][1] if len(sorted_domains) >= 1 else 0.0
-    runner_up    = sorted_domains[1][0] if len(sorted_domains) >= 2 else None
+    top_domain = sorted_domains[0][0] if len(sorted_domains) >= 1 else None
+    top_score = sorted_domains[0][1] if len(sorted_domains) >= 1 else 0.0
+    runner_up = sorted_domains[1][0] if len(sorted_domains) >= 2 else None
     runner_score = sorted_domains[1][1] if len(sorted_domains) >= 2 else 0.0
 
     is_ambiguous = (
@@ -150,7 +148,11 @@ def detect_ambiguity(
 
     logger.debug(
         "ambiguity: is=%s top=%r(%.2f) runner=%r(%.2f)",
-        is_ambiguous, top_domain, top_score, runner_up, runner_score,
+        is_ambiguous,
+        top_domain,
+        top_score,
+        runner_up,
+        runner_score,
     )
 
     return {
@@ -177,7 +179,7 @@ def generate_clarification_questions(
     if not ambiguity_info.get("is_ambiguous"):
         return []
 
-    top    = ambiguity_info.get("top_domain", "")
+    top = ambiguity_info.get("top_domain", "")
     runner = ambiguity_info.get("runner_up", "")
     return [
         f"Вы имеете в виду '{term}' в контексте '{top}'?",

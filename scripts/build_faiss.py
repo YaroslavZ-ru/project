@@ -77,17 +77,15 @@ def build_faiss_index(config) -> dict:
 
         id_map_path = output_path.with_suffix(".ids.json")
         id_map = [c["id"] for c in valid]
-        id_map_path.write_text(
-            json.dumps(id_map, ensure_ascii=False), encoding="utf-8"
-        )
+        id_map_path.write_text(json.dumps(id_map, ensure_ascii=False), encoding="utf-8")
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         faiss.write_index(index, str(output_path))
         logger.info("Индекс сохранён: %s", output_path)
         logger.info("Маппинг ID сохранён: %s", id_map_path)
         print("НАПОМИНАНИЕ: установите в configs/config.json:")
-        print("  \"use_faiss\": true")
-        print(f"  \"faiss_index_path\": \"{output_path}\"")
+        print('  "use_faiss": true')
+        print(f'  "faiss_index_path": "{output_path}"')
 
         return {"index_path": str(output_path), "vectors_count": index.ntotal}
 
@@ -123,4 +121,6 @@ if __name__ == "__main__":
     if "error" in result:
         print(f"ERROR: {result['error']}", file=sys.stderr)
         sys.exit(1)
-    print(f"FAISS индекс готов: {result['vectors_count']} векторов -> {result['index_path']}")
+    print(
+        f"FAISS индекс готов: {result['vectors_count']} векторов -> {result['index_path']}"
+    )

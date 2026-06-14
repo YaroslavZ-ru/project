@@ -7,16 +7,17 @@
     clean_text('  -Ключ-гаечный! (размер 12)  ')  # -> 'ключ-гаечный размер 12'
     clean_text('ключ - гаечный')                      # -> 'ключ гаечный'
 """
+
 import re
 import logging
 
 logger = logging.getLogger("ai_terminator.text_cleaner")
 
 # Паттерн: всё кроме русских, латинских, цифр, пробела и дефиса
-_RE_NON_ALLOWED = re.compile(r'[^а-яёa-z0-9 \-]')
+_RE_NON_ALLOWED = re.compile(r"[^а-яёa-z0-9 \-]")
 # Дефис, у которого слева или справа нет не-пробельного символа
-_RE_ISOLATED_HYPHEN = re.compile(r'(?<![а-яёa-z])-|-(?![а-яёa-z])')
-_RE_MULTI_SPACE = re.compile(r' +')
+_RE_ISOLATED_HYPHEN = re.compile(r"(?<![а-яёa-z])-|-(?![а-яёa-z])")
+_RE_MULTI_SPACE = re.compile(r" +")
 
 
 def clean_text(text: str) -> str:

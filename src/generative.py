@@ -1,4 +1,4 @@
-﻿"""src/generative.py -- генеративное расширение параметров AI-Terminator.
+"""src/generative.py -- генеративное расширение параметров AI-Terminator.
 
 Модуль полностью опциональный: если use_generative=False или transformers
 не установлен -- expand() молча возвращает [].
@@ -38,7 +38,7 @@ class GenerativeExpander:
 
     def __init__(self, config: Config) -> None:
         """Args:
-            config: конфигурация AI-Terminator.
+        config: конфигурация AI-Terminator.
         """
         self._cfg = config
         self._pipe = None
@@ -46,13 +46,9 @@ class GenerativeExpander:
         self._available = _TRANSFORMERS_AVAILABLE and config.use_generative
 
         if not _TRANSFORMERS_AVAILABLE:
-            logger.warning(
-                "transformers не установлен. Генеративный модуль отключён."
-            )
+            logger.warning("transformers не установлен. Генеративный модуль отключён.")
         elif not config.use_generative:
-            logger.info(
-                "use_generative=False. GenerativeExpander пассивен."
-            )
+            logger.info("use_generative=False. GenerativeExpander пассивен.")
 
     def _ensure_pipeline(self) -> None:
         """Ленивая загрузка HuggingFace pipeline.
@@ -146,14 +142,16 @@ class GenerativeExpander:
         """
         # Берём подстроку после последнего ':'
         colon_pos = response_text.rfind(":")
-        text_to_parse = response_text[colon_pos + 1:] if colon_pos >= 0 else response_text
+        text_to_parse = (
+            response_text[colon_pos + 1 :] if colon_pos >= 0 else response_text
+        )
 
         # Разбиваем по запятым, точке с запятой, переносам строк
         candidates_raw = re.split(r"[,;\n]", text_to_parse)
 
         result: list[dict] = []
         for raw in candidates_raw:
-            candidate = raw.strip().strip('"\'«»()')
+            candidate = raw.strip().strip("\"'«»()")
             if len(candidate) < 2 or len(candidate) > 80:
                 continue
 
@@ -166,14 +164,16 @@ class GenerativeExpander:
             if slug in existing_names:
                 continue
 
-            result.append({
-                "name": slug,
-                "label_ru": candidate.strip(),
-                "type": "string",
-                "description": "Предложено генеративной моделью",
-                "confidence": 0.2,
-                "source": "generative",
-            })
+            result.append(
+                {
+                    "name": slug,
+                    "label_ru": candidate.strip(),
+                    "type": "string",
+                    "description": "Предложено генеративной моделью",
+                    "confidence": 0.2,
+                    "source": "generative",
+                }
+            )
 
             if len(result) >= self._cfg.generative_max_new_params:
                 break
@@ -226,30 +226,22 @@ class GenerativeExpander:
                     )
                     return []
                 except Exception as exc:  # noqa: BLE001
-                    logger.error(
-                        "GenerativeExpander: ошибка генерации: %s", exc
-                    )
+                    logger.error("GenerativeExpander: ошибка генерации: %s", exc)
                     return []
         except Exception as exc:  # noqa: BLE001
             logger.error("GenerativeExpander: ошибка executor: %s", exc)
             return []
 
         if not result or not isinstance(result, list):
-            logger.warning(
-                "GenerativeExpander: пустой ответ модели"
-            )
+            logger.warning("GenerativeExpander: пустой ответ модели")
             return []
 
         first = result[0]
         if not isinstance(first, dict) or "generated_text" not in first:
-            logger.warning(
-                "GenerativeExpander: неверный формат ответа модели"
-            )
+            logger.warning("GenerativeExpander: неверный формат ответа модели")
             return []
 
         generated_text = first["generated_text"]
         new_params = self._parse_response(generated_text, existing_names)
-        logger.info(
-            "GenerativeExpander: добавлено %d параметров", len(new_params)
-        )
+        logger.info("GenerativeExpander: добавлено %d параметров", len(new_params))
         return new_params

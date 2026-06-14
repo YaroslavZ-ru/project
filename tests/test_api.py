@@ -9,8 +9,8 @@ from unittest.mock import MagicMock
 from pathlib import Path
 
 # Пропуск если fastapi/httpx недоступны
-fastapi_mod  = pytest.importorskip("fastapi",  reason="fastapi не установлен")
-httpx_mod    = pytest.importorskip("httpx",   reason="httpx не установлен")
+fastapi_mod = pytest.importorskip("fastapi", reason="fastapi не установлен")
+httpx_mod = pytest.importorskip("httpx", reason="httpx не установлен")
 
 from fastapi.testclient import TestClient  # noqa: E402
 from src.metrics import MetricsCollector  # noqa: E402
@@ -40,6 +40,7 @@ def api_client():
 
     # Мок модели
     import numpy as np
+
     mock_emb = MagicMock()
     mock_emb._model_loaded = True
     mock_emb.get_word_vector.return_value = np.zeros(300, dtype=np.float32)
@@ -67,15 +68,15 @@ def api_client():
     mock_gen.expand.return_value = []
 
     # Устанавливаем глобальные переменные API-модуля
-    api_module._cfg              = mock_cfg
-    api_module._kb               = mock_kb
-    api_module._embedding_model  = mock_emb
-    api_module._lemmatizer       = mock_lemmatizer
-    api_module._synonym_dict     = mock_synonyms
-    api_module._vector_cache     = mock_cache
-    api_module._session_manager  = mock_session
+    api_module._cfg = mock_cfg
+    api_module._kb = mock_kb
+    api_module._embedding_model = mock_emb
+    api_module._lemmatizer = mock_lemmatizer
+    api_module._synonym_dict = mock_synonyms
+    api_module._vector_cache = mock_cache
+    api_module._session_manager = mock_session
     api_module._generative_expander = mock_gen
-    api_module._metrics          = MetricsCollector(use_metrics=False)
+    api_module._metrics = MetricsCollector(use_metrics=False)
 
     client = TestClient(api_module.app, raise_server_exceptions=True)
     return client

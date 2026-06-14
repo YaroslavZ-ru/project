@@ -3,6 +3,7 @@
 Использует pymorphy3 для приведения слов к начальной форме.\nСоздаётся один раз за всё время работы приложения (синглтон).
 Повторные Lemmatizer() возвращают тот же объект, кэш не сбрасывается.
 """
+
 from collections import OrderedDict
 import logging
 
@@ -30,7 +31,7 @@ class Lemmatizer:
         if cls._instance is None:
             instance = super().__new__(cls)
             instance._morph = pymorphy3.MorphAnalyzer()
-            instance._cache: OrderedDict[str, str] = OrderedDict()
+            instance._cache = OrderedDict()
             instance._cache_size = cache_size
             cls._instance = instance
             logger.info("Lemmatizer инициализирован (cache_size=%d)", cache_size)

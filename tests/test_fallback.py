@@ -21,12 +21,16 @@ def cfg():
 
 def test_detect_domain_music():
     all_lemmas = {"скрипичный", "нотный"}
-    result = detect_domain(all_lemmas, str(PROJECT_ROOT / "configs" / "domain_keywords.json"))
+    result = detect_domain(
+        all_lemmas, str(PROJECT_ROOT / "configs" / "domain_keywords.json")
+    )
     assert result == "музыка"
 
 
 def test_detect_domain_no_match():
-    result = detect_domain({"хмурыкало"}, str(PROJECT_ROOT / "configs" / "domain_keywords.json"))
+    result = detect_domain(
+        {"хмурыкало"}, str(PROJECT_ROOT / "configs" / "domain_keywords.json")
+    )
     assert result == "общее"
 
 

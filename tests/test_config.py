@@ -1,4 +1,5 @@
 """tests/test_config.py -- тесты класса Config."""
+
 import json
 import pytest
 from pathlib import Path

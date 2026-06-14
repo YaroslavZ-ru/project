@@ -1,16 +1,37 @@
 import pytest
-from src.aggregation import aggregate_parameters, determine_context, detect_ambiguity, generate_clarification_questions
+from src.aggregation import (
+    aggregate_parameters,
+    determine_context,
+    detect_ambiguity,
+    generate_clarification_questions,
+)
 
 
 def make_param(name, label="Парам", desc=""):
-    return {"name": name, "label_ru": label, "type": "string", "description": desc, "confidence": 1.0, "source": "knowledge_base"}
+    return {
+        "name": name,
+        "label_ru": label,
+        "type": "string",
+        "description": desc,
+        "confidence": 1.0,
+        "source": "knowledge_base",
+    }
 
 
 Cands = [
-    {"similarity": 0.9, "domain": "слесарный инструмент",
-     "parameters": [make_param("material", "Материал"), make_param("size", "Размер")]},
-    {"similarity": 0.7, "domain": "слесарный инструмент",
-     "parameters": [make_param("material", "Материал")]},
+    {
+        "similarity": 0.9,
+        "domain": "слесарный инструмент",
+        "parameters": [
+            make_param("material", "Материал"),
+            make_param("size", "Размер"),
+        ],
+    },
+    {
+        "similarity": 0.7,
+        "domain": "слесарный инструмент",
+        "parameters": [make_param("material", "Материал")],
+    },
 ]
 
 
@@ -42,8 +63,8 @@ def test_determine_context_single_domain():
 
 def test_determine_context_multi_domain():
     cands = [
-        {"domain": "музыка",   "similarity": 0.8},
-        {"domain": "музыка",   "similarity": 0.7},
+        {"domain": "музыка", "similarity": 0.8},
+        {"domain": "музыка", "similarity": 0.7},
         {"domain": "техника", "similarity": 0.9},
     ]
     ctx = determine_context(cands)
@@ -57,17 +78,34 @@ def test_determine_context_empty():
 
 
 def test_hint_match_affects_rank():
-    cands = [{
-        "similarity": 0.8,
-        "domain": "тест",
-        "parameters": [
-            {"name": "material", "label_ru": "Материал изготовления", "description": "материал", "type": "string", "confidence": 1.0, "source": "kb"},
-            {"name": "size",     "label_ru": "Размер дляноо",          "description": "размер",    "type": "float",  "confidence": 1.0, "source": "kb"},
-        ]
-    }]
+    cands = [
+        {
+            "similarity": 0.8,
+            "domain": "тест",
+            "parameters": [
+                {
+                    "name": "material",
+                    "label_ru": "Материал изготовления",
+                    "description": "материал",
+                    "type": "string",
+                    "confidence": 1.0,
+                    "source": "kb",
+                },
+                {
+                    "name": "size",
+                    "label_ru": "Размер дляноо",
+                    "description": "размер",
+                    "type": "float",
+                    "confidence": 1.0,
+                    "source": "kb",
+                },
+            ],
+        }
+    ]
     # подсказка "материал" даёт hint_match=1.0 для material
     result = aggregate_parameters(cands, hints_lemmas=[["материал"]], max_parameters=10)
     assert result[0]["name"] == "material"
+
 
 # --- Тесты detect_ambiguity и generate_clarification_questions ---
 
@@ -75,9 +113,9 @@ def test_hint_match_affects_rank():
 def test_detect_ambiguity_two_equal_domains():
     """Два домена с близким score — неоднозначность."""
     candidates = [
-        {"domain": "музыка",  "similarity": 0.85},
+        {"domain": "музыка", "similarity": 0.85},
         {"domain": "техника", "similarity": 0.83},
-        {"domain": "музыка",  "similarity": 0.79},
+        {"domain": "музыка", "similarity": 0.79},
         {"domain": "техника", "similarity": 0.78},
     ]
     result = detect_ambiguity(candidates, threshold=0.7, delta=0.1)
@@ -93,7 +131,7 @@ def test_detect_ambiguity_one_clear_domain():
     candidates = [
         {"domain": "техника", "similarity": 0.95},
         {"domain": "техника", "similarity": 0.90},
-        {"domain": "музыка",  "similarity": 0.50},
+        {"domain": "музыка", "similarity": 0.50},
     ]
     result = detect_ambiguity(candidates, threshold=0.7, delta=0.1)
     assert not result["is_ambiguous"]
@@ -111,7 +149,7 @@ def test_detect_ambiguity_empty_candidates():
 def test_detect_ambiguity_below_threshold():
     """Оба домена слабые — не неоднозначность."""
     candidates = [
-        {"domain": "музыка",  "similarity": 0.55},
+        {"domain": "музыка", "similarity": 0.55},
         {"domain": "техника", "similarity": 0.53},
     ]
     result = detect_ambiguity(candidates, threshold=0.7, delta=0.1)
@@ -120,8 +158,12 @@ def test_detect_ambiguity_below_threshold():
 
 def test_generate_clarification_questions_when_ambiguous():
     """Структура вопросов при неоднозначном термине."""
-    info = {"is_ambiguous": True, "top_domain": "техника",
-            "runner_up": "музыка", "domains": []}
+    info = {
+        "is_ambiguous": True,
+        "top_domain": "техника",
+        "runner_up": "музыка",
+        "domains": [],
+    }
     questions = generate_clarification_questions(info, "ключ")
     assert isinstance(questions, list)
     assert len(questions) >= 1
@@ -130,7 +172,11 @@ def test_generate_clarification_questions_when_ambiguous():
 
 def test_generate_clarification_questions_not_ambiguous():
     """Без неоднозначности — пустой список."""
-    info = {"is_ambiguous": False, "top_domain": "техника",
-            "runner_up": None, "domains": []}
+    info = {
+        "is_ambiguous": False,
+        "top_domain": "техника",
+        "runner_up": None,
+        "domains": [],
+    }
     questions = generate_clarification_questions(info, "ключ")
     assert questions == []

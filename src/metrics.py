@@ -1,4 +1,4 @@
-﻿"""src/metrics.py -- сбор внутренних метрик + экспорт в Prometheus.
+"""src/metrics.py -- сбор внутренних метрик + экспорт в Prometheus.
 
 Модуль полностью опциональный:
 - внутренние счётчики (дикт, lock) активны всегда
@@ -40,9 +40,9 @@ class MetricsCollector:
 
     def __init__(self, use_metrics: bool = False) -> None:
         """Args:
-            use_metrics: если True -- при наличии prometheus_client активирует экспорт.
+        use_metrics: если True -- при наличии prometheus_client активирует экспорт.
         """
-        self._use_metrics   = use_metrics
+        self._use_metrics = use_metrics
         self._prometheus_on = use_metrics and _PROMETHEUS_AVAILABLE
 
         if use_metrics and not _PROMETHEUS_AVAILABLE:
@@ -56,12 +56,12 @@ class MetricsCollector:
 
         # Внутренние счётчики -- активны всегда
         self._counts: dict[str, int] = {
-            "requests_total":    0,
-            "requests_ok":       0,
+            "requests_total": 0,
+            "requests_ok": 0,
             "requests_fallback": 0,
-            "requests_error":    0,
-            "cache_hits":        0,
-            "cache_misses":      0,
+            "requests_error": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
         }
         self._total_duration: float = 0.0
         self._lock = threading.Lock()
@@ -142,13 +142,13 @@ class MetricsCollector:
             total = self._counts["requests_total"]
             avg_dur = (self._total_duration / total) if total > 0 else 0.0
             return {
-                "requests_total":    total,
-                "requests_ok":       self._counts["requests_ok"],
+                "requests_total": total,
+                "requests_ok": self._counts["requests_ok"],
                 "requests_fallback": self._counts["requests_fallback"],
-                "requests_error":    self._counts["requests_error"],
-                "cache_hits":        self._counts["cache_hits"],
-                "cache_misses":      self._counts["cache_misses"],
-                "avg_duration_s":    round(avg_dur, 4),
+                "requests_error": self._counts["requests_error"],
+                "cache_hits": self._counts["cache_hits"],
+                "cache_misses": self._counts["cache_misses"],
+                "avg_duration_s": round(avg_dur, 4),
                 "prometheus_active": self._prometheus_on,
             }
 

@@ -1,4 +1,4 @@
-﻿"""scripts/build_fallback.py -- создание data/fallback_embeddings.npy.
+"""scripts/build_fallback.py -- создание data/fallback_embeddings.npy.
 
 Собирает все уникальные слова из БД, запрашивает векторы через FastTextWrapper
 и сохраняет словарь {word: np.ndarray} в .npy.
@@ -88,9 +88,7 @@ def build_fallback(config: Config) -> dict:
     lem = Lemmatizer(cache_size=config.cache_lemma_size)
     words = collect_words_from_db(Path(config.db_path), lem)
     if not words:
-        logger.warning(
-            "База пуста или недоступна, fallback будет пустым"
-        )
+        logger.warning("База пуста или недоступна, fallback будет пустым")
 
     # Инициализируем FastTextWrapper БЕЗ fallback (чтобы не циклически не ссылаться)
     embedding_model = FastTextWrapper(
@@ -108,7 +106,8 @@ def build_fallback(config: Config) -> dict:
 
     logger.info(
         "Получено векторов: %d из %d слов",
-        len(embedding_dict), len(words),
+        len(embedding_dict),
+        len(words),
     )
 
     if not embedding_dict:
@@ -179,6 +178,7 @@ if __name__ == "__main__":
     )
 
     from src.config import Config as _Config
+
     try:
         cfg = _Config.from_json(args.config, project_root=_root)
     except Exception as exc:

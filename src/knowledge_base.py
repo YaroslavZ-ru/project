@@ -24,9 +24,14 @@ class KnowledgeBase:
         self._faiss_index = None
         self.logger = logging.getLogger(__name__)
 
-    def __enter__(self): return self
-    def __exit__(self, *args): self.close()
-    def close(self): self._conn.close()
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    def close(self):
+        self._conn.close()
 
     def _blob_to_vector(self, blob):
         if blob is None:
@@ -34,10 +39,14 @@ class KnowledgeBase:
         try:
             vec = np.frombuffer(blob, dtype="<f4").copy()
         except ValueError:
-            self.logger.warning("Некорректный BLOB: %d байт (ожидалось 1200)", len(blob))
+            self.logger.warning(
+                "Некорректный BLOB: %d байт (ожидалось 1200)", len(blob)
+            )
             return np.zeros(300, dtype=np.float32)
         if len(vec) != 300:
-            self.logger.warning("Некорректный BLOB: %d байт (ожидалось 1200)", len(blob))
+            self.logger.warning(
+                "Некорректный BLOB: %d байт (ожидалось 1200)", len(blob)
+            )
             return np.zeros(300, dtype=np.float32)
         return vec
 
@@ -69,22 +78,22 @@ class KnowledgeBase:
             cid = row["id"]
             if cid not in concepts_dict:
                 concepts_dict[cid] = {
-                    "id":         cid,
-                    "term":       row["term"],
-                    "domain":     row["domain"],
-                    "embedding":  self._blob_to_vector(row["embedding"]),
+                    "id": cid,
+                    "term": row["term"],
+                    "domain": row["domain"],
+                    "embedding": self._blob_to_vector(row["embedding"]),
                     "parameters": [],
                 }
             if row["name"] is not None:
                 param = {
-                    "name":        row["name"],
-                    "label_ru":    row["label_ru"],
-                    "type":        row["type"],
+                    "name": row["name"],
+                    "label_ru": row["label_ru"],
+                    "type": row["type"],
                     "description": row["description"] or "",
-                    "unit":        row["unit"],
+                    "unit": row["unit"],
                     "enum_values": self._parse_enum(row["enum_values"]),
-                    "confidence":  float(row["confidence"] or 1.0),
-                    "source":      "knowledge_base",
+                    "confidence": float(row["confidence"] or 1.0),
+                    "source": "knowledge_base",
                 }
                 concepts_dict[cid]["parameters"].append(param)
         result = list(concepts_dict.values())
@@ -134,7 +143,9 @@ class KnowledgeBase:
         updated = 0
         for row in rows:
             blob = self._vector_to_blob(self.compute_concept_embedding(row["term"]))
-            self._conn.execute("UPDATE concepts SET embedding=? WHERE id=?", (blob, row["id"]))
+            self._conn.execute(
+                "UPDATE concepts SET embedding=? WHERE id=?", (blob, row["id"])
+            )
             updated += 1
         self._conn.commit()
         self._faiss_index = None
@@ -160,7 +171,9 @@ class KnowledgeBase:
             return {}
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            result = {domain: np.array(vec, dtype=np.float32) for domain, vec in data.items()}
+            result = {
+                domain: np.array(vec, dtype=np.float32) for domain, vec in data.items()
+            }
             self.logger.info("Загружено %d центроидов доменов", len(result))
             return result
         except Exception as exc:
@@ -216,18 +229,24 @@ class KnowledgeBase:
                         visited.add(target_id)
                         queue.append((target_id, depth + 1))
                         try:
-                            emb = np.frombuffer(emb_bytes, dtype=np.float32) if emb_bytes else np.zeros(300, dtype=np.float32)
+                            emb = (
+                                np.frombuffer(emb_bytes, dtype=np.float32)
+                                if emb_bytes
+                                else np.zeros(300, dtype=np.float32)
+                            )
                         except Exception:
                             emb = np.zeros(300, dtype=np.float32)
-                        results.append({
-                            "concept_id": target_id,
-                            "term": term,
-                            "domain": domain,
-                            "relation_type": rel_type,
-                            "confidence": confidence,
-                            "depth": depth + 1,
-                            "embedding": emb,
-                        })
+                        results.append(
+                            {
+                                "concept_id": target_id,
+                                "term": term,
+                                "domain": domain,
+                                "relation_type": rel_type,
+                                "confidence": confidence,
+                                "depth": depth + 1,
+                                "embedding": emb,
+                            }
+                        )
             return results
         except sqlite3.Error as exc:
             self.logger.error("Ошибка get_concept_relations: %s", exc)
@@ -273,14 +292,16 @@ class KnowledgeBase:
                 if weighted_sim < min_confidence:
                     continue
                 seen_ids.add(rel_id)
-                extended.append({
-                    "concept_id": rel_id,
-                    "term": rel["term"],
-                    "domain": rel["domain"],
-                    "similarity": round(weighted_sim, 4),
-                    "parameters": [],
-                    "via_relation": rel["relation_type"],
-                })
+                extended.append(
+                    {
+                        "concept_id": rel_id,
+                        "term": rel["term"],
+                        "domain": rel["domain"],
+                        "similarity": round(weighted_sim, 4),
+                        "parameters": [],
+                        "via_relation": rel["relation_type"],
+                    }
+                )
         extended.sort(key=lambda x: x.get("similarity", 0.0), reverse=True)
         return extended[:max_candidates]
 
@@ -301,7 +322,8 @@ class KnowledgeBase:
             Название домена или None если сходство ниже порога.
         """
         threshold = (
-            min_threshold if min_threshold is not None
+            min_threshold
+            if min_threshold is not None
             else getattr(self._config, "domain_centroid_threshold", 0.3)
         )
         if not domain_centroids:
@@ -334,9 +356,7 @@ class KnowledgeBase:
             index_path = Path(faiss_path_str)
             id_map_path = index_path.with_suffix(".ids.json")
             if not index_path.exists() or not id_map_path.exists():
-                self.logger.warning(
-                    "FAISS: index or id map not found: %s", index_path
-                )
+                self.logger.warning("FAISS: index or id map not found: %s", index_path)
                 return False
             index = faiss.read_index(str(index_path))
             id_map = json.loads(id_map_path.read_text(encoding="utf-8"))
@@ -353,6 +373,7 @@ class KnowledgeBase:
     def _build_faiss_index(self, concepts):
         try:
             import faiss
+
             index = faiss.IndexFlatIP(300)
             matrix = np.stack([c["embedding"] for c in concepts]).astype(np.float32)
             index.add(matrix)
@@ -367,17 +388,21 @@ class KnowledgeBase:
         for c in concepts:
             sim = float(np.dot(query_vector, c["embedding"]))
             if sim >= threshold:
-                results.append({
-                    "concept_id": c["id"],
-                    "term":       c["term"],
-                    "domain":     c["domain"],
-                    "similarity": sim,
-                    "parameters": c["parameters"],
-                })
+                results.append(
+                    {
+                        "concept_id": c["id"],
+                        "term": c["term"],
+                        "domain": c["domain"],
+                        "similarity": sim,
+                        "parameters": c["parameters"],
+                    }
+                )
         results.sort(key=lambda x: x["similarity"], reverse=True)
         return results[:max_cand]
 
-    def search_similar_concepts(self, query_vector, min_confidence=None, max_candidates=None):
+    def search_similar_concepts(
+        self, query_vector, min_confidence=None, max_candidates=None
+    ):
         if min_confidence is None:
             min_confidence = self._config.min_confidence
         if max_candidates is None:
@@ -404,8 +429,8 @@ class KnowledgeBase:
                 results = [
                     {
                         "concept_id": fc[idx]["id"],
-                        "term":       fc[idx]["term"],
-                        "domain":     fc[idx]["domain"],
+                        "term": fc[idx]["term"],
+                        "domain": fc[idx]["domain"],
                         "similarity": float(d),
                         "parameters": fc[idx]["parameters"],
                     }
@@ -413,13 +438,23 @@ class KnowledgeBase:
                     if idx != -1 and float(d) >= min_confidence
                 ]
             else:
-                results = self._linear_search(query_vector, concepts, min_confidence, max_candidates)
+                results = self._linear_search(
+                    query_vector, concepts, min_confidence, max_candidates
+                )
         else:
-            results = self._linear_search(query_vector, concepts, min_confidence, max_candidates)
+            results = self._linear_search(
+                query_vector, concepts, min_confidence, max_candidates
+            )
         if len(results) < 3 and min_confidence > 0.2:
-            self.logger.info("Расширяем поиск: %d кандидатов -> порог 0.2", len(results))
+            self.logger.info(
+                "Расширяем поиск: %d кандидатов -> порог 0.2", len(results)
+            )
             results = self._linear_search(query_vector, concepts, 0.2, max_candidates)
-        self.logger.debug("search: %d кандидатов за %.3fс", len(results), time.monotonic() - t0)
+        self.logger.debug(
+            "search: %d кандидатов за %.3fс", len(results), time.monotonic() - t0
+        )
         if getattr(self._config, "use_relations", False) and results:
-            results = self._search_with_relations(query_vector, results, min_confidence, max_candidates)
+            results = self._search_with_relations(
+                query_vector, results, min_confidence, max_candidates
+            )
         return results

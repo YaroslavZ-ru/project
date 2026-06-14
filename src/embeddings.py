@@ -3,7 +3,7 @@ from collections import OrderedDict
 from pathlib import Path
 import numpy as np
 
-logger = logging.getLogger('ai_terminator.embeddings')
+logger = logging.getLogger("ai_terminator.embeddings")
 
 
 class FastTextWrapper:
@@ -24,19 +24,23 @@ class FastTextWrapper:
             return
         self._fallback_loaded = True
         if self._fallback_path is None or not self._fallback_path.exists():
-            logger.warning('Fallback-файл не задан или не найден: %s', self._fallback_path)
+            logger.warning(
+                "Fallback-файл не задан или не найден: %s", self._fallback_path
+            )
             return
         try:
             data = np.load(str(self._fallback_path), allow_pickle=True).item()
             if not isinstance(data, dict) or not data:
-                logger.warning('Неверный формат fallback-файла.')
+                logger.warning("Неверный формат fallback-файла.")
                 return
             first_vec = next(iter(data.values()))
             self._dim = len(first_vec)
             self._fallback = data
-            logger.info('Fallback загружен: %d слов, размерность %d', len(data), self._dim)
+            logger.info(
+                "Fallback загружен: %d слов, размерность %d", len(data), self._dim
+            )
         except Exception as exc:
-            logger.error('Ошибка загрузки fallback: %s', exc)
+            logger.error("Ошибка загрузки fallback: %s", exc)
 
     def _ensure_model(self):
         if self._model_loaded:
@@ -45,17 +49,20 @@ class FastTextWrapper:
         if self._model_path.exists():
             try:
                 import fasttext
+
                 self._model = fasttext.load_model(str(self._model_path))
-                self._dim = len(self._model.get_word_vector('а'))
-                logger.info('FastText загружена, размерность %d', self._dim)
+                self._dim = len(self._model.get_word_vector("а"))
+                logger.info("FastText загружена, размерность %d", self._dim)
             except Exception as exc:
-                logger.error('Ошибка загрузки fastText: %s', exc)
+                logger.error("Ошибка загрузки fastText: %s", exc)
                 self._load_fallback()
         else:
-            logger.error('Файл модели не найден: %s', self._model_path)
+            logger.error("Файл модели не найден: %s", self._model_path)
             self._load_fallback()
         if self._model is None and self._fallback is None:
-            logger.warning('Ни fastText, ни fallback не загружены. Все векторы будут нулевыми.')
+            logger.warning(
+                "Ни fastText, ни fallback не загружены. Все векторы будут нулевыми."
+            )
 
     def get_word_vector(self, word):
         word = word.lower().strip()
@@ -70,14 +77,18 @@ class FastTextWrapper:
             try:
                 vec = np.array(self._model.get_word_vector(word), dtype=np.float32)
             except Exception as exc:
-                logger.warning('Ошибка get_word_vector(%r): %s', word, exc)
+                logger.warning("Ошибка get_word_vector(%r): %s", word, exc)
         if vec is None and self._fallback is not None:
             raw = self._fallback.get(word)
-            vec = np.array(raw, dtype=np.float32) if raw is not None else np.zeros(self._dim, dtype=np.float32)
+            vec = (
+                np.array(raw, dtype=np.float32)
+                if raw is not None
+                else np.zeros(self._dim, dtype=np.float32)
+            )
         if vec is None:
             vec = np.zeros(self._dim, dtype=np.float32)
             if word not in self._warned_words:
-                logger.warning('Модель недоступна, нулевой вектор для: %r', word)
+                logger.warning("Модель недоступна, нулевой вектор для: %r", word)
                 self._warned_words.add(word)
         if len(self._word_cache) >= self._cache_maxsize:
             self._word_cache.popitem(last=False)

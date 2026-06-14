@@ -21,7 +21,11 @@ def setup_all(config, force: bool = False) -> None:
 
     Lemmatizer(cache_size=config.cache_lemma_size)
     synonym_dict = SynonymDict(config.synonyms_path)
-    fallback_path = Path(config.fallback_embeddings_path) if config.fallback_embeddings_path else None
+    fallback_path = (
+        Path(config.fallback_embeddings_path)
+        if config.fallback_embeddings_path
+        else None
+    )
     embedding_model = FastTextWrapper(
         model_path=Path(config.fasttext_model_path),
         fallback_path=fallback_path,
@@ -38,9 +42,10 @@ if __name__ == "__main__":
         sys.path.insert(0, str(_root))
     from src.config import Config
     import argparse
+
     logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser(description="Полная инициализация системы")
-    parser.add_argument("--force",  action="store_true")
+    parser.add_argument("--force", action="store_true")
     parser.add_argument("--config", default="configs/config.json")
     args = parser.parse_args()
     cfg = Config.from_json(args.config, project_root=_root)

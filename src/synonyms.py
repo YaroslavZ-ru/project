@@ -6,6 +6,7 @@
 weight в файле -- вес релевантности (для отбора топ-N). Не путать
 с весом при векторизации (0.1/M) -- он вычисляется в preprocess.py.
 """
+
 import json
 import logging
 from pathlib import Path
@@ -32,7 +33,9 @@ class SynonymDict:
             with open(path_str, encoding="utf-8") as f:
                 raw = json.load(f)
         except FileNotFoundError:
-            logger.warning("Файл синонимов не найден: %s. Работа без синонимов.", path_str)
+            logger.warning(
+                "Файл синонимов не найден: %s. Работа без синонимов.", path_str
+            )
             return
         except json.JSONDecodeError as exc:
             logger.error("Ошибка парсинга %s: %s. Работа без синонимов.", path_str, exc)
@@ -42,19 +45,30 @@ class SynonymDict:
             return
 
         if not isinstance(raw, dict):
-            logger.error("Неверный формат: корень должен быть словарём, получен %s", type(raw).__name__)
+            logger.error(
+                "Неверный формат: корень должен быть словарём, получен %s",
+                type(raw).__name__,
+            )
             return
 
         validated: dict[str, list[dict]] = {}
         for key, entries in raw.items():
             if not isinstance(entries, list):
-                logger.error("Статья %r: значение должно быть списком, получен %s. Пропущена.", key, type(entries).__name__)
+                logger.error(
+                    "Статья %r: значение должно быть списком, получен %s. Пропущена.",
+                    key,
+                    type(entries).__name__,
+                )
                 self._data = {}
                 return
             clean_entries = []
             for item in entries:
                 if not isinstance(item, dict):
-                    logger.error("Статья %r: элемент должен быть словарём, получен %s. Пропущен.", key, type(item).__name__)
+                    logger.error(
+                        "Статья %r: элемент должен быть словарём, получен %s. Пропущен.",
+                        key,
+                        type(item).__name__,
+                    )
                     self._data = {}
                     return
                 word = item.get("word", "")

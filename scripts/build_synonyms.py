@@ -63,6 +63,7 @@ def build_from_ruwordnet(output_path: Path, lemmatizer, max_synonyms: int = 10) 
 
     if lemmatizer is None:
         from src.lemmatizer import Lemmatizer
+
         lemmatizer = Lemmatizer(cache_size=1000)
 
     try:
@@ -102,7 +103,9 @@ def build_from_ruwordnet(output_path: Path, lemmatizer, max_synonyms: int = 10) 
                     synonyms_dict[word] = set()
                 synonyms_dict[word].update(s for s in senses_lemmas if s != word)
 
-        result = {w: list(syns)[:max_synonyms] for w, syns in synonyms_dict.items() if syns}
+        result = {
+            w: list(syns)[:max_synonyms] for w, syns in synonyms_dict.items() if syns
+        }
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(
@@ -139,8 +142,12 @@ def build_minimal_fallback(output_path: Path) -> dict:
             json.dumps(_FALLBACK_SYNONYMS, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        logger.info("Минимальный словарь: %d слов -> %s", len(_FALLBACK_SYNONYMS), output_path)
-        print(f"Создан минимальный словарь: {len(_FALLBACK_SYNONYMS)} слов -> {output_path}")
+        logger.info(
+            "Минимальный словарь: %d слов -> %s", len(_FALLBACK_SYNONYMS), output_path
+        )
+        print(
+            f"Создан минимальный словарь: {len(_FALLBACK_SYNONYMS)} слов -> {output_path}"
+        )
         return {"words_count": len(_FALLBACK_SYNONYMS), "source": "fallback"}
     except Exception as exc:
         logger.error("Ошибка build_minimal_fallback: %s", exc)
@@ -157,11 +164,12 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
 
     parser = argparse.ArgumentParser(description="Создать словарь синонимов")
-    parser.add_argument("--config",        default="configs/config.json")
-    parser.add_argument("--output",        default=None)
-    parser.add_argument("--max-synonyms",  type=int, default=10)
-    parser.add_argument("--fallback",      action="store_true",
-                        help="Использовать встроенный словарь")
+    parser.add_argument("--config", default="configs/config.json")
+    parser.add_argument("--output", default=None)
+    parser.add_argument("--max-synonyms", type=int, default=10)
+    parser.add_argument(
+        "--fallback", action="store_true", help="Использовать встроенный словарь"
+    )
     args = parser.parse_args()
 
     try:
@@ -178,6 +186,7 @@ if __name__ == "__main__":
         result = build_minimal_fallback(output_path)
     else:
         from src.lemmatizer import Lemmatizer
+
         lem = Lemmatizer(cache_size=cfg.cache_lemma_size)
         result = build_from_ruwordnet(output_path, lem, max_synonyms=args.max_synonyms)
 

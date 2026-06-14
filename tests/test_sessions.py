@@ -1,4 +1,4 @@
-﻿"""tests/test_sessions.py -- тесты SessionManager.
+"""tests/test_sessions.py -- тесты SessionManager.
 
 Не требуют внешних зависимостей. Config мокируется простым объектом.
 """
@@ -93,4 +93,3 @@ class TestEdgeCases:
         sm = SessionManager(make_config())
         assert sm.get_domain("") is None
         assert sm.get_domain(None) is None
-

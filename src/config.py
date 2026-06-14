@@ -126,7 +126,9 @@ class Config:
         # 2. Преобразование обязательных _path-полей в abs Path
         for key in _AUTO_PATH_FIELDS:
             if key not in data:
-                raise ValueError(f"Обязательное поле отсутствует в config.json: {key!r}")
+                raise ValueError(
+                    f"Обязательное поле отсутствует в config.json: {key!r}"
+                )
             data[key] = (project_root / data[key]).resolve()
 
         # 3. fallback_embeddings_path: пустая строка = нет fallback
@@ -173,20 +175,31 @@ class Config:
 
         # Положительные целые int > 0
         positive_ints = [
-            "max_candidates", "max_parameters", "cache_lemma_size",
-            "max_synonyms_per_token", "max_term_length", "max_hint_length",
-            "word_vector_cache_size", "query_cache_size",
-            "session_ttl_seconds", "session_cache_size",
-            "session_cleanup_interval_seconds", "relation_max_depth",
-            "domain_centroids_min_concepts", "generative_max_new_tokens",
-            "generative_max_new_params", "min_parameters_for_generative",
+            "max_candidates",
+            "max_parameters",
+            "cache_lemma_size",
+            "max_synonyms_per_token",
+            "max_term_length",
+            "max_hint_length",
+            "word_vector_cache_size",
+            "query_cache_size",
+            "session_ttl_seconds",
+            "session_cache_size",
+            "session_cleanup_interval_seconds",
+            "relation_max_depth",
+            "domain_centroids_min_concepts",
+            "generative_max_new_tokens",
+            "generative_max_new_params",
+            "min_parameters_for_generative",
         ]
         for key in positive_ints:
             val = data.get(key)
             if val is None:
                 raise ValueError(f"Обязательное поле отсутствует: {key!r}")
             if not isinstance(val, int) or val <= 0:
-                raise ValueError(f"{key!r} должен быть целым положительным числом, получено: {val!r}")
+                raise ValueError(
+                    f"{key!r} должен быть целым положительным числом, получено: {val!r}"
+                )
 
         # Таймауты: float > 0
         for key in ("timeout_seconds", "generative_timeout_seconds"):
@@ -203,7 +216,9 @@ class Config:
 
         # use_generative: если true -- generative_model не пуста
         if data.get("use_generative") and not data.get("generative_model", "").strip():
-            raise ValueError("Генеративная модель не задана: заполните generative_model")
+            raise ValueError(
+                "Генеративная модель не задана: заполните generative_model"
+            )
 
         # generative_keywords: list[непустых str]
         kws = data.get("generative_keywords", [])
@@ -211,32 +226,49 @@ class Config:
             raise ValueError("generative_keywords должен быть списком")
         for i, kw in enumerate(kws):
             if not isinstance(kw, str) or not kw.strip():
-                raise ValueError(f"generative_keywords[{i}] должен быть непустой строкой")
+                raise ValueError(
+                    f"generative_keywords[{i}] должен быть непустой строкой"
+                )
 
         # generative_temperature: float в (0.0, 2.0]
         gt = data.get("generative_temperature")
         if not isinstance(gt, (int, float)) or not (0.0 < float(gt) <= 2.0):
-            raise ValueError(f"generative_temperature должна быть в диапазоне (0.0, 2.0], получено: {gt!r}")
+            raise ValueError(
+                f"generative_temperature должна быть в диапазоне (0.0, 2.0], получено: {gt!r}"
+            )
 
         # float в [0.0, 1.0]
-        for key in ("ambiguity_threshold", "ambiguity_delta", "domain_centroid_threshold", "relation_decay_factor"):
+        for key in (
+            "ambiguity_threshold",
+            "ambiguity_delta",
+            "domain_centroid_threshold",
+            "relation_decay_factor",
+        ):
             val = data.get(key)
             if val is None:
                 continue  # опциональные, будет дефолт
             if not isinstance(val, (int, float)) or not (0.0 <= float(val) <= 1.0):
-                raise ValueError(f"{key!r} должно быть float в [0.0, 1.0], получено: {val!r}")
+                raise ValueError(
+                    f"{key!r} должно быть float в [0.0, 1.0], получено: {val!r}"
+                )
 
         # bool-поля
         for key in (
-            "use_synonyms", "cache_embeddings", "use_faiss",
-            "auto_save_domain_on_ok", "auto_save_domain_on_fallback", "use_relations",
+            "use_synonyms",
+            "cache_embeddings",
+            "use_faiss",
+            "auto_save_domain_on_ok",
+            "auto_save_domain_on_fallback",
+            "use_relations",
             "use_metrics",
         ):
             val = data.get(key)
             if val is None:
                 continue
             if not isinstance(val, bool):
-                raise ValueError(f"{key!r} должно быть true или false, получено: {val!r}")
+                raise ValueError(
+                    f"{key!r} должно быть true или false, получено: {val!r}"
+                )
 
         # api_host: непустая строка
         host = data.get("api_host")
@@ -250,7 +282,10 @@ class Config:
                 raise ValueError(
                     f"api_port должен быть целым числом от 1 до 65535, получено: {val!r}"
                 )
-                raise ValueError(f"{key!r} должно быть true или false, получено: {val!r}")
+                raise ValueError(
+                    f"{key!r} должно быть true или false, получено: {val!r}"
+                )
+
 
 # ---------------------------------------------------------------------------
 # Глобальный кэш конфига
@@ -279,4 +314,3 @@ def reset_config() -> None:
     """Сбросить кэш конфига (используется в тестах)."""
     global _config
     _config = None
-

@@ -8,19 +8,23 @@ from src.preprocess import preprocess_full
 
 PROJECT_ROOT = Path(__file__).parent.parent
 
+
 @pytest.fixture(autouse=True)
 def reset_singleton():
     Lemmatizer._instance = None
     yield
     Lemmatizer._instance = None
 
+
 @pytest.fixture
 def cfg():
     return Config.from_json("configs/config.json", project_root=PROJECT_ROOT)
 
+
 @pytest.fixture
 def lm():
     return Lemmatizer()
+
 
 @pytest.fixture
 def syn(tmp_path):
@@ -44,6 +48,7 @@ def test_weights_simple(cfg, lm, syn):
     # 2 синонима, каждый 0.1/2
     assert tw["инструмент"] == pytest.approx(0.05, abs=1e-5)
 
+
 def test_weights_multi_word_term(cfg, lm, syn):
     r = preprocess_full("ключ гаечный", [], cfg, syn, lm)
     assert r["status"] == "ok"
@@ -53,14 +58,17 @@ def test_weights_multi_word_term(cfg, lm, syn):
     # синоним только для 'ключ', 0.1/1 = 0.1
     assert tw["инструмент"] == pytest.approx(0.1, abs=1e-5)
 
+
 def test_no_synonyms_flag(cfg, lm, syn):
     from dataclasses import replace
+
     cfg_no_syn = replace(cfg, use_synonyms=False)
     r = preprocess_full("ключ", ["техника"], cfg_no_syn, syn, lm)
     assert r["status"] == "ok"
     tokens = [t for t, _ in r["tokens_with_weights"]]
     assert "инструмент" not in tokens
     assert "механизм" not in tokens
+
 
 def test_error_propagated(cfg, lm, syn):
     r = preprocess_full("!!!", [], cfg, syn, lm)

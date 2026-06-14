@@ -17,10 +17,10 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 TEST_QUERIES: list[dict] = [
-    {"term": "ключ",   "hints": ["техника"]},
-    {"term": "ключ",   "hints": ["музыка"]},
-    {"term": "болт",   "hints": ["крепёж", "металл"]},
-    {"term": "гайка",  "hints": []},
+    {"term": "ключ", "hints": ["техника"]},
+    {"term": "ключ", "hints": ["музыка"]},
+    {"term": "болт", "hints": ["крепёж", "металл"]},
+    {"term": "гайка", "hints": []},
     {"term": "термин", "hints": ["база знаний"]},
 ]
 
@@ -92,6 +92,7 @@ def profile_pipeline(
                     vector_cache.put(term, hints, config, query_vector)
             except Exception:
                 import numpy as np
+
                 query_vector = np.zeros(300, dtype=np.float32)
             timings["vectorize"].append(time.monotonic() - t0)
 
@@ -142,9 +143,7 @@ def print_profile_report(stats: dict, n_queries: int, n_runs: int) -> None:
         n_queries: количество запросов.
         n_runs:   число прогонов каждого запроса.
     """
-    header = (
-        f"{"Шаг":<25} | {"Вызовов":>7} | {"Мин (мс)":>8} | {"Ср (мс)":>7} | {"Макс (мс)":>9}"
-    )
+    header = f"{'Шаг':<25} | {'Вызовов':>7} | {'Мин (мс)':>8} | {'Ср (мс)':>7} | {'Макс (мс)':>9}"
     sep = "-" * len(header)
     print(header)
     print(sep)
@@ -162,7 +161,9 @@ def print_profile_report(stats: dict, n_queries: int, n_runs: int) -> None:
         min_ms = s.get("min_s", 0.0) * 1000
         mean_ms = s.get("mean_s", 0.0) * 1000
         max_ms = s.get("max_s", 0.0) * 1000
-        print(f"{name:<25} | {calls:>7} | {min_ms:>8.3f} | {mean_ms:>7.3f} | {max_ms:>9.3f}")
+        print(
+            f"{name:<25} | {calls:>7} | {min_ms:>8.3f} | {mean_ms:>7.3f} | {max_ms:>9.3f}"
+        )
     print(sep)
     print("Примечание: vectorize включает кэш -- повторные запросы быстрее.")
     print(f"Запросов: {n_queries}, прогонов каждого: {n_runs}")
@@ -176,11 +177,13 @@ if __name__ == "__main__":
     from src.config import Config
     from main import _init_components
 
-    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s %(message)s")
+    logging.basicConfig(
+        level=logging.WARNING, format="%(levelname)s %(name)s %(message)s"
+    )
 
     parser = argparse.ArgumentParser(description="Профилирование AI-Terminator")
-    parser.add_argument("--config",  default="configs/config.json")
-    parser.add_argument("--runs",    type=int, default=3)
+    parser.add_argument("--config", default="configs/config.json")
+    parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--queries", default=None, help="JSON-файл с запросами")
     args = parser.parse_args()
 
@@ -201,7 +204,10 @@ if __name__ == "__main__":
         try:
             queries = json.loads(Path(args.queries).read_text(encoding="utf-8"))
         except Exception as exc:
-            logger.warning("Не удалось загрузить queries из файла: %s. Использую TEST_QUERIES.", exc)
+            logger.warning(
+                "Не удалось загрузить queries из файла: %s. Использую TEST_QUERIES.",
+                exc,
+            )
 
     n_runs = max(1, args.runs)
     stats = profile_pipeline(cfg, comps, queries, n_runs=n_runs)

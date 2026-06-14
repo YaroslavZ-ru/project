@@ -9,6 +9,7 @@
   V = 0.7 * V_term + sum(0.3/N * V_hint_i) + sum(0.1/M * V_syn_j)
   Сумма весов может превышать 1.0 -- это норма, L2-нормирование в векторизаторе.
 """
+
 import logging
 from src.config import Config
 from src.lemmatizer import Lemmatizer
@@ -109,7 +110,8 @@ def preprocess_base(
     }
     logger.info(
         "Предобработка завершена: term_lemmas=%r, подсказок=%d",
-        term_lemmas, len(clean_hints),
+        term_lemmas,
+        len(clean_hints),
     )
     return result
 

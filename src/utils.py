@@ -1,4 +1,4 @@
-﻿"""src/utils.py -- утилиты общего назначения AI-Terminator.
+"""src/utils.py -- утилиты общего назначения AI-Terminator.
 
 Модуль не импортирует ничего из src/ -- нет риска циклических импортов.
 Использует только stdlib: logging, functools, time.
@@ -32,6 +32,7 @@ def timed(logger: logging.Logger, label: str | None = None) -> Callable:
         def search_similar(query):
             ...
     """
+
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -42,7 +43,9 @@ def timed(logger: logging.Logger, label: str | None = None) -> Callable:
             finally:
                 elapsed = time.monotonic() - start
                 logger.debug("[%s] завершён за %.3fс", tag, elapsed)
+
         return wrapper
+
     return decorator
 
 
