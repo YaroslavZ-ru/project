@@ -1,4 +1,5 @@
 import sqlite3
+from collections import deque
 import json
 import logging
 import time
@@ -143,6 +144,182 @@ class KnowledgeBase:
         self.logger.info("Пересчитано эмбеддингов: %d", updated)
         return updated
 
+    def load_domain_centroids(self, centroids_path: str | None = None) -> dict:
+        """Загрузить центроиды доменов из JSON-файла.
+
+        Args:
+            centroids_path: путь к JSON-файлу. Если None — из конфига.
+
+        Returns:
+            dict {domain: np.ndarray float32} или пустой dict.
+        """
+        raw = centroids_path or getattr(self._config, "domain_centroids_path", "")
+        if not raw:
+            self.logger.debug("domain_centroids_path не задан")
+            return {}
+        path = Path(raw)
+        if not path.exists():
+            self.logger.debug("Файл центроидов не найден: %s", path)
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            result = {domain: np.array(vec, dtype=np.float32) for domain, vec in data.items()}
+            self.logger.info("Загружено %d центроидов доменов", len(result))
+            return result
+        except Exception as exc:
+            self.logger.error("Ошибка загрузки центроидов: %s", exc)
+            return {}
+
+    def get_concept_relations(
+        self,
+        concept_id: str,
+        relation_types: list[str] | None = None,
+        max_depth: int = 1,
+    ) -> list[dict]:
+        """Получить родственные концепты через таблицу relations (BFS).
+
+        Args:
+            concept_id:     id концепта-источника.
+            relation_types: список типов. None — все типы.
+            max_depth:      глубина обхода.
+
+        Returns:
+            list[dict] с полями concept_id, term, domain, relation_type, depth, embedding.
+        """
+        try:
+            queue: deque = deque([(concept_id, 0)])
+            visited: set = {concept_id}
+            results: list[dict] = []
+            with sqlite3.connect(str(self._config.db_path)) as conn:
+                while queue:
+                    curr_id, depth = queue.popleft()
+                    if depth >= max_depth:
+                        continue
+                    if relation_types:
+                        placeholders = ",".join("?" * len(relation_types))
+                        query = (
+                            "SELECT r.target_concept_id, r.relation_type, r.confidence,"
+                            " c.term, c.domain, c.embedding"
+                            " FROM relations r JOIN concepts c ON c.id = r.target_concept_id"
+                            f" WHERE r.source_concept_id = ? AND r.relation_type IN ({placeholders})"
+                        )
+                        params = (curr_id, *relation_types)
+                    else:
+                        query = (
+                            "SELECT r.target_concept_id, r.relation_type, r.confidence,"
+                            " c.term, c.domain, c.embedding"
+                            " FROM relations r JOIN concepts c ON c.id = r.target_concept_id"
+                            " WHERE r.source_concept_id = ?"
+                        )
+                        params = (curr_id,)
+                    for row in conn.execute(query, params):
+                        target_id, rel_type, confidence, term, domain, emb_bytes = row
+                        if target_id in visited:
+                            continue
+                        visited.add(target_id)
+                        queue.append((target_id, depth + 1))
+                        try:
+                            emb = np.frombuffer(emb_bytes, dtype=np.float32) if emb_bytes else np.zeros(300, dtype=np.float32)
+                        except Exception:
+                            emb = np.zeros(300, dtype=np.float32)
+                        results.append({
+                            "concept_id": target_id,
+                            "term": term,
+                            "domain": domain,
+                            "relation_type": rel_type,
+                            "confidence": confidence,
+                            "depth": depth + 1,
+                            "embedding": emb,
+                        })
+            return results
+        except sqlite3.Error as exc:
+            self.logger.error("Ошибка get_concept_relations: %s", exc)
+            return []
+
+    def _search_with_relations(
+        self,
+        query_vector: np.ndarray,
+        direct_results: list,
+        min_confidence: float,
+        max_candidates: int,
+    ) -> list:
+        """Расширить результаты поиска через граф отношений.
+
+        Args:
+            query_vector:   нормализованный вектор запроса.
+            direct_results: прямые результаты поиска.
+            min_confidence: порог similarity.
+            max_candidates: макс. кандидатов.
+
+        Returns:
+            Расширенный список кандидатов.
+        """
+        if not getattr(self._config, "use_relations", False):
+            return direct_results
+        max_depth = getattr(self._config, "relation_max_depth", 1)
+        decay_factor = getattr(self._config, "relation_decay_factor", 0.5)
+        extended = list(direct_results)
+        seen_ids = {c["concept_id"] for c in extended if "concept_id" in c}
+        for c in direct_results:
+            relations = self.get_concept_relations(
+                c.get("concept_id", ""), max_depth=max_depth
+            )
+            for rel in relations:
+                rel_id = rel["concept_id"]
+                if rel_id in seen_ids:
+                    continue
+                rel_emb = rel["embedding"]
+                if np.all(rel_emb == 0):
+                    continue
+                rel_sim = float(np.dot(query_vector, rel_emb.astype(np.float32)))
+                weighted_sim = rel_sim * (decay_factor ** rel["depth"])
+                if weighted_sim < min_confidence:
+                    continue
+                seen_ids.add(rel_id)
+                extended.append({
+                    "concept_id": rel_id,
+                    "term": rel["term"],
+                    "domain": rel["domain"],
+                    "similarity": round(weighted_sim, 4),
+                    "parameters": [],
+                    "via_relation": rel["relation_type"],
+                })
+        extended.sort(key=lambda x: x.get("similarity", 0.0), reverse=True)
+        return extended[:max_candidates]
+
+    def get_closest_domain(
+        self,
+        query_vector: np.ndarray,
+        domain_centroids: dict,
+        min_threshold: float | None = None,
+    ) -> str | None:
+        """Найти домен с центроидом, ближайшим к вектору запроса.
+
+        Args:
+            query_vector:     нормализованный вектор запроса.
+            domain_centroids: результат load_domain_centroids().
+            min_threshold:    минимальный порог сходства. None = из конфига.
+
+        Returns:
+            Название домена или None если сходство ниже порога.
+        """
+        threshold = (
+            min_threshold if min_threshold is not None
+            else getattr(self._config, "domain_centroid_threshold", 0.3)
+        )
+        if not domain_centroids:
+            return None
+        best_domain, best_score = None, -1.0
+        for domain, centroid in domain_centroids.items():
+            score = float(np.dot(query_vector, centroid))
+            if score > best_score:
+                best_score = score
+                best_domain = domain
+        if best_score >= threshold:
+            self.logger.debug("Ближайший центроид: %r (%.3f)", best_domain, best_score)
+            return best_domain
+        return None
+
     def _load_faiss_index_from_disk(self) -> bool:
         """Загрузить FAISS-индекс с диска (если задан faiss_index_path).
 
@@ -246,4 +423,6 @@ class KnowledgeBase:
             self.logger.info("Расширяем поиск: %d кандидатов -> порог 0.2", len(results))
             results = self._linear_search(query_vector, concepts, 0.2, max_candidates)
         self.logger.debug("search: %d кандидатов за %.3fс", len(results), time.monotonic() - t0)
+        if getattr(self._config, "use_relations", False) and results:
+            results = self._search_with_relations(query_vector, results, min_confidence, max_candidates)
         return results

@@ -291,3 +291,16 @@ def test_pipeline_none_hints_handled(pipeline_components):
     """None вместо hints -- не падает, обрабатывается как пустой список."""
     result = call_pipeline(pipeline_components, "болт", hints=None)
     assert result["status"] in ("ok", "error")
+
+
+def test_pipeline_returns_needs_clarification_field(pipeline_components):
+    """Поле needs_clarification должно присутствовать в ответе."""
+    result = call_pipeline(pipeline_components, "ключ")
+    assert "needs_clarification" in result, "Поле needs_clarification должно быть в ответе"
+    assert isinstance(result["needs_clarification"], bool)
+
+
+def test_pipeline_needs_clarification_false_by_default(pipeline_components):
+    """fallback-ответ должен содержать needs_clarification=False."""
+    result = call_pipeline(pipeline_components, "ключ")
+    assert result.get("needs_clarification") == False

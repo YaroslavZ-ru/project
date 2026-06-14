@@ -91,6 +91,7 @@ class Config:
     use_metrics: bool = False
     api_host: str = "127.0.0.1"
     api_port: int = 8000
+    domain_centroids_path: str = ""
 
     # ------------------------------------------------------------------
     @classmethod

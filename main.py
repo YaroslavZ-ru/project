@@ -29,7 +29,7 @@ from src.embeddings import FastTextWrapper
 from src.vectorize import vectorize
 from src.cache import QueryVectorCache
 from src.knowledge_base import KnowledgeBase
-from src.aggregation import aggregate_parameters, determine_context
+from src.aggregation import aggregate_parameters, determine_context, detect_ambiguity, generate_clarification_questions
 from src.fallback import fallback_response
 from src.generative import GenerativeExpander
 from src.sessions import SessionManager
@@ -180,6 +180,14 @@ def run_pipeline(
     if hints is None:
         hints = []
 
+    # --- Блок B: Центроид сессии ---
+    session_hint_domain: str | None = None
+    if session_id and session_manager and kb is not None:
+        _saved = session_manager.get_domain(session_id)
+        if _saved:
+            session_hint_domain = _saved
+            logger.debug("Сессия %r: сохранённый домен %r", session_id, _saved)
+
     # Загрузка домена из сессии
     if session_id and session_manager:
         saved_domain = session_manager.get_domain(session_id)
@@ -206,6 +214,17 @@ def run_pipeline(
         logger.info("Вычислен новый вектор для: %r", term)
     if np.all(query_vector == 0):
         warnings_list.append("Вектор запроса нулевой. Модель эмбеддингов недоступна. Поиск не выполнен.")
+
+    # --- Проверка центроида сессии после vectorize ---
+    if session_hint_domain and kb is not None and not np.all(query_vector == 0):
+        domain_centroids = kb.load_domain_centroids()
+        if domain_centroids:
+            closest = kb.get_closest_domain(query_vector, domain_centroids)
+            if closest and closest != session_hint_domain:
+                logger.info("Запрос %r ближе к домену %r (сессия: %r)", term, closest, session_hint_domain)
+                session_hint_domain = closest
+            elif closest == session_hint_domain:
+                logger.debug("Запрос %r подтверждает домен сессии %r", term, session_hint_domain)
 
     # --- Шаг 3: Поиск кандидатов ---
     candidates: list = []
@@ -244,8 +263,28 @@ def run_pipeline(
                 "Найдено мало параметров. "
                 "Рекомендуется добавить уточняющие подсказки."
             )
+
+        # --- Блок A: Обнаружение неоднозначности ---
+        ambiguity_info = detect_ambiguity(
+            candidates,
+            threshold=cfg.ambiguity_threshold,
+            delta=cfg.ambiguity_delta,
+        )
+        needs_clarification: bool = ambiguity_info["is_ambiguous"]
+        if needs_clarification:
+            clarification_questions = generate_clarification_questions(ambiguity_info, term)
+            suggested_refinements = clarification_questions
+            warnings_list.append(
+                f"Термин неоднозначен: возможны домены "
+                f"{ambiguity_info['top_domain']}!r и {ambiguity_info['runner_up']}!r. "
+                f"Добавьте уточняющие подсказки."
+            )
+            logger.info("Обнаружена неоднозначность для %r: %s vs %s",
+                         term, ambiguity_info["top_domain"], ambiguity_info["runner_up"])
     else:
+        needs_clarification = False
         response = fallback_response(term, processed, cfg)
+        response["needs_clarification"] = False
         if debug:
             response["debug_info"] = {
                 "query_vector":        query_vector.tolist(),
@@ -259,6 +298,7 @@ def run_pipeline(
         "status":                "ok",
         "term":                  term,
         "selected_context":      selected_context,
+        "needs_clarification":   needs_clarification,
         "parameters":            parameters,
         "suggested_refinements": suggested_refinements,
         "warnings":              warnings_list,

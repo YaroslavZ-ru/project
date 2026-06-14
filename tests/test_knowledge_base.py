@@ -172,3 +172,70 @@ def test_search_finds_candidate(db_path, cfg):
         results = kb2.search_similar_concepts(vec, min_confidence=0.0)
         assert len(results) == 1
         assert results[0]["concept_id"] == "c1"
+
+# --- Тесты relations и centroids ---
+
+
+def test_get_concept_relations_empty(cfg, db_path):
+    """Пустая таблица — возвращает пустой список."""
+    from dataclasses import replace
+    cfg2 = replace(cfg, db_path=db_path)
+    kb = KnowledgeBase(config=cfg2)
+    relations = kb.get_concept_relations("nonexistent_id")
+    assert relations == []
+    kb.close()
+
+
+def test_get_concept_relations_after_insert(cfg, db_path):
+    """Отношение находится после вставки в БД."""
+    import sqlite3
+    from dataclasses import replace
+    cfg2 = replace(cfg, db_path=db_path)
+    emb = np.zeros(300, dtype=np.float32).tobytes()
+    conn = sqlite3.connect(db_path)
+    conn.execute("INSERT INTO concepts (id,term,domain,embedding) VALUES (?,?,?,?)",
+                 ("c_a", "термин А", "домен А", emb))
+    conn.execute("INSERT INTO concepts (id,term,domain,embedding) VALUES (?,?,?,?)",
+                 ("c_b", "термин Б", "домен Б", emb))
+    conn.execute("INSERT INTO relations (source_concept_id,target_concept_id,relation_type,confidence)"
+                 " VALUES (?,?,?,?)", ("c_a", "c_b", "related_to", 0.9))
+    conn.commit()
+    conn.close()
+    kb = KnowledgeBase(config=cfg2)
+    relations = kb.get_concept_relations("c_a")
+    assert len(relations) == 1
+    assert relations[0]["concept_id"] == "c_b"
+    assert relations[0]["relation_type"] == "related_to"
+    kb.close()
+
+
+def test_search_with_relations_use_relations_false(cfg, db_path):
+    """При use_relations=False — возвращает direct_results без изменений."""
+    from dataclasses import replace
+    cfg2 = replace(cfg, db_path=db_path, use_relations=False)
+    kb = KnowledgeBase(config=cfg2)
+    direct = [{"concept_id": "c1", "similarity": 0.8, "term": "а",
+               "domain": "д", "parameters": []}]
+    result = kb._search_with_relations(np.zeros(300, dtype=np.float32), direct, 0.3, 20)
+    assert result == direct
+    kb.close()
+
+
+def test_load_domain_centroids_missing_file(cfg, db_path):
+    """Путь не существует — возвращает пустой dict."""
+    from dataclasses import replace
+    cfg2 = replace(cfg, db_path=db_path)
+    kb = KnowledgeBase(config=cfg2)
+    centroids = kb.load_domain_centroids("/nonexistent/path.json")
+    assert centroids == {}
+    kb.close()
+
+
+def test_get_closest_domain_empty_centroids(cfg, db_path):
+    """Пустой domain_centroids — возвращает None."""
+    from dataclasses import replace
+    cfg2 = replace(cfg, db_path=db_path)
+    kb = KnowledgeBase(config=cfg2)
+    result = kb.get_closest_domain(np.zeros(300, dtype=np.float32), {})
+    assert result is None
+    kb.close()

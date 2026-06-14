@@ -340,7 +340,11 @@ else:
 
     @app.post("/query")
     async def query(request: QueryRequest):
-        """Обработать запрос: термин + подсказки -> список параметров."""
+        """Обработать запрос: термин + подсказки -> список параметров.
+
+        Ответ включает needs_clarification: bool --
+        True если термин неоднозначен.
+        """
         if _cfg is None:
             raise HTTPException(503, detail="Сервис запускается. Попробуйте позже.")
 
