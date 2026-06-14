@@ -81,3 +81,9 @@ data/synonyms.json
 *.env
 secrets.json
 credentials.json
+
+# ============================================================
+# GitHub Actions локальные файлы (НЕ добавлять в git)
+# ============================================================
+.github/workflows/secrets.env
+.actrc

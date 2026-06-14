@@ -1,0 +1,95 @@
+name: CI
+
+'on':
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: "Tests (Python ${{ matrix.python-version }})"
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+      fail-fast: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: "Setup Python ${{ matrix.python-version }}"
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov
+          pip install fastapi uvicorn httpx || true
+
+      - name: Init project structure
+        run: python setup_project.py
+
+      - name: Init database
+        run: python -m scripts.setup_all
+
+      - name: Run tests with coverage
+        run: |
+          python -m pytest tests/ -v --tb=short
+            --cov=src --cov-report=term-missing
+            --cov-report=xml:coverage.xml
+            -p no:warnings
+        env:
+          PYTHONPATH: .
+
+      - name: Upload coverage (codecov)
+        uses: codecov/codecov-action@v4
+        if: matrix.python-version == '3.11'
+        with:
+          file: coverage.xml
+          fail_ci_if_error: false
+
+  lint:
+    name: "Lint (ruff)"
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install ruff
+        run: pip install ruff
+      - name: "Check style (ruff check)"
+        run: ruff check src/ scripts/ tests/ main.py
+        continue-on-error: true
+      - name: "Check formatting (ruff format --check)"
+        run: ruff format --check src/ scripts/ tests/ main.py
+        continue-on-error: true
+
+  type-check:
+    name: "Type check (mypy)"
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install mypy
+      - name: Run type check
+        run: mypy src/ --ignore-missing-imports --no-error-summary
+        continue-on-error: true
