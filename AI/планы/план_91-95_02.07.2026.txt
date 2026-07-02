@@ -1,0 +1,835 @@
+ОБЯЗАТЕЛЬНО ДЛЯ ИИ: ВСЁ ЧТО НАПИСАНО В ЭТОМ ФАЙЛЕ — РЕКОМЕНДАЦИИ, А НЕ ПРИКАЗЫ.
+ПРИМЕРЫ КОДА — ТОЛЬКО ИЛЛЮСТРАЦИИ НАМЕРЕНИЯ, НЕ КОПИРОВАТЬ БУКВАЛЬНО.
+ПИШИТЕ КАК ЛУЧШЕ, ЕСЛИ ЗНАЕТЕ. ГЛАВНОЕ — СОБЛЮДАТЬ ОПИСАННОЕ ПОВЕДЕНИЕ И СТРУКТУРУ.
+
+================================================================================
+План реализации AI-Terminator — Изменения 91-95
+ФИНАЛЬНАЯ ВЕРСИЯ 02.07.2026
+================================================================================
+
+================================================================================
+ПРИЧИНЫ ВЫБОРА ИЗМЕНЕНИЙ 91-95
+================================================================================
+
+Сверка финального описания (32 раздела) с планами 1-90 выявила семь
+конкретных упущений. Все они — элементы, которые описание требует
+явно, но которые ни один из существующих планов не прописывает
+достаточно подробно для однозначной реализации.
+
+================================================================================
+ЧТО УЖЕ ЕСТЬ (после изменений 1-90)
+================================================================================
+
+Полная реализация всех модулей пайплайна, API, скриптов, тестов,
+инфраструктуры и документации. См. план 86-90 для полного списка.
+
+================================================================================
+ОБЩИЕ ПРИНЦИПЫ ДЛЯ ВСЕХ ИЗМЕНЕНИЙ 91-95
+================================================================================
+
+1. Ничего не ломать: существующая функциональность остаётся рабочей.
+2. Все пути строятся через pathlib.Path.
+3. Логирование через logging.getLogger(__name__).
+4. Type hints Python 3.10+: X | None, list[str].
+5. Опциональные зависимости оборачиваются в try/except ImportError.
+6. encoding="utf-8" везде явно.
+7. sys.path — ТОЛЬКО внутри if __name__ == "__main__".
+8. Тесты запускаются: python -m pytest tests/ -v
+9. Каждое изменение проверяется: pytest + ручной запуск.
+
+================================================================================
+ИЗМЕНЕНИЕ 91: Таблица FEEDBACK в init_db.py
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+Финальное описание (раздел 24.1) ЯВНО указывает:
+
+  "Создаётся в scripts/init_db.py вместе с остальными таблицами."
+
+Однако план 16 (init_db.py) создаёт только таблицы:
+  concepts, parameters, relations, metadata
+
+Таблица feedback с индексами отсутствует. Это прямое противоречие
+описанию. Без этой таблицы POST /feedback API будет падать
+с sqlite3.OperationalError.
+
+ПОЧЕМУ ЭТО ВАЖНО
+-----------------
+  - API /feedback не может работать без таблицы;
+  - обратная связь пользователей не сохраняется;
+  - formula feedback-коррекции (раздел 24.3) не имеет данных.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+  scripts/init_db.py — функция init_db():
+
+    Добавить после создания таблицы metadata (перед commit):
+
+    ИЛЛЮСТРАЦИЯ:
+      # Таблица feedback (раздел 24.1 описания)
+      conn.execute("""
+          CREATE TABLE IF NOT EXISTS feedback (
+              id          INTEGER PRIMARY KEY AUTOINCREMENT,
+              session_id  TEXT,
+              concept_id  TEXT,
+              term        TEXT NOT NULL,
+              rating      INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
+              comment     TEXT,
+              created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+              FOREIGN KEY (concept_id) REFERENCES concepts(id) ON DELETE SET NULL
+          )
+      """)
+
+      # Индексы для feedback
+      conn.execute(
+          "CREATE INDEX IF NOT EXISTS idx_feedback_term ON feedback(term)"
+      )
+      conn.execute(
+          "CREATE INDEX IF NOT EXISTS idx_feedback_rating ON feedback(rating)"
+      )
+
+    ВАЖНЫЕ ДЕТАЛИ:
+      - CHECK(rating BETWEEN 1 AND 5) — валидация на уровне БД.
+      - FOREIGN KEY ... ON DELETE SET NULL — при удалении concept_id
+        поле становится NULL (не ошибка).
+      - concept_id может быть NULL — пользователь отказался от предложения.
+      - session_id может быть NULL — вызов без сессии.
+      - Идемпотентность: CREATE TABLE IF NOT EXISTS, повторный запуск безопасен.
+      - PRAGMA foreign_keys = ON уже выполняется в начале init_db().
+
+    Обновить комментарий в начале функции:
+      """Создать схему БД версии 2.
+
+      Таблицы: concepts, parameters, relations, metadata, feedback.
+      Идемпотентна (CREATE IF NOT EXISTS).
+      """
+
+  tests/test_init_db.py:
+    - test_init_db_creates_feedback_table(tmp_path):
+        # Запустить init_db
+        # Проверить наличие таблицы feedback через PRAGMA table_info
+        # Проверить что rating имеет CHECK constraint
+
+    - test_init_db_creates_feedback_indexes(tmp_path):
+        # Запустить init_db
+        # Проверить наличие idx_feedback_term и idx_feedback_rating
+
+    - test_init_db_feedback_idempotent(tmp_path):
+        # Запустить init_db дважды -> без ошибок
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  python -m scripts.init_db
+  sqlite3 data/knowledge_base.db ".tables"
+  -> feedback должен присутствовать в списке.
+
+  sqlite3 data/knowledge_base.db ".schema feedback"
+  -> Полная схема с CHECK, FK и индексами.
+
+================================================================================
+ИЗМЕНЕНИЕ 92: Таблица SESSIONS в init_db.py
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+Финальное описание (раздел 30) определяет таблицу SESSIONS в
+knowledge_base.db для персистентного хранения сессий.
+Plan 61-65 реализует persistent sessions, но не указывает явно,
+что init_db.py создаёт эту таблицу.
+
+Возможно, SessionManager создаёт её динамически при session_storage="sqlite".
+Однако для идемпотентности и прозрачности лучше создавать в init_db.py.
+
+ПОЧЕМУ ЭТО ВАЖНО
+-----------------
+  - единая точка создания схемы БД (init_db);
+  - при переключении session_storage="sqlite" таблица уже существует;
+  - нет сюрпризов при первом запуске.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+  scripts/init_db.py — функция init_db():
+
+    Добавить после таблицы feedback:
+
+    ИЛЛЮСТРАЦИЯ:
+      # Таблица sessions (раздел 30 описания, опционально)
+      conn.execute("""
+          CREATE TABLE IF NOT EXISTS sessions (
+              id           TEXT PRIMARY KEY,
+              term         TEXT NOT NULL,
+              hints        TEXT,
+              domain       TEXT,
+              history      TEXT,
+              created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+              updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+              expires_at   DATETIME
+          )
+      """)
+
+    ВАЖНЫЕ ДЕТАЛИ:
+      - hints хранится как JSON-строка (json.dumps).
+      - history хранится как JSON-строка (список взаимодействий).
+      - updated_at: DEFAULT CURRENT_TIMESTAMP работает ТОЛЬКО при INSERT.
+        При UPDATE нужно явно: SET updated_at = datetime('now').
+        Это описано в разделе 30 и должно быть в update_session().
+      - expires_at: вычисляется как created_at + ttl_seconds.
+      - Таблица создаётся всегда (CREATE IF NOT EXISTS), но используется
+        только при session_storage="sqlite".
+      - Для session_storage="memory" таблица просто не заполняется.
+
+    Обновить комментарий:
+      """Создать схему БД версии 2.
+
+      Таблицы: concepts, parameters, relations, metadata, feedback, sessions.
+      Идемпотентна (CREATE IF NOT EXISTS).
+      """
+
+  src/sessions.py — метод update_session():
+
+    Убедиться что updated_at обновляется явно:
+      ИЛЛЮСТРАЦИЯ:
+        if self._storage == "sqlite":
+            conn = self._get_conn()
+            conn.execute(
+                "UPDATE sessions SET hints=?, domain=?, history=?, "
+                "updated_at=datetime('now') WHERE id=?",
+                (json.dumps(hints), domain, json.dumps(history), session_id)
+            )
+            conn.commit()
+
+    ВАЖНО: SQLite НЕ обновляет updated_at автоматически.
+    Без явного SET updated_at=datetime('now') поле останется
+    с датой создания.
+
+  tests/test_init_db.py:
+    - test_init_db_creates_sessions_table(tmp_path):
+        # Запустить init_db
+        # Проверить наличие таблицы sessions
+
+    - test_init_db_sessions_has_correct_columns(tmp_path):
+        # Проверить что все 8 столбцов присутствуют:
+        # id, term, hints, domain, history, created_at, updated_at, expires_at
+
+  tests/test_sessions.py:
+    - test_update_session_sets_updated_at():
+        # Создать сессию, подождать 1 сек
+        # Вызвать update_session
+        # Проверить что updated_at изменился
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  python -m scripts.init_db
+  sqlite3 data/knowledge_base.db ".tables"
+  -> sessions должен присутствовать.
+
+  Переключить session_storage="sqlite" в config.json.
+  Создать сессию через API.
+  Проверить что запись появилась в таблице sessions.
+
+================================================================================
+ИЗМЕНЕНИЕ 93: Точные Prometheus-метрики и JSON-lines логирование
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+Финальное описание задаёт два точных формата, которые могут быть
+не полностью соблюдены в текущей реализации:
+
+1. Prometheus-метрики (раздел 26.2):
+   - ai_terminator_requests_total{status} Counter
+   - ai_terminator_pipeline_duration_seconds Histogram
+   - ai_terminator_cache_hits_total{cache} Counter
+   - ai_terminator_fallback_total Counter
+   - ai_terminator_generative_total Counter
+
+2. JSON-lines логирование (раздел 27.3):
+   - Каждая строка: валидный JSON-объект
+   - Обязательные поля: ts, level, logger, msg
+   - Дополнительные поля: elapsed_ms, term, path, n_concepts и т.д.
+
+ПОЧЕМУ ЭТО ВАЖНО
+-----------------
+  - Prometheus-сервер ожидает конкретные имена метрик;
+  - централизованный сбор логов (ELK, Loki) парсит JSON-lines;
+  - несоответствие формату ломает мониторинг.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+ЧАСТЬ A: Prometheus-метрики
+
+  src/metrics.py — класс MetricsCollector:
+
+    Если use_metrics=True и prometheus_client доступен,
+    экспортировать метрики с ТОЧНЫМИ именами из описания:
+
+    ИЛЛЮСТРАЦИЯ:
+      from prometheus_client import Counter, Histogram, Gauge
+
+      # Метрики с именами строго по разделу 26.2
+      REQUESTS_TOTAL = Counter(
+          "ai_terminator_requests_total",
+          "Всего запросов",
+          ["status"]  # ok, error, ambiguous
+      )
+
+      PIPELINE_DURATION = Histogram(
+          "ai_terminator_pipeline_duration_seconds",
+          "Время выполнения pipeline",
+          buckets=[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]
+      )
+
+      CACHE_HITS_TOTAL = Counter(
+          "ai_terminator_cache_hits_total",
+          "Кэш-хиты",
+          ["cache"]  # vector, search
+      )
+
+      FALLBACK_TOTAL = Counter(
+          "ai_terminator_fallback_total",
+          "Активации fallback"
+      )
+
+      GENERATIVE_TOTAL = Counter(
+          "ai_terminator_generative_total",
+          "Вызовы генеративного модуля"
+      )
+
+    Метод record_request(status, elapsed_ms):
+      REQUESTS_TOTAL.labels(status=status).inc()
+      PIPELINE_DURATION.observe(elapsed_ms / 1000.0)  # в секундах!
+
+    Метод record_cache_hit(cache_type):
+      CACHE_HITS_TOTAL.labels(cache=cache_type).inc()
+
+    Метод record_fallback():
+      FALLBACK_TOTAL.inc()
+
+    Метод record_generative():
+      GENERATIVE_TOTAL.inc()
+
+    ВАЖНО:
+      - Histogram в секундах (не миллисекундах!) — стандарт Prometheus.
+      - labels передаются как аргументы .labels(status="ok").
+      - Если use_metrics=False — метрики не создаются (no-op).
+
+  src/api.py — эндпоинт GET /metrics:
+
+    Убедиться что возвращает prometheus_client.generate_latest():
+      ИЛЛЮСТРАЦИЯ:
+        from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+
+        @app.get("/metrics")
+        async def metrics_endpoint():
+            if not cfg.use_metrics:
+                return {"error": "metrics disabled"}
+            return Response(
+                generate_latest(),
+                media_type=CONTENT_TYPE_LATEST
+            )
+
+ЧАСТЬ B: JSON-lines формат логов
+
+  src/utils.py или отдельный модуль — настройка логирования:
+
+    Формат строки (строго по разделу 27.3):
+      {"ts": "%(asctime)s", "level": "%(levelname)s",
+       "logger": "%(name)s", "msg": "%(message)s"}
+
+    ИЛЛЮСТРАЦИЯ:
+      import json
+      import logging
+
+      class JsonLinesFormatter(logging.Formatter):
+          """Форматтер для JSON-lines логов (раздел 27.3).
+
+          Каждая строка — валидный JSON-объект.
+          Обязательные поля: ts, level, logger, msg.
+          Дополнительные — из extra.
+          """
+
+          def format(self, record):
+              log_entry = {
+                  "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S.%fZ"),
+                  "level": record.levelname,
+                  "logger": record.name,
+                  "msg": record.getMessage(),
+              }
+              # Дополнительные поля из extra
+              for key in ("elapsed_ms", "term", "path", "n_concepts",
+                          "concept_id", "domain", "cache"):
+                  val = getattr(record, key, None)
+                  if val is not None:
+                      log_entry[key] = val
+              return json.dumps(log_entry, ensure_ascii=False)
+
+    Применение:
+      file_handler = logging.FileHandler("logs/ai_terminator.log")
+      file_handler.setFormatter(JsonLinesFormatter())
+
+    ВАЖНЫЕ ДЕТАЛИ:
+      - ts: ISO-8601 с миллисекундами.
+      - level: uppercase (INFO, WARNING, ERROR).
+      - logger: полное имя модуля (src.knowledge_base).
+      - msg: текст сообщения.
+      - extra-поля: добавляются через logger.info("...", extra={"term": ...}).
+      - ensure_ascii=False: русские буквы как есть.
+
+  tests/test_metrics.py:
+    - test_prometheus_metric_names():
+        # Проверить что метрики зарегистрированы с правильными именами:
+        # ai_terminator_requests_total, ai_terminator_pipeline_duration_seconds, etc.
+
+    - test_prometheus_histogram_in_seconds():
+        # Проверить что pipeline_duration в секундах, не миллисекундах
+
+  tests/test_logging.py (НОВЫЙ ФАЙЛ):
+    - test_json_lines_format(tmp_path):
+        # Настроить логгер с JsonLinesFormatter
+        # Записать сообщение
+        # Прочитать строку из файла
+        # Проверить что это валидный JSON
+        # Проверить наличие полей ts, level, logger, msg
+
+    - test_json_lines_extra_fields(tmp_path):
+        # Логировать с extra={"term": "ключ"}
+        # Проверить что поле term присутствует в JSON
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  1. Включить use_metrics=true.
+  2. Запросить /v1/query.
+  3. Запросить /metrics.
+  4. Проверить что есть строки:
+     ai_terminator_requests_total{status="ok"} 1
+     ai_terminator_pipeline_duration_seconds_bucket{...}
+
+  5. Проверить logs/ai_terminator.log:
+     {"ts":"2026-07-02T12:00:00.000Z","level":"INFO","logger":"src.api","msg":"..."}
+
+================================================================================
+ИЗМЕНЕНИЕ 94: session_storage в Config и feedback-коррекция
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+Два элемента, которые описание требует явно, но которые могут
+отсутствовать в текущем Config:
+
+1. session_storage (раздел 31):
+   session_storage  str  "memory"   "memory" | "sqlite"
+
+2. Feedback-коррекция (раздел 24.3):
+   Формула: multiplier = 1 + (avg_rating - 3) * feedback_weight
+   Применяется ПОСЛЕ поиска, если у понятия >= feedback_min_votes оценок.
+
+ПОЧЕМУ ЭТО ВАЖНО
+-----------------
+  - без session_storage нельзя переключиться на SQLite-сессии;
+  - без feedback-коррекции оценки пользователей не влияют на результат.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+ЧАСТЬ A: session_storage в Config
+
+  src/config.py:
+    Добавить поле (если отсутствует):
+      session_storage: str = "memory"
+
+    Валидация:
+      if data.get("session_storage", "memory") not in ("memory", "sqlite"):
+          raise ValueError(
+              f"session_storage должен быть 'memory' или 'sqlite', "
+              f"получено: {data['session_storage']}"
+          )
+
+  configs/config.json:
+    Добавить (если отсутствует):
+      "session_storage": "memory"
+
+  src/sessions.py — конструктор SessionManager:
+    Убедиться что читает config.session_storage:
+      ИЛЛЮСТРАЦИЯ:
+          self._storage = getattr(config, "session_storage", "memory")
+          if self._storage == "sqlite":
+              self._conn = sqlite3.connect(str(config.db_path))
+              self._conn.execute("PRAGMA foreign_keys = ON")
+              # Таблица sessions создаётся в init_db.py (изм. 92)
+
+ЧАСТЬ B: Feedback-коррекция confidence
+
+  src/aggregation.py — после aggregate_parameters():
+
+    Добавить функцию apply_feedback_correction(
+        candidates: list[dict],
+        kb,  # KnowledgeBase для доступа к БД feedback
+        config
+    ) -> list[dict]:
+
+    ИЛЛЮСТРАЦИЯ:
+      def apply_feedback_correction(
+          candidates: list[dict],
+          kb,
+          config
+      ) -> list[dict]:
+          """Корректировка confidence по обратной связи (раздел 24.3).
+
+          Args:
+            candidates: Список кандидатов из search_similar.
+            kb: KnowledgeBase для доступа к таблице feedback.
+            config: Конфигурация.
+
+          Returns:
+            Список кандидатов с обновлённым similarity.
+          """
+          if not getattr(config, "use_feedback_correction", False):
+              return candidates
+
+          feedback_weight = getattr(config, "feedback_weight", 0.1)
+          min_votes = getattr(config, "feedback_min_votes", 3)
+
+          for c in candidates:
+              concept_id = c.get("concept_id")
+              if not concept_id:
+                  continue
+
+              # Получить средний рейтинг
+              avg_rating = kb.get_avg_rating(concept_id)
+              if avg_rating is None:
+                  continue  # нет оценок
+
+              votes = kb.get_rating_count(concept_id)
+              if votes < min_votes:
+                  continue  # статистически ненадёжно
+
+              # Формула из раздела 24.3
+              multiplier = 1 + (avg_rating - 3) * feedback_weight
+              c["similarity"] = min(c["similarity"] * multiplier, 1.0)
+
+          # Пересортировать по обновлённому similarity
+          candidates.sort(key=lambda x: x["similarity"], reverse=True)
+          return candidates
+
+  src/knowledge_base.py — два новых метода:
+
+    get_avg_rating(concept_id: str) -> float | None:
+      """Средний рейтинг понятия из таблицы feedback.
+
+      Returns:
+        Средний рейтинг или None если оценок нет.
+      """
+      row = self._conn.execute(
+          "SELECT AVG(rating) FROM feedback WHERE concept_id = ?",
+          (concept_id,)
+      ).fetchone()
+      if row and row[0] is not None:
+          return float(row[0])
+      return None
+
+    get_rating_count(concept_id: str) -> int:
+      """Количество оценок для понятия."""
+      row = self._conn.execute(
+          "SELECT COUNT(*) FROM feedback WHERE concept_id = ?",
+          (concept_id,)
+      ).fetchone()
+      return int(row[0]) if row else 0
+
+  main.py — run_pipeline:
+    Добавить вызов после агрегации:
+      ИЛЛЮСТРАЦИЯ:
+        if candidates and kb is not None:
+            candidates = apply_feedback_correction(candidates, kb, cfg)
+
+  tests/test_config.py:
+    - test_session_storage_valid():
+        # session_storage="sqlite" -> accepted
+    - test_session_storage_invalid():
+        # session_storage="disk" -> ValueError
+
+  tests/test_aggregation.py:
+    - test_feedback_correction_applies_multiplier():
+        # Mock: avg_rating=5, votes=5, weight=0.1
+        # multiplier = 1 + (5-3)*0.1 = 1.2
+        # similarity 0.8 -> 0.96
+
+    - test_feedback_correction_skips_low_votes():
+        # votes=2 < min_votes=3 -> без изменений
+
+    - test_feedback_correction_disabled():
+        # use_feedback_correction=false -> без изменений
+
+    - test_feedback_correction_caps_at_1():
+        # similarity=0.95, multiplier=1.2 -> min(1.14, 1.0) = 1.0
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  1. Переключить session_storage="sqlite".
+  2. Создать сессию через API.
+  3. Проверить что сессия сохраняется в БД.
+
+  4. Добавить оценки: POST /feedback с rating=5 (5 раз для одного concept).
+  5. Запросить термин, связанный с этим concept.
+  6. Проверить что confidence повышен (логика коррекции).
+
+================================================================================
+ИЗМЕНЕНИЕ 95: Комплексные тесты обработки ошибок (таблица раздела 16)
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+Финальное описание (раздел 16) содержит таблицу из 16 сценариев
+ошибок с конкретными статусами и поведением. Ни один существующий
+план явно не покрывает тестирование ВСЕХ строк этой таблицы.
+
+ПОЧЕМУ ЭТО ВАЖНО
+-----------------
+  - таблица ошибок — контракт поведения системы;
+  - без тестов невозможно гарантировать корректность;
+  - регрессии при изменениях других модулей.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+  tests/test_error_scenarios.py (НОВЫЙ ФАЙЛ):
+
+    Каждый тест проверяет ОДНУ строку из таблицы раздела 16.
+    Тесты независимы, можно запускать по одному.
+
+    Тест 1 — term is None:
+      def test_error_term_none():
+          """term is None -> status='error', message='Термин не передан.'"""
+          result = run_pipeline(
+              term=None, hints=[], debug=False,
+              min_confidence=None, cfg=cfg, *components
+          )
+          assert result["status"] == "error"
+          assert "Термин не передан" in result["message"]
+
+    Тест 2 — term пуст после clean_text:
+      def test_error_term_empty_after_clean():
+          """term='!!!' -> status='error', message='Термин пуст после очистки.'"""
+          result = run_pipeline(
+              term="!!!", hints=[], debug=False,
+              min_confidence=None, cfg=cfg, *components
+          )
+          assert result["status"] == "error"
+          assert "пуст после очистки" in result["message"]
+
+    Тест 3 — term слишком длинный:
+      def test_error_term_too_long():
+          """term > max_term_length -> error 'Термин слишком длинный.'"""
+          long_term = "а" * (cfg.max_term_length + 1)
+          result = run_pipeline(
+              term=long_term, hints=[], debug=False,
+              min_confidence=None, cfg=cfg, *components
+          )
+          assert result["status"] == "error"
+          assert "слишком длинный" in result["message"]
+
+    Тест 4 — term_lemmas пуст:
+      def test_error_term_no_lemmas():
+          """term без значимых слов -> error 'Термин не содержит значимых слов.'"""
+          # "123 456" — только цифры, pymorphy3 не даёт лемм
+          result = run_pipeline(
+              term="123 456", hints=[], debug=False,
+              min_confidence=None, cfg=cfg, *components
+          )
+          assert result["status"] == "error"
+          assert "значимых слов" in result["message"]
+
+    Тест 5 — hint слишком длинная:
+      def test_error_hint_too_long():
+          """hint > max_hint_length -> error 'Подсказка слишком длинная.'"""
+          long_hint = "а" * (cfg.max_hint_length + 1)
+          result = run_pipeline(
+              term="ключ", hints=[long_hint], debug=False,
+              min_confidence=None, cfg=cfg, *components
+          )
+          assert result["status"] == "error"
+          assert "Подсказка слишком длинная" in result["message"]
+
+    Тест 6 — fastText нет, fallback нет:
+      def test_no_fasttext_no_fallback():
+          """Оба отсутствуют -> ok, нулевой вектор + WARNING."""
+          # Мок: embedding_model.get_word_vector -> np.zeros
+          result = run_pipeline(
+              term="ключ", hints=["техника"], debug=False,
+              min_confidence=None, cfg=cfg, *components
+          )
+          assert result["status"] == "ok"
+          assert any("недоступна" in w or "нулевой" in w
+                     for w in result.get("warnings", []))
+
+    Тест 7 — fastText нет, fallback есть:
+      def test_no_fasttext_with_fallback():
+          """Fallback загружен -> работает без fastText."""
+          # Мок: embedding_model использует fallback
+          # Проверить что pipeline возвращает ok
+          result = run_pipeline(
+              term="ключ", hints=["техника"], debug=False,
+              min_confidence=None, cfg=cfg, *components
+          )
+          assert result["status"] in ("ok", "ambiguous")
+
+    Тест 8 — БД пуста:
+      def test_empty_db():
+          """Пустая БД -> fallback (резервный режим)."""
+          # Создать пустую БД без seed_data
+          result = run_pipeline(
+              term="ключ", hints=["техника"], debug=False,
+              min_confidence=None, cfg=cfg_empty_db, *components_empty
+          )
+          assert result["status"] == "ok"
+          assert len(result.get("warnings", [])) > 0
+
+    Тест 9 — hints пусты, термин однозначен:
+      def test_empty_hints_unambiguous():
+          """Пустые hints + однозначный термин -> ok с параметрами."""
+          result = run_pipeline(
+              term="ключ гаечный", hints=[], debug=False,
+              min_confidence=None, cfg=cfg, *components
+          )
+          assert result["status"] == "ok"
+          assert len(result.get("parameters", [])) > 0
+
+    Тест 10 — hints пусты, термин многозначен:
+      def test_empty_hints_ambiguous():
+          """Пустые hints + многозначный термин -> ambiguous."""
+          result = run_pipeline(
+              term="ключ", hints=[], debug=False,
+              min_confidence=None, cfg=cfg, *components
+          )
+          # "ключ" — омоним (инструмент + музыка)
+          assert result["status"] in ("ok", "ambiguous")
+
+    Тест 11 — генеративная модель недоступна:
+      def test_generative_unavailable():
+          """use_generative=true, но модель не загружена -> ok, без генерации."""
+          cfg_gen = Config.from_json(path)
+          cfg_gen.use_generative = True
+          # Без реальной модели -> is_available()=False
+          result = run_pipeline(
+              term="абракадабра", hints=[], debug=False,
+              min_confidence=None, cfg=cfg_gen, *components
+          )
+          assert result["status"] == "ok"
+
+    Тест 12 — parameters < 3 в ответе:
+      def test_few_parameters_warning():
+          """Мало параметров -> WARNING в ответе."""
+          result = run_pipeline(
+              term="абракадабра", hints=[], debug=False,
+              min_confidence=None, cfg=cfg, *components
+          )
+          if len(result.get("parameters", [])) < 3:
+              assert any("параметров" in w.lower() or "мало" in w.lower()
+                         for w in result.get("warnings", []))
+
+    Тест 13 — NaN в весах токенов:
+      def test_nan_weight_skipped():
+          """NaN в весах -> токен пропускается + WARNING."""
+          # Мок: preprocess возвращает tokens_with_weights с NaN
+          # Проверить что NaN-токен не учтён и есть WARNING
+
+    Тест 14 — NaN в векторе слова:
+      def test_nan_vector_skipped():
+          """NaN в векторе -> токен пропускается + ERROR."""
+          # Мок: get_phrase_vector возвращает вектор с NaN
+          # Проверить что ERROR в логе
+
+    Тест 15 — FAISS файл не найден:
+      def test_faiss_file_not_found():
+          """use_faiss=true, файл не найден -> numpy fallback + WARNING."""
+          cfg_faiss = Config.from_json(path)
+          cfg_faiss.use_faiss = True
+          cfg_faiss.faiss_index_path = "/nonexistent/index.faiss"
+          # Проверить что pipeline работает (numpy fallback)
+
+    Тест 16 — hints дублируются:
+      def test_duplicate_hints_removed():
+          """Дублирующиеся hints -> удалены + WARNING."""
+          result = run_pipeline(
+              term="ключ", hints=["техника", "техника", "вращение"],
+              debug=False, min_confidence=None, cfg=cfg, *components
+          )
+          assert result["status"] in ("ok", "ambiguous")
+          # Проверить что в preprocess warnings есть "дублирующиеся"
+
+  tests/test_pipeline.py — дополнить:
+    - test_all_error_scenarios_covered():
+        # Проверить что test_error_scenarios.py содержит
+        # минимум 14 тестов (16 строк минус 2 которые могут быть
+        # непротестируемы без моков)
+
+  КАК ЗАПУСТИТЬ:
+    python -m pytest tests/test_error_scenarios.py -v
+    Ожидание: 16 тестов, 0 FAILED.
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  python -m pytest tests/test_error_scenarios.py -v
+  -> Все 16 сценариев из таблицы раздела 16 проверены.
+
+================================================================================
+ИТОГОВАЯ ПРОВЕРКА ВСЕГО БЛОКА 91-95
+================================================================================
+
+1. Прогон всех тестов:
+   python -m pytest tests/ -v --tb=short
+   Ожидание: 0 FAILED, 0 ERROR.
+
+2. Таблица FEEDBACK:
+   sqlite3 data/knowledge_base.db ".schema feedback"
+   -> Полная схема с CHECK, FK, индексами.
+
+3. Таблица SESSIONS:
+   sqlite3 data/knowledge_base.db ".schema sessions"
+   -> Все 8 столбцов.
+
+4. Prometheus-метрики:
+   Включить use_metrics=true -> /metrics -> проверить имена.
+
+5. JSON-lines логи:
+   Проверить logs/ai_terminator.log -> валидный JSON на каждой строке.
+
+6. session_storage:
+   Переключить на "sqlite" -> сессии сохраняются в БД.
+
+7. Feedback-коррекция:
+   Добавить 5 оценок rating=5 -> проверить повышение confidence.
+
+8. Ошибки:
+   python -m pytest tests/test_error_scenarios.py -v
+   -> 16 сценариев пройдены.
+
+9. Обратная совместимость:
+   Старые тесты по-прежнему проходят.
+
+================================================================================
+ИТОГ ВСЕХ ПЛАНОВ (1-95)
+================================================================================
+
+  Планы 1-5:     Инфраструктура
+  Планы 6-10:    Предобработка
+  Планы 11-15:   Векторизация
+  Планы 16-19:   Поиск, агрегация, ответ
+  Планы 20-24:   Расширения (utils, generative, sessions)
+  Планы 25-54:   API, тесты, покрытие
+  Планы 55-60:   Продакшен-готовность
+  Планы 61-65:   API-функции (batch, persistent, coherence)
+  Планы 66-70:   Расширения API (save_concept, relations, feedback)
+  Планы 71-75:   Оптимизация (FAISS, CSV, multi-worker)
+  Планы 76-80:   Надёжность (fallback, TTL, UUID, M-*)
+  Планы 81-85:   Импорт/экспорт и thread safety
+  Планы 86-90:   Профилирование, E2E, валидация, CLI, документация
+  Планы 91-95:   Таблицы БД, Prometheus, логи, Config, feedback, ошибки
+
+ВСЕ 32 РАЗДЕЛА ФИНАЛЬНОГО ОПИСАНИЯ ПОКРЫТЫ ПЛАНАМИ 1-95.
+РЕАЛИЗАЦИЯ БУДЕТ ВЫПОЛНЕНА ПО ПЛАНУ.
+
+================================================================================

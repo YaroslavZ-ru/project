@@ -1,0 +1,696 @@
+================================================================================
+План реализации AI-Terminator — Изменения 66-70
+ФИНАЛЬНАЯ ВЕРСИЯ 02.07.2026
+================================================================================
+
+КОНТЕКСТ ЭТОГО ПЛАНА
+--------------------
+Проект AI-Terminator имеет рабочее ядро конвейера и REST API. Финальное
+описание (описание_проекта_13.06.2026.txt) содержит ряд функций, которые
+описаны, но не реализованы. Предыдущие планы (55-60, 61-65) покрывают
+другие аспекты (наблюдаемость, admin, batch, сессии, hints, доменный фильтр,
+логирование). Этот блок 66-70 реализует ещё пять функций из описания.
+
+================================================================================
+ЧТО УЖЕ ЕСТЬ (после изменений 1-54)
+================================================================================
+
+  src/config.py       — Config (базовые поля, from_json, for_environment)
+  src/text_cleaner.py — clean_text
+  src/lemmatizer.py   — Lemmatizer (синглтон, LRU-кэш)
+  src/synonyms.py     — SynonymDict
+  src/preprocess.py   — preprocess, preprocess_base
+  src/embeddings.py   — FastTextWrapper (ленивая загрузка, fallback)
+  src/vectorize.py    — vectorize
+  src/cache.py        — QueryVectorCache
+  src/knowledge_base.py — KnowledgeBase (search_similar_concepts, FAISS,
+                          save_concept, get_all_concepts, get_related_concepts,
+                          compute_concept_embedding, update_all_embeddings)
+  src/aggregation.py  — aggregate_parameters, detect_ambiguity,
+                        determine_context, generate_clarification_questions
+  src/fallback.py     — fallback_response
+  src/generative.py   — GenerativeExpander
+  src/sessions.py     — SessionManager (in-memory)
+  src/metrics.py      — MetricsCollector (record_request, cache_hit/miss)
+  src/utils.py        — timed
+  src/api.py          — POST /v1/query, GET /v1/health, /v1/metrics,
+                        /v1/kb/stats, rate limiting, API key
+
+  main.py             — run_pipeline, _init_components, CLI
+
+  scripts/            — 15 скриптов (init_db, seed_data, build_*, update_*, ...)
+  tests/              — 19 тестовых файлов
+
+================================================================================
+ИЗМЕНЕНИЕ 66: API для сохранения понятий (POST /save_concept)
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+Сейчас новые понятия можно добавить только через scripts/seed_data.py или
+scripts/update_kb.py. Финальное описание (раздел 15) описывает эндпоинт
+POST /save_concept для добавления понятий через API. Это позволяет внешним
+системам пополнять базу знаний в реальном времени.
+
+ПОЧЕМУ ЭТО ВАЖНО
+----------------
+  -Allows автоматическое пополнение KB из внешних источников;
+  - удобно для веб-интерфейсов управления базой;
+  - интеграция с CRM, справочниками, каталогами.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+  src/api.py
+    - Добавить Pydantic-схемы:
+        class ConceptParameter(BaseModel):
+            name: str = Field(..., min_length=1)
+            label_ru: str = Field(..., min_length=1)
+            type: str = Field(..., pattern=r"^(string|integer|float|boolean|enum)$")
+            description: str | None = None
+            unit: str | None = None
+            enum_values: list[str] | None = None
+            confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+
+        class ConceptRelation(BaseModel):
+            target_term: str = Field(..., min_length=1)
+            relation_type: str = Field(..., pattern=r"^(is_a|part_of|related_to|synonym)$")
+            confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+
+        class SaveConceptRequest(BaseModel):
+            term: str = Field(..., min_length=1, max_length=200)
+            domain: str = Field(..., min_length=1)
+            parameters: list[ConceptParameter] = Field(default_factory=list)
+            relations: list[ConceptRelation] = Field(default_factory=list)
+
+        class SaveConceptResponse(BaseModel):
+            concept_id: str
+            status: str = "ok"
+
+    - Добавить POST /v1/save_concept:
+        @app.post("/v1/save_concept", response_model=SaveConceptResponse)
+        async def save_concept_endpoint(request: Request, body: SaveConceptRequest):
+            _verify_api_key(request)
+            if _cfg is None or _kb is None:
+                raise HTTPException(503, detail="Сервис не готов")
+
+            try:
+                parameters = []
+                for p in body.parameters:
+                    param_dict = {
+                        "name": p.name,
+                        "label_ru": p.label_ru,
+                        "type": p.type,
+                        "description": p.description,
+                        "unit": p.unit,
+                        "enum_values": p.enum_values,
+                        "confidence": p.confidence,
+                    }
+                    parameters.append(param_dict)
+
+                relations = []
+                for r in body.relations:
+                    relations.append({
+                        "target_term": r.target_term,
+                        "relation_type": r.relation_type,
+                        "confidence": r.confidence,
+                    })
+
+                concept_id = await asyncio.to_thread(
+                    _kb.save_concept,
+                    body.term,
+                    body.domain,
+                    parameters,
+                    relations if relations else None,
+                )
+                return SaveConceptResponse(concept_id=concept_id)
+            except Exception as exc:
+                logger.exception("Ошибка save_concept: %s", exc)
+                raise HTTPException(500, detail=f"Ошибка сохранения: {exc}") from exc
+
+    - Добавить валидацию: term и domain обязательны, parameters — список.
+    - После save_concept: инвалидировать кэш поиска (уже делается в KnowledgeBase.save_concept).
+
+  tests/test_api.py
+    - test_save_concept_new(client):
+        response = client.post("/v1/save_concept", json={
+            "term": "тестовый термин",
+            "domain": "тестовый домен",
+            "parameters": [
+                {"name": "test_param", "label_ru": "Тестовый параметр", "type": "string"}
+            ]
+        })
+        assert response.status_code == 200
+        data = response.json()
+        assert "concept_id" in data
+        assert data["status"] == "ok"
+    - test_save_concept_requires_term(client):
+        response = client.post("/v1/save_concept", json={"domain": "test"})
+        assert response.status_code == 422  # Pydantic validation
+    - test_save_concept_with_relations(client):
+        response = client.post("/v1/save_concept", json={
+            "term": "деталь X",
+            "domain": "машиностроение",
+            "parameters": [],
+            "relations": [{"target_term": "деталь Y", "relation_type": "related_to"}]
+        })
+        assert response.status_code == 200
+
+  docs/api.md
+    - Добавить секцию "Сохранение понятий":
+        POST /v1/save_concept
+        Описание: добавляет новое понятие в базу знаний.
+        Пример тела запроса и ответа.
+        Внимание: после сохранения эмбеддинг пересчитывается автоматически.
+
+ТЕСТЫ
+-----
+  python -m pytest tests/test_api.py -v -k save_concept
+
+ПРОВЕРКА
+--------
+  curl -X POST http://localhost:8000/v1/save_concept \
+       -H "Content-Type: application/json" \
+       -d '{"term":"ключ торцевой","domain":"слесарный инструмент","parameters":[{"name":"size_mm","label_ru":"Размер (мм)","type":"float"}]}'
+  Ответ: {"concept_id":"...","status":"ok"}
+
+================================================================================
+ИЗМЕНЕНИЕ 67: Граф отношений в поиске (use_relations)
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+Сейчас поиск работает только по прямому сходству векторов. Финальное
+описание (раздел 20) описывает расширенный режим: после основного поиска
+загружать связанные понятия через таблицу RELATIONS и добавлять их параметры
+в пул агрегации с пониженным весом. Это делает результаты более полными
+за счёт наследования параметров от родительских/смежных понятий.
+
+ПОЧЕМУ ЭТО ВАЖНО
+----------------
+  - "ключ гаечный" наследует параметры от "ключ" (is_a);
+  - расширяет покрытие параметров без ручного заполнения;
+  - использует граф знаний для более точной агрегации.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+  src/config.py
+    - Уже есть use_relations: bool = False, relation_max_depth: int = 1,
+      relation_decay_factor: float = 0.5.
+    - Добавить:
+        relation_confidence_mult: float = 0.7
+
+  src/knowledge_base.py
+    - Добавить метод get_related_concept_params(
+          concept_id: str,
+          relation_types: list[str] | None = None,
+          depth: int = 1
+      ) -> list[dict]:
+        1. Если relation_types is None -> ["is_a", "related_to"].
+        2. Ограничить depth: min(depth, 3) для защиты от бесконечных циклов.
+        3. BFS обход:
+            queue = [concept_id]
+            visited = {concept_id}
+            result = []
+            for level in range(depth):
+                next_queue = []
+                for cid in queue:
+                    rows = self._conn.execute(
+                        "SELECT target_concept_id, relation_type FROM relations "
+                        "WHERE source_concept_id = ? AND relation_type IN ({})".format(
+                            ",".join("?" * len(relation_types))
+                        ),
+                        [cid] + relation_types
+                    ).fetchall()
+                    for row in rows:
+                        target_id = row[0]
+                        rel_type = row[1]
+                        if target_id not in visited:
+                            visited.add(target_id)
+                            next_queue.append(target_id)
+                            # Загрузить параметры target
+                            params = self._get_concept_params(target_id)
+                            for p in params:
+                                p["_relation_type"] = rel_type
+                                p["_source_concept_id"] = target_id
+                            result.extend(params)
+                queue = next_queue
+        4. Вернуть result.
+
+    - Вспомогательный метод _get_concept_params(concept_id: str) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT name, label_ru, type, description, unit, enum_values, confidence "
+            "FROM parameters WHERE concept_id = ?", (concept_id,)
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+  src/aggregation.py
+    - Изменить aggregate_parameters: добавить параметр related_params: list[dict] = [].
+    - После основной агрегации, если related_params непуст:
+        Для каждого related_param:
+            - Умножить confidence на relation_confidence_mult (0.7).
+            - Добавить в groups если ещё нет (или обновить freq).
+        Пересчитать scores и отсортировать заново.
+
+  main.py — run_pipeline
+    - После поиска кандидатов (Шаг 3), если cfg.use_relations=True:
+        related_params = []
+        for candidate in candidates:
+            concept_id = candidate.get("concept_id")
+            if concept_id:
+                rp = kb.get_related_concept_params(
+                    concept_id,
+                    depth=cfg.relation_max_depth
+                )
+                related_params.extend(rp)
+        # Передать related_params в aggregate_parameters
+        parameters = aggregate_parameters(candidates, hints_lemmas,
+                                          cfg.max_parameters,
+                                          related_params=related_params)
+
+  tests/test_knowledge_base.py
+    - test_get_related_concepts_is_a(tmp_path):
+        # Создать БД с двумя понятиями: "ключ гаечный" is_a "ключ"
+        # Вызвать get_related_concept_params("ключ гаечный")
+        # Проверить что возвращаются параметры "ключ"
+    - test_get_related_concepts_max_depth():
+        # Проверить что depth ограничивается 3
+
+  docs/configuration.md
+    - Описать use_relations, relation_max_depth, relation_decay_factor,
+      relation_confidence_mult.
+
+ТЕСТЫ
+-----
+  python -m pytest tests/test_knowledge_base.py tests/test_aggregation.py -v
+
+ПРОВЕРКА
+--------
+  1. Включить use_relations=true в config.json.
+  2. Добавить relation: "ключ гаечный" is_a "ключ" (через save_concept или SQL).
+  3. Запросить "ключ гаечный" — параметры должны включать наследованные от "ключ".
+
+================================================================================
+ИЗМЕНЕНИЕ 68: Коррекция результатов по обратной связи
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+Пользователи могут оценивать результаты (rating 1-5). Финальное описание
+(раздел 24.3) описывает механизм коррекции: средний рейтинг понятия
+влияет на confidence при поиске. Понятия с высоким рейтингом получают
+boost, с низким — penalty. Это статистическая обратная связь без
+дообучения модели.
+
+ПОЧЕМУ ЭТО ВАЖНО
+----------------
+  - улучшает качество поиска на основе пользовательского фидбэка;
+  - автоматически повышает релевантные понятия;
+  - не требует ручной настройки весов.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+  src/config.py
+    - Добавить поля:
+        use_feedback_correction: bool = False
+        feedback_weight: float = 0.1
+        feedback_min_votes: int = 3
+
+  src/knowledge_base.py
+    - Добавить метод get_feedback_stats(concept_id: str) -> dict:
+        1. Запрос к таблице feedback (если существует):
+            SELECT AVG(rating), COUNT(*) FROM feedback
+            WHERE concept_id = ? AND concept_id IS NOT NULL
+        2. Вернуть {"avg_rating": float | None, "votes": int}.
+        3. Если таблица feedback не существует -> {"avg_rating": None, "votes": 0}.
+
+  src/aggregation.py
+    - Добавить функцию apply_feedback_correction(
+          candidates: list[dict],
+          kb: KnowledgeBase,
+          weight: float,
+          min_votes: int,
+      ) -> list[dict]:
+        1. Для каждого кандидата:
+            concept_id = c.get("concept_id")
+            if not concept_id: continue
+            stats = kb.get_feedback_stats(concept_id)
+            if stats["votes"] < min_votes: continue
+            avg = stats["avg_rating"]
+            if avg is None: continue
+            multiplier = 1.0 + (avg - 3.0) * weight
+            multiplier = max(0.5, min(multiplier, 1.5))  # Ограничить [0.5, 1.5]
+            c["similarity"] = min(c["similarity"] * multiplier, 1.0)
+        2. Пересортировать candidates по similarity.
+        3. Вернуть обновлённый список.
+
+  main.py — run_pipeline
+    - После поиска кандидатов (Шаг 3), перед агрегацией:
+        if (cfg.use_feedback_correction
+            and kb is not None
+            and candidates):
+            candidates = apply_feedback_correction(
+                candidates, kb,
+                weight=cfg.feedback_weight,
+                min_votes=cfg.feedback_min_votes
+            )
+
+  scripts/init_db.py
+    - Добавить таблицу feedback (если не существует):
+        CREATE TABLE IF NOT EXISTS feedback (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id  TEXT,
+            concept_id  TEXT,
+            term        TEXT NOT NULL,
+            rating      INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
+            comment     TEXT,
+            created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (concept_id) REFERENCES concepts(id) ON DELETE SET NULL
+        )
+        CREATE INDEX IF NOT EXISTS idx_feedback_term ON feedback(term)
+        CREATE INDEX IF NOT EXISTS idx_feedback_rating ON feedback(rating)
+
+  src/api.py
+    - Добавить POST /v1/feedback (если ещё нет):
+        class FeedbackRequest(BaseModel):
+            session_id: str | None = None
+            concept_id: str | None = None
+            term: str = Field(..., min_length=1)
+            rating: int = Field(..., ge=1, le=5)
+            comment: str | None = None
+
+        @app.post("/v1/feedback")
+        async def feedback(request: Request, body: FeedbackRequest):
+            _verify_api_key(request)
+            # Сохранить в таблицу feedback
+            conn = sqlite3.connect(str(_cfg.db_path))
+            try:
+                conn.execute(
+                    "INSERT INTO feedback (session_id, concept_id, term, rating, comment) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (body.session_id, body.concept_id, body.term, body.rating, body.comment)
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            return {"status": "ok", "term": body.term}
+
+  tests/test_aggregation.py
+    - test_feedback_correction_boosts_high_rated():
+        # Создать кандидата с concept_id
+        # Заполнить feedback с rating=5 (>= min_votes)
+        # Вызвать apply_feedback_correction
+        # Проверить что similarity увеличился
+    - test_feedback_correction_penalizes_low_rated():
+        # rating=1 -> similarity уменьшается
+    - test_feedback_correction_ignores_insufficient_votes():
+        # votes < min_votes -> без изменений
+
+  docs/api.md
+    - Добавить секцию "Обратная связь":
+        POST /v1/feedback
+        Описание: оценить результат поиска (rating 1-5).
+        Влияние: при use_feedback_correction=True рейтинги влияют на будущие результаты.
+
+ТЕСТЫ
+-----
+  python -m pytest tests/test_aggregation.py tests/test_api.py -v
+
+ПРОВЕРКА
+--------
+  1. Включить use_feedback_correction=true.
+  2. Отправить несколько feedback с rating=5 для одного concept_id.
+  3. Выполнить запрос, который находит это понятие.
+  4. Проверить что confidence повышен.
+
+================================================================================
+ИЗМЕНЕНИЕ 69: Полный формат ответа "ambiguous"
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+Сейчас при неоднозначном запросе система возвращает status="ambiguous" и
+suggested_refinements. Финальное описание (раздел 19.2) требует формат
+с domain_candidates — список доменов-кандидатов с confidence и примером.
+Это даёт клиенту Enough информации для отображения вариантов выбора.
+
+ПОЧЕМУ ЭТО ВАЖНО
+----------------
+  -Allows клиенту показать пользователю варианты выбора домена;
+  - улучшает UX при работе с многозначными терминами;
+  - соответствует формату из финального описания.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+  src/api.py
+    - Обновить Pydantic-схему SelectedContext:
+        class DomainCandidate(BaseModel):
+            domain: str
+            confidence: float
+            example_term: str | None = None
+
+        class SelectedContext(BaseModel):
+            domain: str | None = None
+            concept_id: str | None = None
+            term: str | None = None
+            similarity: float | None = None
+            domain_candidates: list[DomainCandidate] | None = None
+
+  src/aggregation.py
+    - Изменить detect_ambiguity: добавить в возвращаемый словарь
+      поле "domain_candidates" с полной информацией:
+        {
+            "is_ambiguous": bool,
+            "domains": [...],
+            "top_domain": str | None,
+            "runner_up": str | None,
+            "domain_candidates": [
+                {
+                    "domain": str,
+                    "confidence": float,
+                    "example_term": str | None  # первый термин в домене
+                }
+            ]
+        }
+    - Для example_term: найти первый кандидат в данном домене и взять его term.
+
+  main.py — run_pipeline
+    - При status="ambiguous" (когда detect_ambiguity возвращает is_ambiguous=True):
+        candidates_for_ambiguous = ambiguity_info.get("domain_candidates", [])
+        selected_context = {
+            "domain_candidates": candidates_for_ambiguous
+        }
+        result = {
+            "status": "ambiguous",
+            "term": term,
+            "selected_context": selected_context,
+            "parameters": [],
+            "suggested_refinements": clarification_questions,
+            "warnings": warnings_list,
+        }
+
+  src/api.py — _api_run_pipeline
+    - Аналогично: при ambiguous формировать selected_context с domain_candidates.
+
+  tests/test_aggregation.py
+    - test_detect_ambiguity_returns_domain_candidates():
+        # Создать кандидатов из разных доменов
+        # Вызвать detect_ambiguity
+        # Проверить что domain_candidates содержит домены с confidence
+    - test_ambiguous_response_format():
+        # Проверить что при ambiguous selected_context содержит domain_candidates
+
+  tests/test_pipeline.py
+    - test_run_pipeline_ambiguous_returns_domain_candidates():
+        # Многозначный термин без hints
+        # Проверить формат ответа
+
+  docs/api.md
+    - Обновить секцию "Неоднозначные запросы":
+        Пример ответа с domain_candidates.
+        Описание полей: domain, confidence, example_term.
+
+ТЕСТЫ
+-----
+  python -m pytest tests/test_aggregation.py tests/test_pipeline.py -v
+
+ПРОВЕРКА
+--------
+  curl -X POST http://localhost:8000/v1/query \
+       -H "Content-Type: application/json" \
+       -d '{"term":"ключ"}'
+  При неоднозначности: ответ содержит selected_context.domain_candidates
+  с列表ом доменов.
+
+================================================================================
+ИЗМЕНЕНИЕ 70: Полный набор метрик и EMA-усреднение
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+Текущий MetricsCollector считает requests_total, ok/error/fallback и cache.
+Финальное описание (раздел 26.1) требует расширенный набор: requests_ambiguous,
+generative_calls, generative_timeouts, fallback_activations, а также
+EMA-усреднение avg_pipeline_ms (skeweda average с alpha=0.1).
+
+ПОЧЕМУ ЭТО ВАЖНО
+----------------
+  -Allows детальный анализ поведения системы в продакшене;
+  - помогает выявить узкие места (много таймаутов генерации?);
+  - EMA даёт более стабильную оценку среднего времени.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+  src/metrics.py
+    - Расширить MetricsCollector:
+        Добавить счётчики:
+            _counts["requests_ambiguous"] = 0
+            _counts["generative_calls"] = 0
+            _counts["generative_timeouts"] = 0
+            _counts["fallback_activations"] = 0
+            _counts["cache_hits_search"] = 0
+            _counts["cache_misses_search"] = 0
+
+    - Добавить EMA:
+        _avg_pipeline_ms: float = 0.0
+        _ema_alpha: float = 0.1
+
+    - Добавить метод record_request(status: str, elapsed_ms: float):
+        with self._lock:
+            self._counts["requests_total"] += 1
+            key = "requests_" + status
+            self._counts[key] = self._counts.get(key, 0) + 1
+            # EMA
+            self._avg_pipeline_ms = (
+                (1 - self._ema_alpha) * self._avg_pipeline_ms
+                + self._ema_alpha * elapsed_ms
+            )
+
+    - Добавить методы:
+        record_generative_call():
+            with self._lock: self._counts["generative_calls"] += 1
+        record_generative_timeout():
+            with self._lock: self._counts["generative_timeouts"] += 1
+        record_fallback_activation():
+            with self._lock: self._counts["fallback_activations"] += 1
+        record_search_cache_hit():
+            with self._lock: self._counts["cache_hits_search"] += 1
+        record_search_cache_miss():
+            with self._lock: self._counts["cache_misses_search"] += 1
+
+    - Обновить get_summary():
+        with self._lock:
+            return {
+                "requests_total": self._counts["requests_total"],
+                "requests_ok": self._counts["requests_ok"],
+                "requests_error": self._counts["requests_error"],
+                "requests_ambiguous": self._counts["requests_ambiguous"],
+                "requests_fallback": self._counts["requests_fallback"],
+                "avg_pipeline_ms": round(self._avg_pipeline_ms, 2),
+                "cache_hits_vector": self._counts["cache_hits"],
+                "cache_misses_vector": self._counts["cache_misses"],
+                "cache_hits_search": self._counts["cache_hits_search"],
+                "cache_misses_search": self._counts["cache_misses_search"],
+                "generative_calls": self._counts["generative_calls"],
+                "generative_timeouts": self._counts["generative_timeouts"],
+                "fallback_activations": self._counts["fallback_activations"],
+                "prometheus_active": self._prometheus_on,
+            }
+
+    - При use_metrics=True добавить Prometheus-метрики:
+        Counter "ait_requests_ambiguous_total"
+        Counter "ait_generative_calls_total"
+        Counter "ait_generative_timeouts_total"
+        Counter "ait_fallback_activations_total"
+
+  main.py — run_pipeline
+    - Добавить metrics в конце (если metrics не None):
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
+        metrics.record_request(status=result["status"], elapsed_ms=elapsed_ms)
+
+    - В местах вызова генеративного расширения:
+        if metrics: metrics.record_generative_call()
+        # При таймауте:
+        if metrics: metrics.record_generative_timeout()
+
+    - При fallback:
+        if metrics: metrics.record_fallback_activation()
+
+    - При ambiguous:
+        if metrics: metrics.record_request(status="ambiguous", elapsed_ms=elapsed_ms)
+        # (ambiguous — это тоже статус, считается через общий record_request)
+
+  src/api.py — _api_run_pipeline
+    - Аналогично: передавать elapsed_ms в metrics.record_request.
+
+  tests/test_metrics.py
+    - test_record_ambiguous():
+        m = MetricsCollector(use_metrics=False)
+        m.record_request("ambiguous", 10.0)
+        assert m.get_summary()["requests_ambiguous"] == 1
+    - test_ema_pipeline_ms():
+        m = MetricsCollector(use_metrics=False)
+        m.record_request("ok", 100.0)
+        m.record_request("ok", 200.0)
+        summary = m.get_summary()
+        # EMA: first = 100, second = 0.9*100 + 0.1*200 = 110
+        assert summary["avg_pipeline_ms"] == 110.0
+    - test_record_generative_call():
+        m = MetricsCollector(use_metrics=False)
+        m.record_generative_call()
+        assert m.get_summary()["generative_calls"] == 1
+    - test_record_fallback():
+        m = MetricsCollector(use_metrics=False)
+        m.record_fallback_activation()
+        assert m.get_summary()["fallback_activations"] == 1
+
+  docs/api.md
+    - Обновить описание /v1/metrics:
+        Добавить новые поля: requests_ambiguous, generative_calls,
+        generative_timeouts, fallback_activations, avg_pipeline_ms.
+
+ТЕСТЫ
+-----
+  python -m pytest tests/test_metrics.py -v
+
+ПРОВЕРКА
+--------
+  1. Запустить API с use_metrics=true.
+  2. Выполнить несколько запросов (включая ambiguous и fallback).
+  3. GET /v1/metrics — проверить что все счётчики обновляются.
+
+================================================================================
+ИТОГОВАЯ ПРОВЕРКА ВСЕГО БЛОКА 66-70
+================================================================================
+
+1. Прогон всех тестов:
+   python -m pytest tests/ -v --tb=short
+   Ожидание: 0 FAILED, 0 ERROR.
+
+2. Проверка POST /save_concept:
+   curl -X POST http://localhost:8000/v1/save_concept \
+        -d '{"term":"test","domain":"test_domain","parameters":[]}'
+   Ожидание: concept_id в ответе.
+
+3. Проверка use_relations:
+   Включить use_relations=true, добавить relation, проверить наследование.
+
+4. Проверка feedback correction:
+   Включить use_feedback_correction=true, отправить feedback с rating=5,
+   проверить что confidence повышен.
+
+5. Проверка ambiguous:
+   Запросить многозначный термин без hints, проверить domain_candidates.
+
+6. Проверка метрик:
+   Выполнить запросы, проверить /v1/metrics.
+
+7. Обратная совместимость:
+   Старые тесты по-прежнему проходят.
+   Все новые фичи опциональны (выключены по умолчанию).
+
+================================================================================

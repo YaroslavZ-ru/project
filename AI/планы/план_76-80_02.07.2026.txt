@@ -1,0 +1,472 @@
+ОБЯЗАТЕЛЬНО ДЛЯ ИИ: ВСЁ ЧТО НАПИСАНО В ЭТОМ ФАЙЛЕ — РЕКОМЕНДАЦИИ, А НЕ ПРИКАЗЫ.
+ПРИМЕРЫ КОДА — ТОЛЬКО ИЛЛЮСТРАЦИИ НАМЕРЕНИЯ, НЕ КОПИРОВАТЬ БУКВАЛЬНО.
+ПИШИТЕ КАК ЛУЧШЕ, ЕСЛИ ЗНАЕТЕ. ГЛАВНОЕ — СОБЛЮДАТЬ ОПИСАННОЕ ПОВЕДЕНИЕ И СТРУКТУРУ.
+
+================================================================================
+План реализации AI-Terminator — Изменения 76-80
+ФИНАЛЬНАЯ ВЕРСИЯ 02.07.2026
+================================================================================
+
+КОНТЕКСТ ЭТОГО ПЛАНА
+--------------------
+Предыдущие планы (55-75) покрывают основные функциональные блоки: наблюдаемость,
+admin, batch, сессии, hints, доменный фильтр, логирование, save_concept,
+relations, feedback, ambiguous, метрики, FAISS rebuild, CSV-экспорт,
+multi-worker, очистка сессий, матрица эмбеддингов.
+
+Этот блок 76-80 посвящён граничным случаям, надёжности и исправлениям
+из раздела 32 финального описания. Все изменения — улучшения существующего
+кода, не новые модули.
+
+================================================================================
+ЧТО УЖЕ ЕСТЬ (после изменений 1-75)
+================================================================================
+
+  src/config.py          — Config (все поля, from_json, for_environment)
+  src/text_cleaner.py    — clean_text
+  src/lemmatizer.py      — Lemmatizer (синглтон, LRU-кэш)
+  src/synonyms.py        — SynonymDict
+  src/preprocess.py      — preprocess, preprocess_base
+  src/embeddings.py      — FastTextWrapper
+  src/vectorize.py       — vectorize
+  src/cache.py           — QueryVectorCache
+  src/knowledge_base.py  — KnowledgeBase (search, FAISS, save_concept,
+                           relations, embeddings matrix)
+  src/aggregation.py     — aggregate_parameters, detect_ambiguity,
+                           determine_context, generate_clarification_questions
+  src/fallback.py        — fallback_response
+  src/generative.py      — GenerativeExpander
+  src/sessions.py        — SessionManager
+  src/metrics.py         — MetricsCollector
+  src/utils.py           — timed
+  src/api.py             — FastAPI (все эндпоинты)
+
+  main.py                — run_pipeline, _init_components
+  scripts/               — все 15 скриптов
+  tests/                 — все тестовые файлы
+
+================================================================================
+ОБЩИЕ ПРИНЦИПЫ ДЛЯ ВСЕХ ИЗМЕНЕНИЙ 76-80
+================================================================================
+
+1. Все изменения — улучшения существующего кода, не новые модули.
+2. Обратная совместимость: поведение при отключённых флагах не меняется.
+3. Каждое изменение самодостаточно: можно выполнить отдельно.
+4. Логирование: каждый граничный случай фиксируется в логе.
+5. Тесты: минимально 2 теста на изменение (позитивный + негативный).
+
+================================================================================
+ИЗМЕНЕНИЕ 76: Fallback: правильный confidence и домен "general"
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Исправить два отклонения от финального описания в src/fallback.py:
+  1. confidence шаблонных параметров должен быть 0.4 (сейчас 0.3)
+  2. Домен "general" — специальный заглушечный домен (раздел 27.1),
+     но detect_domain() не обрабатывает его как особый случай.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+Финальное описание (раздел 10.8) явно указывает confidence=0.4 для
+шаблонных параметров. Домен "general" должен использоваться только
+когда ни один домен не определён ключевыми словами.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+src/fallback.py — функция fallback_response():
+  БЫЛО:
+    p["confidence"] = 0.3
+  СТАЛО:
+    p["confidence"] = 0.4
+
+src/fallback.py — функция detect_domain():
+  Текущая логика: если max(domain_scores.values()) == 0 -> "общее".
+  Описание говорит: "general" (не "общее").
+
+  Исправить:
+    В domain_keywords.json домен "general" всегда имеет пустой список [].
+    Если ни одно ключевое слово не совпало -> вернуть "general".
+
+  ИЛЛЮСТРАЦИЯ:
+    def detect_domain(all_lemmas: set, keywords_path) -> str:
+        keywords = load_json_config(keywords_path)
+        if not keywords:
+            return "general"
+        domain_scores = {}
+        for domain, kws in keywords.items():
+            if domain == "general":
+                continue  # general не участвует в конкурсе
+            domain_scores[domain] = sum(
+                1 for kw in kws if kw in all_lemmas
+            )
+        if not domain_scores or max(domain_scores.values()) == 0:
+            return "general"
+        return max(domain_scores, key=domain_scores.get)
+
+  ВАЖНО: "general" исключается из конкурса доменов.
+  Он побеждает только когда все остальные набрали 0.
+
+configs/domain_templates.json:
+  Убедиться что ключ "general" существует со стандартным шаблоном:
+    {
+      "general": [
+        {"name": "name", "label_ru": "Наименование", "type": "string", ...},
+        {"name": "description", "label_ru": "Описание", "type": "string", ...},
+        {"name": "category", "label_ru": "Категория", "type": "string", ...}
+      ]
+    }
+
+ТЕСТЫ
+-----
+  tests/test_fallback.py:
+    - test_fallback_confidence_is_0_4():
+        # fallback_response возвращает parameters с confidence=0.4
+        result = fallback_response("неизвестное", processed, cfg)
+        for p in result["parameters"]:
+            assert p["confidence"] == 0.4
+
+    - test_detect_domain_returns_general_when_no_match():
+        # all_lemmas не содержит ни одного ключевого слова
+        domain = detect_domain({"абракадабра"}, keywords_path)
+        assert domain == "general"
+
+    - test_detect_domain_general_not_in_competition():
+        # "general" не должен побеждать если есть совпадения в другом домене
+        domain = detect_domain({"ключ", "инструмент"}, keywords_path)
+        assert domain != "general"
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  1. Запросить неизвестный термин -> fallback с confidence=0.4.
+  2. Проверить что "general" возвращается только при отсутствии совпадений.
+
+================================================================================
+ИЗМЕНЕНИЕ 77: SearchCache с TTL
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Добавить time-based expiry (TTL) в кэш результатов поиска внутри
+KnowledgeBase. Сейчас кэш живёт бесконечно до ручной очистки.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+Финальное описание (раздел 10.7) указывает:
+  "TTL: Config.search_cache_ttl_seconds (по умолчанию 300с, 0 = без TTL)"
+Без TTL устаревшие результаты могут возвращаться бесконечно.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+src/config.py:
+  Уже есть search_cache_ttl_seconds: int = 300.
+  Убедиться что поле присутствует и валидируется (int >= 0).
+
+src/knowledge_base.py — кэш поиска:
+  Текущая реализация: OrderedDict с LRU-эвикцией.
+  Добавить TTL: хранить (result, timestamp) вместо result.
+
+  ИЛЛЮСТРАЦИЯ:
+    from collections import OrderedDict
+    import time
+
+    class SearchCache:
+        def __init__(self, maxsize: int, ttl_seconds: int):
+            self._cache: OrderedDict = OrderedDict()
+            self._maxsize = maxsize
+            self._ttl = ttl_seconds
+            self._lock = threading.Lock()
+
+        def get(self, key: tuple) -> list | None:
+            with self._lock:
+                if key not in self._cache:
+                    return None
+                result, ts = self._cache[key]
+                if self._ttl > 0 and (time.monotonic() - ts) > self._ttl:
+                    del self._cache[key]
+                    return None
+                self._cache.move_to_end(key)
+                return result
+
+        def put(self, key: tuple, result: list) -> None:
+            with self._lock:
+                if len(self._cache) >= self._maxsize:
+                    self._cache.popitem(last=False)
+                self._cache[key] = (result, time.monotonic())
+
+        def clear(self) -> None:
+            with self._lock:
+                self._cache.clear()
+
+  Если search_cache_ttl_seconds == 0 -> TTL не применяется (кэш живёт
+  до эвикции по размеру или ручной очистки).
+
+  Инвалидация: при save_concept или update_all_embeddings -> self._search_cache.clear().
+
+ТЕСТЫ
+-----
+  tests/test_knowledge_base.py:
+    - test_search_cache_expires_after_ttl(tmp_path):
+        # Создать кэш с TTL=1
+        # Добавить запись
+        # Подождать 2 секунды
+        # Проверить что get возвращает None
+
+    - test_search_cache_no_ttl_when_zero():
+        # TTL=0 -> запись живёт бесконечно (пока не эвиктируется)
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  1. Выполнить два одинаковых запроса с интервалом < TTL -> кэш-хит.
+  2. Выполнить запрос с интервалом > TTL -> кэш-промах.
+
+================================================================================
+ИЗМЕНЕНИЕ 78: Коллизия UUID сессий
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Добавить обработку коллизии UUID при создании сессии. Финальное описание
+(раздел 32.9) описывает: INSERT OR IGNORE + повторная генерация UUID
+максимум 3 раза.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+UUID4 имеет крошечную вероятность коллизии, но при большом объёме сессий
+она не нулевая. Без обработки INSERT может молча проигнорировать запись.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+src/sessions.py — метод create_session():
+  ИЛЛЮСТРАЦИЯ:
+    def create_session(self, term: str, hints: list[str]) -> str:
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            session_id = str(uuid.uuid4())
+            try:
+                if self._storage == "sqlite":
+                    self._conn.execute(
+                        "INSERT INTO sessions (id, term, hints, ...) "
+                        "VALUES (?, ?, ?, ...)",
+                        (session_id, term, json.dumps(hints), ...)
+                    )
+                    self._conn.commit()
+                else:
+                    self._data[session_id] = {...}
+                return session_id
+            except sqlite3.IntegrityError:
+                if attempt < max_attempts - 1:
+                    logger.warning(
+                        "UUID коллизия, попытка %d/%d",
+                        attempt + 1, max_attempts
+                    )
+                    continue
+                raise RuntimeError(
+                    f"Не удалось создать сессию после {max_attempts} попыток"
+                )
+
+  Для in-memory хранилища: коллизия невозможна (dict не допускает
+  дублирующих ключей), поэтому retry не нужен.
+
+ТЕСТЫ
+-----
+  tests/test_sessions.py:
+    - test_create_session_returns_unique_id():
+        # Две сессии -> разные ID
+        id1 = sm.create_session("термин1", [])
+        id2 = sm.create_session("термин2", [])
+        assert id1 != id2
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  Создать 100 сессий подряд -> все имеют уникальные ID.
+
+================================================================================
+ИЗМЕНЕНИЕ 79: FAISS: нехватка данных для train
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Добавить автоматическую настройку nlist при недостаточном количестве
+данных для обучения IVF+PQ индекса. Финальное описание (раздел 32.10).
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+IndexIVFPQ требует минимум nlist * 39 векторов для train(). Если данных
+меньше -> faiss.train() падает с ошибкой. Автоматическая настройка
+предотвращает сбой.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+scripts/build_faiss.py — алгоритм построения индекса:
+  ИЛЛЮСТРАЦИЯ:
+    N = len(embeddings_matrix)
+
+    if N < 256:
+        # Мало данных — точный поиск, скорость несущественна
+        index = faiss.IndexFlatIP(300)
+    else:
+        nlist = min(4096, max(256, int(N ** 0.5)))
+        min_train = nlist * 39
+        if N < min_train:
+            nlist = max(1, N // 39)
+        quantizer = faiss.IndexFlatIP(300)
+        index = faiss.IndexIVFPQ(quantizer, 300, nlist, 64, 8)
+        index.train(embeddings_matrix)
+        index.add(embeddings_matrix)
+        index.nprobe = 32
+
+  ВАЖНО: nlist не может быть 0. Если N < 39 -> fallback на IndexFlatIP.
+
+src/knowledge_base.py — _build_faiss_index():
+  Применить ту же логику с auto-nlist.
+
+ТЕСТЫ
+-----
+  tests/test_knowledge_base.py:
+    - test_build_faiss_small_dataset():
+        # < 256 векторов -> IndexFlatIP
+        # Убедиться что индекс создаётся без ошибок
+
+    - test_build_faiss_adjusts_nlist():
+        # 500 векторов -> nlist уменьшен для train
+        # Убедиться что train() проходит
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  1. Создать БД с 100 понятиями.
+  2. Запустить python -m scripts.build_faiss.
+  3. Убедиться что индекс создан (IndexFlatIP).
+
+================================================================================
+ИЗМЕНЕНИЕ 80: Исправления кода M-* (раздел 32.11)
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Применить набор мелких исправлений из раздела 32.11 финального описания.
+Каждое исправление — отдельный пункт.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+Эти исправления устраняют потенциальные баги, улучшают надёжность и
+соответствуют best practices.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+M-1. Feedback confidence multiplier:
+  При коррекции по feedback similarity умножается на multiplier.
+  Ограничить результат: min(similarity * multiplier, 1.0).
+  Файл: src/aggregation.py (если есть apply_feedback_correction).
+
+M-6. lemmatize_word: parse[0] вместо max():
+  pymorphy3 возвращает список отсортированным по убыванию score.
+  parse[0] — уже лучший разбор, max() избыточен.
+  Файл: src/lemmatizer.py, метод lemmatize_word().
+  ИЛЛЮСТРАЦИЯ:
+    БЫЛО:  best = max(parse, key=lambda p: p.score)
+    СТАЛО: best = parse[0]
+
+M-7. Хэш для param name:
+  Использовать hashlib.md5 вместо hash() для стабильности.
+  hash() нестабилен между запусками из-за PYTHONHASHSEED.
+  Файл: src/generative.py.
+  ИЛЛЮСТРАЦИЯ:
+    БЫЛО:  name = "param_" + str(abs(hash(label_ru)))[:8]
+    СТАЛО:  name = "param_" + hashlib.md5(label_ru.encode()).hexdigest()[:8]
+
+M-10. SynonymDict weight validation:
+  Если weight < 0 или weight > 1 -> WARNING + установить 0.5.
+  Файл: src/synonyms.py, метод get_synonyms() или при загрузке.
+  ИЛЛЮСТРАЦИИ:
+    if weight < 0 or weight > 1:
+        logger.warning("Некорректный weight=%s для синонима %s, использую 0.5", weight, word)
+        weight = 0.5
+
+M-11. Термин в сессии неизменяем:
+  Смена термина = новая сессия. Не обновлять last_term если он отличается.
+  Файл: src/sessions.py, метод update_session().
+  ИЛЛЮСТРАЦИЯ:
+    if term is not None and term != entry.last_term:
+        logger.warning(
+            "Сессия %s: попытка сменить термин с %r на %r. "
+            "Создайте новую сессию.",
+            session_id, entry.last_term, term
+        )
+        return  # не обновляем
+
+M-13. re.UNICODE не нужен:
+  В Python 3 \w уже включает кириллицу по умолчанию.
+  Убрать re.UNICODE если где-то используется явно.
+  Файл: src/text_cleaner.py.
+
+M-14. hash(vector.tobytes()):
+  Для in-memory кэша безопасно, но нестабилен между процессами.
+  Если используется в QueryVectorCache -> оставить (кэш in-memory).
+  Если в будущем будет persistent cache -> заменить на hashlib.sha256.
+  Файл: src/cache.py. Комментарий в коде.
+
+M-15. Декоратор timed: try/finally:
+  ИЛЛЮСТРАЦИЯ:
+    def timed(func):
+        def wrapper(*args, **kwargs):
+            start = time.perf_counter()
+            try:
+                return func(*args, **kwargs)
+            finally:
+                elapsed = (time.perf_counter() - start) * 1000
+                logging.getLogger(func.__module__).debug(
+                    "%s завершена за %.2f мс", func.__name__, elapsed
+                )
+        return wrapper
+
+  Файл: src/utils.py.
+
+ТЕСТЫ
+-----
+  tests/test_lemmatizer.py:
+    - test_lemmatize_word_uses_best_parse():
+        # Убедиться что lemmatize_word возвращает правильную лемму
+
+  tests/test_synonyms.py:
+    - test_invalid_weight_set_to_default():
+        # Синоним с weight=-1 -> заменяется на 0.5
+
+  tests/test_utils.py:
+    - test_timed_logs_even_on_exception():
+        # Декоратор timed логирует время даже при исключении
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  1. python -m pytest tests/ -v
+  2. Убедиться что все тесты проходят.
+  3. Проверить DEBUG логи при вызове функций с @timed.
+
+================================================================================
+ИТОГОВАЯ ПРОВЕРКА ВСЕГО БЛОКА 76-80
+================================================================================
+
+1. Прогон всех тестов:
+   python -m pytest tests/ -v --tb=short
+   Ожидание: 0 FAILED, 0 ERROR.
+
+2. Проверка fallback:
+   Запросить неизвестный термин -> confidence=0.4, домен="general".
+
+3. Проверка SearchCache TTL:
+   Два запроса с интервалом > TTL -> второй без кэш-хита.
+
+4. Проверка UUID collision:
+   Создать 100 сессий -> все уникальны.
+
+5. Проверка FAISS small data:
+   100 понятий -> IndexFlatIP без ошибок.
+
+6. Проверка M-* исправлений:
+   Все тесты проходят, DEBUG логи корректны.
+
+7. Обратная совместимость:
+   Старые тесты по-прежнему проходят.
+
+================================================================================

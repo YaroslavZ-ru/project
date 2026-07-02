@@ -1,0 +1,481 @@
+================================================================================
+План реализации AI-Terminator — Изменения 71-75
+ФИНАЛЬНАЯ ВЕРСИЯ 02.07.2026
+================================================================================
+
+КОНТЕКСТ ЭТОГО ПЛАНА
+--------------------
+Проект AI-Terminator имеет рабочее ядро и REST API. Финальное описание
+(описание_проекта_13.06.2026.txt) содержит ряд функций, которые описаны,
+но не реализованы. Предыдущие планы покрывают наблюдаемость (55-60),
+batch/сессии/hints/логирование (61-65), save_concept/relations/feedback/
+ambiguous/метрики (66-70). Этот блок 71-75 реализует ещё пять функций
+из описания, связанных с оптимизацией, экспортом и развёртыванием.
+
+================================================================================
+ЧТО УЖЕ ЕСТЬ (после изменений 1-54)
+================================================================================
+
+  src/knowledge_base.py — KnowledgeBase (search, FAISS, save_concept,
+                          get_all_concepts, compute_concept_embedding,
+                          update_all_embeddings)
+  src/metrics.py        — MetricsCollector
+  src/api.py            — FastAPI с основными эндпоинтами
+  src/sessions.py       — SessionManager (in-memory, TTL)
+  scripts/export_kb.py  — экспорт в JSON
+  scripts/run_api.py    — запуск uvicorn (без workers)
+  scripts/build_faiss.py — ручное построение FAISS
+
+================================================================================
+ИЗМЕНЕНИЕ 71: Автоматическая пересборка FAISS-индекса
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+Сейчас FAISS-индекс строится вручную через scripts/build_faiss.py. При
+добавлении новых понятий через save_concept индекс устаревает. Финальное
+описание (раздел 21.3) описывает автоматическую пересборку в фоновом
+потоке при превышении порога.
+
+ПОЧЕМУ ЭТО ВАЖНО
+----------------
+  - индекс всегда актуален без ручного вмешательства;
+  - не блокирует основной поток обработки запросов;
+  - при большом объёме данных индекс автоматически переключается
+    с IndexFlatIP на IVF+PQ.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+  src/knowledge_base.py
+    - Добавить атрибуты:
+        _faiss_rebuild_lock: threading.Lock = threading.Lock()
+        _faiss_rebuild_pending: bool = False
+
+    - Добавить метод _maybe_rebuild_faiss():
+        1. Если use_faiss=False -> выйти.
+        2. Подсчитать количество concepts: SELECT COUNT(*) FROM concepts.
+        3. Если count < faiss_threshold -> выйти.
+        4. Если _faiss_rebuild_pending -> выйти (уже запланирована).
+        5. Установить _faiss_rebuild_pending = True.
+        6. Запустить в daemon-потоке: threading.Thread(target=_rebuild_faiss_async, daemon=True).start()
+
+    - Добавить метод _rebuild_faiss_async():
+        1. Попытаться захватить _faiss_rebuild_lock (non-blocking).
+           Если не удалось ->另一位 поток уже пересобирает, выйти.
+        2. with _faiss_rebuild_lock:
+            _faiss_rebuild_pending = False
+            try:
+                # Загрузить все эмбеддинги
+                concepts = self.get_all_concepts(use_cache=False)
+                valid = [c for c in concepts if c.get("embedding") is not None and np.any(c["embedding"] != 0)]
+                if len(valid) < 256:
+                    logger.info("FAISS rebuild: мало данных (%d), пропуск", len(valid))
+                    return
+                embeddings = np.vstack([c["embedding"] for c in valid]).astype(np.float32)
+                ids = [c["id"] for c in valid]
+                # Построить индекс (тот же алгоритм что в build_faiss.py)
+                new_index = self._build_faiss_index(embeddings)
+                # Заменить под локом
+                with self._faiss_lock:
+                    self._faiss_index = new_index
+                    self._faiss_ids = ids
+                logger.info("FAISS rebuild завершён: %d векторов", len(valid))
+            except Exception as exc:
+                logger.error("Ошибка FAISS rebuild: %s", exc)
+
+    - Добавить метод _build_faiss_index(embeddings: np.ndarray):
+        if not _FAISS_AVAILABLE:
+            return None
+        N = len(embeddings)
+        if N < 100_000:
+            import faiss
+            faiss.normalize_L2(embeddings)
+            index = faiss.IndexFlatIP(300)
+            index.add(embeddings)
+        else:
+            import faiss
+            nlist = min(4096, max(256, int(N ** 0.5)))
+            if N < nlist * 39:
+                nlist = max(1, N // 39)
+            quantizer = faiss.IndexFlatIP(300)
+            index = faiss.IndexIVFPQ(quantizer, 300, nlist, 64, 8)
+            index.train(embeddings)
+            index.add(embeddings)
+            index.nprobe = 32
+        return index
+
+    - В save_concept: после сохранения вызвать _maybe_rebuild_faiss().
+    - В update_all_embeddings: после обновления вызвать _maybe_rebuild_faiss().
+
+  tests/test_knowledge_base.py
+    - test_maybe_rebuild_faiss_skips_below_threshold():
+        # Количество concepts < faiss_threshold -> rebuild не запускается
+    - test_rebuild_faiss_creates_index():
+        # Сufficient concepts -> индекс создаётся
+
+  docs/configuration.md
+    - Описать faiss_threshold и автоматическую пересборку.
+
+ТЕСТЫ
+-----
+  python -m pytest tests/test_knowledge_base.py -v
+
+ПРОВЕРКА
+--------
+  1. Включить use_faiss=true.
+  2. Добавить > faiss_threshold понятий.
+  3. Проверить что индекс пересобран автоматически.
+
+================================================================================
+ИЗМЕНЕНИЕ 72: Экспорт KB в CSV-формат
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+Сейчас scripts/export_kb.py экспортирует только JSON. Финальное описание
+(разделы 29.1, 32.5) описывает CSV-формат: одна строка на параметр,
+заголовки: concept_id, term, domain, param_name, param_label_ru, param_type,
+param_unit, param_description, param_enum_values. Это удобно для работы
+в Excel, Google Sheets, импорта в другие системы.
+
+ПОЧЕМУ ЭТО ВАЖНО
+----------------
+  - совместимость с табличными процессорами;
+  - удобный просмотр и фильтрация данных;
+  - импорт в системы не поддерживающие JSON.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+  scripts/export_kb.py
+    - Добавить параметр --format в argparse: choices=["json", "csv"], default="json".
+    - Добавить функцию export_kb_csv(config, output_path) -> dict:
+        1. Подключиться к БД.
+        2. Запрос:
+            SELECT c.id, c.term, c.domain,
+                   p.name, p.label_ru, p.type, p.unit,
+                   p.description, p.enum_values
+            FROM concepts c
+            LEFT JOIN parameters p ON c.id = p.concept_id
+            ORDER BY c.id, p.id
+        3. Открыть output_path с encoding="utf-8" и newline="".
+        4. Создать csv.writer с заголовком:
+            ["concept_id", "term", "domain", "param_name", "param_label_ru",
+             "param_type", "param_unit", "param_description", "param_enum_values"]
+        5. Для каждой строки: записать значения. enum_values — как JSON-строка.
+        6. Понятие без параметров: одна строка с пустыми param_* полями.
+        7. Вернуть статистику.
+
+    - В main(): в зависимости от args.format вызывать export_kb или export_kb_csv.
+
+  tests/test_export.py (НОВЫЙ ФАЙЛ)
+    - test_export_csv_creates_file(tmp_path):
+        # Создать мини-БД с 2 понятиями
+        # Экспортировать в CSV
+        # Проверить что файл создан и содержит заголовок
+    - test_export_csv_format(tmp_path):
+        # Проверить что CSV содержит правильные столбцы
+    - test_export_json_backward_compatibility():
+        # Старый формат JSON по-прежнему работает
+
+  docs/scripts.md
+    - Добавить описание --format csv:
+        python -m scripts.export_kb --format csv --output data/export.csv
+
+ТЕСТЫ
+-----
+  python -m pytest tests/test_export.py -v
+
+ПРОВЕРКА
+--------
+  python -m scripts.export_kb --format csv --output data/export.csv
+  Проверить что CSV содержит concept_id, term, domain, param_* столбцы.
+
+================================================================================
+ИЗМЕНЕНИЕ 73: Multi-worker API (uvicorn workers)
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+Сейчас run_api.py запускает uvicorn с одним worker. Финальное описание
+(раздел 32.3) описывает параметр --workers для горизонтального
+масштабирования на многопроцессорных серверах.
+
+ПОЧЕМУ ЭТО ВАЖНО
+----------------
+  - задействует все ядра CPU;
+  - увеличивает пропускную способность API;
+  - соответствует best practices для продакшна.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+  scripts/run_api.py
+    - Добавить аргумент argparse:
+        parser.add_argument(
+            "--workers",
+            type=int,
+            default=1,
+            help="Количество worker'ов (default: 1). workers > 1 требует multiprocessing."
+        )
+    - Передать workers в uvicorn.run:
+        uvicorn.run(
+            "src.api:app",
+            host=host,
+            port=port,
+            reload=args.reload,
+            workers=args.workers,  # НОВЫЙ ПАРАМЕТР
+            log_level="info",
+        )
+    - Добавить проверку: если workers > 1 и reload=True -> WARNING
+      (reload не поддерживается с несколькими worker'ами, uvicorn отключит reload).
+
+  src/config.py
+    - Добавить поле:
+        api_workers: int = 1
+    - Валидация: isinstance(val, int) and val > 0
+
+  src/api.py
+    - В lifespan: при workers > 1 каждый worker инициализирует
+      компоненты заново (Shared state невозможен).
+    - Добавить INFO-лог при старте: "Worker PID={pid} инициализирован".
+
+  docker-compose.yml
+    - Обновить сервис web:
+        command: python -m scripts.run_api --workers ${API_WORKERS:-1}
+        environment:
+          - API_WORKERS=2
+
+  tests/test_api.py
+    - test_api_starts_with_workers_flag():
+        # Проверить что --workers передаётся в uvicorn
+
+  docs/scripts.md
+    - Добавить описание --workers:
+        python -m scripts.run_api --workers 4
+    - Пояснить: workers > 1 не совместим с --reload.
+
+ТЕСТЫ
+-----
+  python -m pytest tests/test_api.py -v
+
+ПРОВЕРКА
+--------
+  python -m scripts.run_api --workers 2
+  Проверить что работают 2 worker-процесса (ps aux | grep uvicorn).
+
+================================================================================
+ИЗМЕНЕНИЕ 74: Очистка сессий и проверка TTL
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+SessionManager уже имеет cleanup(), но он вызывается только при update_session
+и только для in-memory хранилища. Финальное описание (раздел 30) требует
+периодическую очистку для SQLite-сессий и проверку expires_at при каждом
+обращении.
+
+ПОЧЕМУ ЭТО ВАЖНО
+----------------
+  - предотвращает утечку памяти от устаревших сессий;
+  - поддерживает целостность данных в SQLite;
+  - обеспечивает корректную работу при длительном простое.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+  src/sessions.py
+    - Уже есть cleanup() и _cleanup_unsafe(). Расширить:
+
+    - Добавить метод cleanup_expired() -> int:
+        Если session_storage == "sqlite":
+            conn = self._get_conn()
+            try:
+                cursor = conn.execute(
+                    "DELETE FROM sessions WHERE expires_at <= datetime('now')"
+                )
+                conn.commit()
+                return cursor.rowcount
+            finally:
+                conn.close()
+        Иначе (memory):
+            with self._lock:
+                return self._cleanup_unsafe()
+
+    - В get_session: при SQLite проверять expires_at:
+        row = conn.execute(
+            "SELECT * FROM sessions WHERE id = ? AND expires_at > datetime('now')",
+            (session_id,)
+        ).fetchone()
+        Если row is None -> удалить запись (DELETE) и вернуть None.
+
+    - Добавить метод start_cleanup_timer(self) -> None:
+        Запускает daemon-поток с периодическим вызовом cleanup_expired:
+            def _cleanup_loop():
+                while True:
+                    time.sleep(self._interval)
+                    try:
+                        n = self.cleanup_expired()
+                        if n > 0:
+                            logger.info("Session cleanup: удалено %d сессий", n)
+                    except Exception as exc:
+                        logger.error("Session cleanup error: %s", exc)
+            t = threading.Thread(target=_cleanup_loop, daemon=True)
+            t.start()
+        Вызывать в __init__ если session_storage == "sqlite".
+
+  src/config.py
+    - Уже есть session_cleanup_interval_seconds: int = 60.
+
+  tests/test_sessions.py
+    - test_cleanup_expired_removes_old_sessions(tmp_path):
+        # Создать сессии с коротким TTL
+        # Подождать
+        # Вызвать cleanup_expired
+        # Проверить что удалены
+    - test_get_session_skips_expired(tmp_path):
+        # Сессия с TTL=1с, подождать 2с
+        # get_session -> None
+
+  docs/configuration.md
+    - Описать session_cleanup_interval_seconds.
+
+ТЕСТЫ
+-----
+  python -m pytest tests/test_sessions.py -v
+
+ПРОВЕРКА
+--------
+  1. Включить session_storage="sqlite".
+  2. Создать сессии.
+  3. Подождать > TTL.
+  4. Проверить что cleanup_expired удаляет их.
+
+================================================================================
+ИЗМЕНЕНИЕ 75: Оптимизация матрицы эмбеддингов
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+Матрица эмбеддингов (_embeddings_matrix) используется для линейного поиска
+numpy. Сейчас она строится при первом вызове search_similar (ленивая
+инициализация). Финальное описание (раздел 22) описывает полный жизненный
+цикл: ленивую инициализацию, инвалидацию при изменении данных, thread-safe
+доступ через _matrix_lock.
+
+ПОЧЕМУ ЭТО ВАЖНО
+----------------
+  - ускоряет повторные поисковые запросы (нет重建ования матрицы);
+  - потокобезопасность при параллельных запросах;
+  - корректная инвалидация при обновлении данных.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+  src/knowledge_base.py
+    - Добавить атрибуты:
+        _embeddings_matrix: np.ndarray | None = None
+        _matrix_concept_ids: list[str] | None = None
+        _matrix_lock: threading.RLock = threading.RLock()
+
+    - Добавить метод _ensure_embeddings_matrix():
+        with self._matrix_lock:
+            if self._embeddings_matrix is not None:
+                return
+            concepts = self.get_all_concepts(use_cache=True)
+            valid = [c for c in concepts
+                     if c.get("embedding") is not None
+                     and np.any(c["embedding"] != 0)]
+            if not valid:
+                self._embeddings_matrix = np.zeros((0, 300), dtype=np.float32)
+                self._matrix_concept_ids = []
+                return
+            self._embeddings_matrix = np.vstack(
+                [c["embedding"] for c in valid]
+            ).astype(np.float32)
+            self._matrix_concept_ids = [c["id"] for c in valid]
+            logger.info(
+                "Матрица эмбеддингов построена: %d x 300",
+                len(valid)
+            )
+
+    - Добавить метод _invalidate_embeddings_matrix():
+        with self._matrix_lock:
+            self._embeddings_matrix = None
+            self._matrix_concept_ids = None
+            logger.debug("Матрица эмбеддингов инвалидирована")
+
+    - В search_similar: использовать _ensure_embeddings_matrix()
+      вместо ручного построения матрицы.
+
+    - В save_concept: после сохранения вызвать _invalidate_embeddings_matrix().
+    - В update_all_embeddings: после обновления вызвать _invalidate_embeddings_matrix().
+
+    - Добавить в search_similar thread-safe доступ:
+        with self._matrix_lock:
+            matrix = self._embeddings_matrix
+            ids = self._matrix_concept_ids
+        if matrix is None or ids is None:
+            self._ensure_embeddings_matrix()
+            with self._matrix_lock:
+                matrix = self._embeddings_matrix
+                ids = self._matrix_concept_ids
+        # Дальше работаем с matrix и ids (numpy operations are thread-safe)
+
+  tests/test_knowledge_base.py
+    - test_ensure_embeddings_matrix_builds_matrix():
+        # Создать БД с понятиями
+        # Вызвать _ensure_embeddings_matrix
+        # Проверить что matrix построена
+    - test_invalidate_matrix_clears_cache():
+        # Построить матрицу
+        # Инвалидировать
+        # Проверить что matrix is None
+    - test_search_uses_matrix():
+        # Поиск должен использовать матрицу если она построена
+
+  docs/configuration.md
+    - Описать поведение матрицы эмбеддингов и инвалидацию.
+
+ТЕСТЫ
+-----
+  python -m pytest tests/test_knowledge_base.py -v
+
+ПРОВЕРКА
+--------
+  1. Запустить несколько поисковых запросов.
+  2. Проверить что матрица строится один раз (DEBUG лог "Матрица построена").
+  3. Добавить понятие через save_concept.
+  4. Проверить что матрица инвалидирована и перестроена.
+
+================================================================================
+ИТОГОВАЯ ПРОВЕРКА ВСЕГО БЛОКА 71-75
+================================================================================
+
+1. Прогон всех тестов:
+   python -m pytest tests/ -v --tb=short
+   Ожидание: 0 FAILED, 0 ERROR.
+
+2. Проверка FAISS rebuild:
+   Включить use_faiss, добавить > threshold понятий,
+   проверить автоматическую пересборку.
+
+3. Проверка CSV экспорта:
+   python -m scripts.export_kb --format csv
+   Проверить формат CSV.
+
+4. Проверка multi-worker:
+   python -m scripts.run_api --workers 2
+   Проверить 2 worker-процесса.
+
+5. Проверка очистки сессий:
+   Включить session_storage="sqlite", проверить cleanup_expired.
+
+6. Проверка матрицы:
+   Запустить поиск, проверить DEBUG логи о построении матрицы.
+
+7. Обратная совместимость:
+   Старые тесты по-прежнему проходят.
+
+================================================================================

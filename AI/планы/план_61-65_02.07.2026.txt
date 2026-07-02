@@ -1,0 +1,746 @@
+================================================================================
+План реализации AI-Terminator — Изменения 61-65
+ФИНАЛЬНАЯ ВЕРСИЯ 02.07.2026
+================================================================================
+
+КОНТЕКСТ ЭТОГО ПЛАНА
+--------------------
+Проект AI-Terminator имеет полностью рабочее ядро конвейера (предобработка,
+векторизация, поиск, агрегация, генеративное расширение, сессии) и REST API
+с базовой защитой. Финальное описание проекта (описание_проекта_13.06.2026.txt)
+содержит ряд функций, которые описаны, но ещё не реализованы в коде и не
+покрыты предыдущими планами.
+
+Этот блок 61-65 реализует пять таких функций, расширяющих возможности API
+и повышающих качество работы системы.
+
+================================================================================
+ЧТО УЖЕ ЕСТЬ (после изменений 1-54)
+================================================================================
+
+  src/config.py       — Config (все базовые поля, from_json, for_environment)
+  src/text_cleaner.py — clean_text
+  src/lemmatizer.py   — Lemmatizer (синглтон, LRU-кэш, threading.Lock)
+  src/synonyms.py     — SynonymDict (get_synonyms)
+  src/preprocess.py   — preprocess (= preprocess_full), preprocess_base
+  src/embeddings.py   — FastTextWrapper (ленивая загрузка, fallback, LRU-кэш)
+  src/vectorize.py    — vectorize (float64 → float32)
+  src/cache.py        — QueryVectorCache (LRU, thread-safe)
+  src/knowledge_base.py — KnowledgeBase (search_similar_concepts, FAISS,
+                          матричный поиск, кэш поиска, save_concept,
+                          compute_concept_embedding, update_all_embeddings,
+                          get_all_concepts, get_related_concepts,
+                          load_domain_centroids, get_closest_domain)
+  src/aggregation.py  — aggregate_parameters, detect_ambiguity,
+                        determine_context, generate_clarification_questions
+  src/fallback.py     — fallback_response
+  src/generative.py   — GenerativeExpander (expand)
+  src/sessions.py     — SessionManager (create_session, get_session,
+                        update_session, delete_session, cleanup_expired)
+  src/metrics.py      — MetricsCollector (record_request, record_cache_hit/miss,
+                        get_summary, get_prometheus_text)
+  src/utils.py        — timed, прочие утилиты
+  src/api.py          — FastAPI: POST /v1/query, GET /v1/health,
+                        GET /v1/metrics, GET /v1/kb/stats,
+                        rate limiting, API key, Pydantic-схемы
+
+  main.py             — run_pipeline (полный конвейер), _init_components,
+                        CLI (--input, --env)
+
+  scripts/            — init_db, seed_data, setup_all, build_fallback,
+                        build_faiss, build_synonyms, build_centroids,
+                        update_kb, update_relations, evaluate, profile,
+                        export_kb, run_api, healthcheck
+
+  tests/              — 19 тестовых файлов, покрывают все модули
+
+  Инфраструктура:     — docker-compose.yml, docker-compose.dev.yml,
+                        .github/workflows/ci.yml, release.yml,
+                        configs/config.json, development.json, production.json,
+                        docs/index.md, api.md, configuration.md, scripts.md
+
+================================================================================
+ЧТО БУДЕТ СОЗДАНО В ЭТОМ БЛОКЕ
+================================================================================
+
+  61. Пакетная обработка запросов (POST /process_batch)
+  62. Персистентные сессии (SQLite-хранилище)
+  63. Детекция несвязных подсказок (hints coherence)
+  64. Доменный фильтр в API (selected_domain)
+  65. Структурированное JSON-lines логирование
+
+================================================================================
+ОБЩИЕ ПРИНЦИПЫ ДЛЯ ВСЕГО БЛОКА 61-65
+================================================================================
+
+1. Ничего не ломать: существующая функциональность остаётся рабочей.
+2. Все пути строятся через pathlib.Path.
+3. Логирование через logging.getLogger(__name__).
+4. Type hints Python 3.10+: X | None, list[str].
+5. Опциональные зависимости оборачиваются в try/except ImportError.
+6. encoding="utf-8" везде явно.
+7. Docstring Google-style на русском.
+8. sys.path — ТОЛЬКО внутри if __name__ == "__main__".
+
+================================================================================
+ИЗМЕНЕНИЕ 61: Пакетная обработка запросов
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+Сейчас API обрабатывает только одиночные запросы. Для интеграции с внешними
+системами (ETL-пайплайны, батчевая аналитика) нужна возможность передавать
+несколько терминов за один HTTP-запрос. Финальное описание (раздел 28)
+описывает эндпоинт POST /process_batch.
+
+ПОЧЕМУ ЭТО ВАЖНО
+----------------
+  - снижает накладные расходы HTTP при обработке множества терминов;
+  - удобно для пакетного обновления/проверки базы знаний;
+  - позволяет внешним системам отправлять пачки запросов одной транзакцией.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+  src/config.py
+    - Добавить поле:
+        max_batch_size: int = 10
+    - Валидация в _validate:
+        isinstance(val, int) and val > 0
+
+  src/api.py
+    - Добавить Pydantic-схему BatchQueryRequest:
+        class BatchQueryItem(BaseModel):
+            term: str = Field(..., min_length=1, max_length=200)
+            hints: list[str] = Field(default_factory=list)
+            session_id: str | None = None
+            selected_domain: str | None = None
+
+        class BatchQueryRequest(BaseModel):
+            requests: list[BatchQueryItem] = Field(..., min_length=1)
+            debug: bool = False
+            max_batch_size: int | None = None
+
+    - Добавить Pydantic-схему BatchQueryResponse:
+        class BatchQueryResponse(BaseModel):
+            results: list[QueryResponse]
+            total: int
+            successful: int
+            failed: int
+
+    - Добавить POST /v1/process_batch:
+        async def process_batch(request: Request, body: BatchQueryRequest):
+            _verify_api_key(request)
+            if _cfg is None:
+                raise HTTPException(503, detail="Сервис запускается")
+
+            effective_limit = body.max_batch_size or _cfg.max_batch_size
+            if len(body.requests) > effective_limit:
+                raise HTTPException(
+                    400,
+                    detail=f"Пакет слишком большой: {len(body.requests)} > {effective_limit}"
+                )
+
+            results = []
+            for item in body.requests:
+                try:
+                    result = await asyncio.to_thread(
+                        _api_run_pipeline,
+                        item.term,
+                        [h.strip() for h in item.hints if h.strip()][:3],
+                        body.debug,
+                        None,  # min_confidence
+                        _cfg,
+                        _lemmatizer, _synonym_dict, _embedding_model,
+                        _vector_cache, _kb, _generative_expander,
+                        _session_manager,
+                        item.session_id,
+                        _metrics,
+                    )
+                    results.append(QueryResponse.model_validate(result))
+                except Exception as exc:
+                    logger.error("Ошибка в batch для %r: %s", item.term, exc)
+                    results.append(QueryResponse(
+                        status="error",
+                        term=item.term,
+                        warnings=[f"Ошибка обработки: {exc}"],
+                    ))
+
+            successful = sum(1 for r in results if r.status == "ok")
+            return BatchQueryResponse(
+                results=results,
+                total=len(results),
+                successful=successful,
+                failed=len(results) - successful,
+            )
+
+    - Добавить валидацию: max_batch_size в body не должен превышать
+      Config.max_batch_size (если задан).
+
+  tests/test_api.py
+    - test_batch_query_single_item(client):
+        response = client.post("/v1/process_batch", json={
+            "requests": [{"term": "ключ", "hints": ["техника"]}]
+        })
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["successful"] == 1
+    - test_batch_query_multiple_items(client):
+        response = client.post("/v1/process_batch", json={
+            "requests": [
+                {"term": "ключ", "hints": ["техника"]},
+                {"term": "нота", "hints": ["музыка"]},
+            ]
+        })
+        assert response.json()["total"] == 2
+    - test_batch_query_exceeds_limit(client):
+        response = client.post("/v1/process_batch", json={
+            "requests": [{"term": f"слово{i}"} for i in range(20)]
+        })
+        assert response.status_code == 400
+
+  docs/api.md
+    - Добавить секцию "Пакетная обработка":
+        POST /v1/process_batch
+        Ограничение: max_batch_size (по умолчанию 10).
+        Пример тела запроса и ответа.
+
+ТЕСТЫ
+-----
+  python -m pytest tests/test_api.py -v -k batch
+
+ПРОВЕРКА
+--------
+  curl -X POST http://localhost:8000/v1/process_batch \
+       -H "Content-Type: application/json" \
+       -d '{"requests":[{"term":"ключ","hints":["техника"]},{"term":"нота","hints":["музыка"]}]}'
+  Ответ: JSON с "results", "total": 2, "successful": 2.
+
+================================================================================
+ИЗМЕНЕНИЕ 62: Персистентные сессии (SQLite)
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+Сейчас сессии хранятся в памяти (in-memory OrderedDict). При перезапуске
+сервера все сессии теряются. Финальное описание (раздел 30) предполагает
+опциональное хранение сессий в SQLite для персистентности.
+
+ПОЧЕМУ ЭТО ВАЖНО
+----------------
+  - сохранение контекста диалога между перезапусками;
+  - возможность масштабирования на несколько worker'ов (общая БД);
+  - совместимость с Docker (перезапуск контейнера не теряет сессии).
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+  src/config.py
+    - Добавить поле:
+        session_storage: str = "memory"
+    - Валидация: session_storage in ("memory", "sqlite")
+
+  scripts/init_db.py
+    - Добавить таблицу SESSIONS (если не существует):
+        CREATE TABLE IF NOT EXISTS sessions (
+            id           TEXT PRIMARY KEY,
+            term         TEXT NOT NULL,
+            hints        TEXT,
+            domain       TEXT,
+            history      TEXT,
+            created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+            expires_at   DATETIME
+        )
+    - Индекс: CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)
+
+  src/sessions.py
+    - Расширить конструктор SessionManager:
+        def __init__(self, config: Config) -> None:
+            self._storage = config.session_storage
+            self._ttl = config.session_ttl_seconds
+            if self._storage == "sqlite":
+                self._db_path = Path(config.db_path)
+                self._ensure_table()
+            else:
+                self._data: OrderedDict = OrderedDict()
+            self._lock = threading.Lock()
+
+    - Метод _ensure_table():
+        if self._storage != "sqlite":
+            return
+        conn = sqlite3.connect(str(self._db_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""CREATE TABLE IF NOT EXISTS sessions (
+            id TEXT PRIMARY KEY, term TEXT NOT NULL, hints TEXT,
+            domain TEXT, history TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            expires_at DATETIME)""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)")
+        conn.commit()
+        conn.close()
+
+    - Метод _get_conn():
+        import sqlite3
+        return sqlite3.connect(str(self._db_path), check_same_thread=False)
+
+    - Метод create_session(term, hints) -> str:
+        session_id = str(uuid.uuid4())
+        now = datetime.datetime.now(datetime.timezone.utc)
+        expires = now + datetime.timedelta(seconds=self._ttl)
+        if self._storage == "sqlite":
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "INSERT INTO sessions (id, term, hints, domain, history, expires_at) "
+                    "VALUES (?, ?, ?, NULL, '[]', ?)",
+                    (session_id, term, json.dumps(hints), expires.isoformat())
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        else:
+            with self._lock:
+                self._data[session_id] = {
+                    "session_id": session_id, "term": term,
+                    "accumulated_hints": list(hints),
+                    "selected_domain": None, "interaction_history": [],
+                    "created_at": now.isoformat(), "updated_at": now.isoformat(),
+                    "ttl_seconds": self._ttl,
+                }
+        return session_id
+
+    - Метод get_session(session_id) -> dict | None:
+        if self._storage == "sqlite":
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM sessions WHERE id = ? AND expires_at > datetime('now')",
+                    (session_id,)
+                ).fetchone()
+                if row is None:
+                    return None
+                return {
+                    "session_id": row[0], "term": row[1],
+                    "accumulated_hints": json.loads(row[2]) if row[2] else [],
+                    "selected_domain": row[3],
+                    "interaction_history": json.loads(row[4]) if row[4] else [],
+                    "created_at": row[5], "updated_at": row[6],
+                }
+            finally:
+                conn.close()
+        else:
+            with self._lock:
+                session = self._data.get(session_id)
+                if session is None:
+                    return None
+                created = datetime.datetime.fromisoformat(session["created_at"])
+                if (datetime.datetime.now(datetime.timezone.utc) - created).total_seconds() > self._ttl:
+                    del self._data[session_id]
+                    return None
+                return session
+
+    - Метод update_session(session_id, new_hints=None, selected_domain=None, response=None):
+        if self._storage == "sqlite":
+            conn = self._get_conn()
+            try:
+                if selected_domain is not None:
+                    conn.execute("UPDATE sessions SET domain = ?, updated_at = datetime('now') WHERE id = ?",
+                                 (selected_domain, session_id))
+                if new_hints:
+                    row = conn.execute("SELECT hints FROM sessions WHERE id = ?", (session_id,)).fetchone()
+                    if row:
+                        existing = json.loads(row[0]) if row[0] else []
+                        merged = list(dict.fromkeys(existing + new_hints))
+                        conn.execute("UPDATE sessions SET hints = ?, updated_at = datetime('now') WHERE id = ?",
+                                     (json.dumps(merged), session_id))
+                conn.commit()
+            finally:
+                conn.close()
+        else:
+            with self._lock:
+                session = self._data.get(session_id)
+                if session is None:
+                    return
+                if selected_domain:
+                    session["selected_domain"] = selected_domain
+                if new_hints:
+                    existing = session.get("accumulated_hints", [])
+                    session["accumulated_hints"] = list(dict.fromkeys(existing + new_hints))
+                session["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    - Метод cleanup_expired() -> int:
+        if self._storage == "sqlite":
+            conn = self._get_conn()
+            try:
+                cursor = conn.execute("DELETE FROM sessions WHERE expires_at <= datetime('now')")
+                conn.commit()
+                return cursor.rowcount
+            finally:
+                conn.close()
+        else:
+            with self._lock:
+                now = datetime.datetime.now(datetime.timezone.utc)
+                expired = [k for k, v in self._data.items()
+                           if (now - datetime.datetime.fromisoformat(v["created_at"])).total_seconds() > self._ttl]
+                for k in expired:
+                    del self._data[k]
+                return len(expired)
+
+    - Метод delete_session(session_id):
+        if self._storage == "sqlite":
+            conn = self._get_conn()
+            try:
+                conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+                conn.commit()
+            finally:
+                conn.close()
+        else:
+            with self._lock:
+                self._data.pop(session_id, None)
+
+  tests/test_sessions.py
+    - test_sqlite_session_create_and_get(tmp_path):
+        # Создать Config с session_storage="sqlite"
+        # Создать сессию, получить её, проверить данные
+    - test_sqlite_session_expires(tmp_path):
+        # Создать сессию с коротким TTL
+        # Подождать / замокать время
+        # Проверить что get_session возвращает None
+    - test_sqlite_session_cleanup(tmp_path):
+        # Создать несколько сессий, часть истёкших
+        # Вызвать cleanup_expired
+        # Проверить что удалены только истёкшие
+    - test_memory_session_backward_compatibility():
+        # Убедиться что session_storage="memory" работает как раньше
+
+  docs/configuration.md
+    - Добавить описание session_storage: "memory" | "sqlite".
+    - Пояснить разницу поведения.
+
+ТЕСТЫ
+-----
+  python -m pytest tests/test_sessions.py -v
+
+ПРОВЕРКА
+--------
+  1. Установить session_storage="sqlite" в config.json.
+  2. Запустить API, создать сессию через /v1/query.
+  3. Перезапустить API.
+  4. Проверить что сессия доступна (session_id возвращает данные).
+
+================================================================================
+ИЗМЕНЕНИЕ 63: Детекция несвязных подсказок
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+Если пользователь передаёт подсказки, не связанные друг с другом семантически
+(например "техника" и "рецепт борща"), система должна предупредить об этом.
+Финальное описание (раздел 13) описывает алгоритм: вычислить косинусное
+сходство между векторами подсказок и сравнить со порогом.
+
+ПОЧЕМУ ЭТО ВАЖНО
+----------------
+  - помогает пользователю понять, что подсказки противоречат друг другу;
+  - снижает количество некачественных результатов;
+  - повышает доверие к системе.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+  src/config.py
+    - Добавить поле:
+        hints_coherence_threshold: float = 0.2
+    - Валидация: float в [0.0, 1.0]
+
+  src/aggregation.py
+    - Добавить функцию check_hints_coherence(
+          hints: list[str],
+          embedding_model: FastTextWrapper,
+          threshold: float = 0.2
+      ) -> dict:
+        1. Если len(hints) < 2: вернуть {"coherent": True, "reason": "недостаточно подсказок"}.
+        2. Для каждой пары подсказок (i, j) где i < j:
+            vec_i = embedding_model.get_phrase_vector(hints[i])
+            vec_j = embedding_model.get_phrase_vector(hints[j])
+            norm_i = np.linalg.norm(vec_i)
+            norm_j = np.linalg.norm(vec_j)
+            if norm_i > 1e-9 and norm_j > 1e-9:
+                sim = float(np.dot(vec_i, vec_j) / (norm_i * norm_j))
+            else:
+                sim = 0.0
+            pairs.append({"hint_i": hints[i], "hint_j": hints[j], "similarity": sim})
+        3. avg_sim = sum(p["similarity"] for p in pairs) / len(pairs)
+        4. Если avg_sim < threshold:
+            return {
+                "coherent": False,
+                "avg_similarity": avg_sim,
+                "pairs": pairs,
+                "reason": f"Среднее сходство подсказок ({avg_sim:.2f}) ниже порога ({threshold})"
+            }
+        5. Иначе: вернуть {"coherent": True, "avg_similarity": avg_sim, "pairs": pairs}
+
+  main.py
+    - В run_pipeline, после предобработки (Шаг 1), перед векторизацией:
+        if hints and len(hints) >= 2 and embedding_model is not None:
+            coherence = check_hints_coherence(hints, embedding_model, cfg.hints_coherence_threshold)
+            if not coherence["coherent"]:
+                warnings_list.append(
+                    f"Подсказки имеют низкую семантическую связность "
+                    f"(сходство {coherence['avg_similarity']:.2f} < {cfg.hints_coherence_threshold}). "
+                    f"Результаты могут быть неточными."
+                )
+                logger.info("Несвязные подсказки: %s", coherence["reason"])
+
+  src/api.py
+    - В _api_run_pipeline: аналогичная логика (вызвать check_hints_coherence
+      и добавить warning в результат).
+
+  tests/test_aggregation.py
+    - test_check_hints_coherent相近ные_подсказки():
+        # "техника" и "инструмент" — высокое сходство
+        # Ожидаем coherent=True
+    - test_check_hints_incoherent():
+        # "техника" и "рецепт" — низкое сходство
+        # Ожидаем coherent=False
+    - test_check_hints_single_hint():
+        # Одна подсказка — всегда coherent
+    - test_check_hints_empty():
+        # Пустой список — всегда coherent
+
+  docs/api.md
+    - Добавить описание warning "Подсказки имеют низкую семантическую связность"
+      в секции "Предупреждения (warnings)".
+
+ТЕСТЫ
+-----
+  python -m pytest tests/test_aggregation.py -v -k coherence
+
+ПРОВЕРКА
+--------
+  curl -X POST http://localhost:8000/v1/query \
+       -H "Content-Type: application/json" \
+       -d '{"term":"ключ","hints":["техника","рецепт борща"]}'
+  Ответ содержит warning о низкой связности подсказок.
+
+================================================================================
+ИЗМЕНЕНИЕ 64: Доменный фильтр в API
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+При неоднозначном запросе (ambiguous) пользователь должен иметь возможность
+выбрать домен и передать его в следующем запросе. Финальное описание
+(раздел 19.3) описывает параметр selected_domain. В main.py этот параметр
+уже передаётся в run_pipeline, но API-эндпоинт /v1/query не поддерживает
+его в Pydantic-схеме — он просто игнорируется.
+
+ПОЧЕМУ ЭТО ВАЖНО
+----------------
+  - позволяет разрешать неоднозначность терминов через API;
+  - даёт клиенту явный контроль над выбором домена;
+  - реализует сценарий из раздела 19 финального описания.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+  src/api.py
+    - Добавить в QueryRequest поле:
+        selected_domain: str | None = Field(None, description="Выбранный домен при неоднозначности")
+    - В эндпоинте POST /v1/query передавать selected_domain в _api_run_pipeline:
+        result = await asyncio.to_thread(
+            _api_run_pipeline,
+            body.term,
+            hints,
+            body.debug,
+            body.min_confidence,
+            _cfg,
+            ...,
+            body.session_id,
+            _metrics,
+            selected_domain=body.selected_domain,  # НОВЫЙ ПАРАМЕТР
+        )
+    - В QueryResponse добавить поле:
+        selected_domain: str | None = None
+
+  src/api.py — _api_run_pipeline
+    - Добавить параметр selected_domain: str | None = None.
+    - Передать его как domain_filter в kb.search_similar_concepts():
+        candidates = kb.search_similar_concepts(
+            query_vector,
+            min_confidence=effective_min_confidence,
+            max_candidates=cfg.max_candidates,
+            domain_filter=selected_domain,  # НОВЫЙ ПАРАМЕТР
+        )
+    - Если selected_domain задан и кандидатов 0:
+        warnings_list.append(f"Домен '{selected_domain}' не содержит подходящих понятий.")
+
+  main.py — run_pipeline
+    - Уже принимает selected_domain, но нужно убедиться что он передаётся
+      в kb.search_similar_concepts как domain_filter.
+    - Проверить текущую реализацию: если selected_domain передаётся но
+      не используется как domain_filter — исправить.
+
+  src/knowledge_base.py
+    - Проверить что search_similar_concepts принимает domain_filter.
+      Если нет — добавить параметр и реализовать фильтрацию:
+        if domain_filter:
+            concepts = [c for c in concepts if c.get("domain") == domain_filter]
+            if not concepts:
+                logger.warning("Домен '%s' не найден или пуст", domain_filter)
+                # Повторить без фильтра
+
+  tests/test_api.py
+    - test_query_with_selected_domain(client):
+        response = client.post("/v1/query", json={
+            "term": "ключ",
+            "selected_domain": "музыка"
+        })
+        assert response.status_code == 200
+        # Домен в ответе должен быть "музыка" (если есть такие понятия)
+    - test_query_ambiguous_then_domain_filter(client):
+        # Сначала запрос без домена -> ambiguous
+        # Затем с selected_domain -> ok
+
+  docs/api.md
+    - Добавить описание selected_domain в POST /v1/query.
+    - Пример сценария: сначала ambiguous, затем выбор домена.
+
+ТЕСТЫ
+-----
+  python -m pytest tests/test_api.py tests/test_pipeline.py -v
+
+ПРОВЕРКА
+--------
+  1. Запрос без домена для многозначного термина -> ambiguous.
+  2. Запрос с selected_domain -> ok, параметры из выбранного домена.
+
+================================================================================
+ИЗМЕНЕНИЕ 65: Структурированное JSON-lines логирование
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+Сейчас логи форматируются как простой текст: "[2026-07-02 12:00:00] INFO ...".
+Финальное описание (раздел 27.3) требует JSON-lines формат для машинного
+парсинга: каждая строка — валидный JSON-объект с полями ts, level, logger, msg
+и дополнительными контекстными полями.
+
+ПОЧЕМУ ЭТО ВАЖНО
+----------------
+  -allows централизованный сбор логов (ELK, Loki, CloudWatch);
+  - упрощает фильтрацию и поиск по логам;
+  - структурированные данные便于 анализ и алертинг.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+  src/utils.py
+    - Добавить класс JSONFormatter(logging.Formatter):
+        class JSONFormatter(logging.Formatter):
+            """Форматтер: каждая строка лога — валидный JSON."""
+
+            def format(self, record: logging.LogRecord) -> str:
+                log_data = {
+                    "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S.%fZ"),
+                    "level": record.levelname,
+                    "logger": record.name,
+                    "msg": record.getMessage(),
+                }
+                # Добавляем дополнительные поля из record
+                for key in ("term", "hints", "elapsed_ms", "n_concepts",
+                            "request_id", "status", "concept_id", "path"):
+                    val = getattr(record, key, None)
+                    if val is not None:
+                        log_data[key] = val
+                # Exc_info
+                if record.exc_info and record.exc_info[0]:
+                    log_data["exception"] = self.formatException(record.exc_info)
+                return json.dumps(log_data, ensure_ascii=False)
+
+  src/config.py
+    - Добавить поле:
+        log_format: str = "text"  # "text" | "json"
+    - Валидация: log_format in ("text", "json")
+
+  main.py — _setup_logging
+    - Добавить параметр log_format: str = "text".
+    - Если log_format == "json":
+        formatter = JSONFormatter()
+    - Иначе:
+        formatter = logging.Formatter(LOG_FORMAT, DATE_FMT)
+    - Применить formatter к StreamHandler и RotatingFileHandler.
+
+  src/api.py — _configure_api_logging
+    - Аналогично: если cfg.log_format == "json" — использовать JSONFormatter.
+
+  tests/test_utils.py (НОВЫЙ ФАЙЛ)
+    - test_json_formatter_output():
+        logger = logging.getLogger("test")
+        handler = logging.StreamHandler()
+        handler.setFormatter(JSONFormatter())
+        logger.addHandler(handler)
+        logger.info("Test message", extra={"term": "ключ"})
+        # Проверить что вывод — валидный JSON
+        # Проверить наличие полей ts, level, logger, msg, term
+    - test_json_formatter_with_exception():
+        try:
+            raise ValueError("test error")
+        except ValueError:
+            logger.exception("Error occurred")
+        # Проверить наличие поля exception в JSON
+
+  docs/configuration.md
+    - Добавить описание log_format: "text" | "json".
+    - Пример JSON-lines лога.
+
+  README.md
+    - Добавить информацию о JSON-lines логировании.
+
+ТЕСТЫ
+-----
+  python -m pytest tests/test_utils.py -v
+
+ПРОВЕРКА
+--------
+  1. Установить log_format="json" в config.json.
+  2. Запустить main.py или API.
+  3. Проверить что строки в logs/ — валидный JSON.
+  4. Пример строки:
+     {"ts":"2026-07-02T12:00:00.123456Z","level":"INFO","logger":"ai_terminator","msg":"Запуск пайплайна: term='ключ'"}
+
+================================================================================
+ИТОГОВАЯ ПРОВЕРКА ВСЕГО БЛОКА 61-65
+================================================================================
+
+1. Прогон всех тестов:
+   python -m pytest tests/ -v --tb=short
+   Ожидание: 0 FAILED, 0 ERROR.
+
+2. Проверка пакетной обработки:
+   curl -X POST http://localhost:8000/v1/process_batch \
+        -H "Content-Type: application/json" \
+        -d '{"requests":[{"term":"ключ"}]}'
+   Ожидание: "total": 1, "successful": 1.
+
+3. Проверка доменного фильтра:
+   curl -X POST http://localhost:8000/v1/query \
+        -d '{"term":"ключ","selected_domain":"музыка"}'
+   Ожидание: параметры из домена "музыка".
+
+4. Проверка несвязных подсказок:
+   curl -X POST http://localhost:8000/v1/query \
+        -d '{"term":"ключ","hints":["техника","рецепт"]}'
+   Ожидание: warning о низкой связности.
+
+5. Проверка JSON-логов:
+   Установить log_format="json", запустить, проверить logs/.
+
+6. Обратная совместимость:
+   Старые тесты по-прежнему проходят.
+   API без новых параметров работает как раньше.
+
+================================================================================

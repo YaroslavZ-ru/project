@@ -1,0 +1,527 @@
+ОБЯЗАТЕЛЬНО ДЛЯ ИИ: ВСЁ ЧТО НАПИСАНО В ЭТОМ ФАЙЛЕ — РЕКОМЕНДАЦИИ, А НЕ ПРИКАЗЫ.
+ПРИМЕРЫ КОДА — ТОЛЬКО ИЛЛЮСТРАЦИИ НАМЕРЕНИЯ, НЕ КОПИРОВАТЬ БУКВАЛЬНО.
+ПИШИТЕ КАК ЛУЧШЕ, ЕСЛИ ЗНАЕТЕ. ГЛАВНОЕ — СОБЛЮДАТЬ ОПИСАННОЕ ПОВЕДЕНИЕ И СТРУКТУРУ.
+
+================================================================================
+План реализации AI-Terminator — Изменения 81-85
+ФИНАЛЬНАЯ ВЕРСИЯ 02.07.2026
+================================================================================
+
+КОНТЕКСТ ЭТОГО ПЛАНА
+--------------------
+Предыдущие планы (55-80) покрывают основную функциональность, оптимизацию
+и исправления. Этот блок 81-85 посвящён улучшению скриптов импорта/экспорта,
+тестирования и потокобезопасности — пунктам из раздела 32 финального описания.
+
+================================================================================
+ЧТО УЖЕ ЕСТЬ (после изменений 1-80)
+================================================================================
+
+  src/knowledge_base.py  — KnowledgeBase (save_concept, update_all_embeddings,
+                           search_similar_concepts, get_all_concepts)
+  src/aggregation.py     — aggregate_parameters, detect_ambiguity
+  src/sessions.py        — SessionManager
+  src/config.py          — Config (все поля)
+  scripts/update_kb.py   — импорт понятий из JSON/CSV
+  scripts/export_kb.py   — экспорт в JSON (и CSV в плане 72)
+  scripts/evaluate.py    — оценка Precision@5
+  scripts/build_synonyms.py — заглушка конвертации синонимов
+  scripts/init_db.py     — инициализация схемы БД
+
+================================================================================
+ИЗМЕНЕНИЕ 81: update_all_embeddings — thread safety и partial commit
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Привести update_all_embeddings() в соответствии с разделом 32.2
+финального описания: commit() после каждого понятия (partial save),
+инвалидация кэша под _matrix_lock, обработка ошибок.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+Сейчас при ошибке одного понятия откатываются ВСЕ изменения (один
+большой commit). Partial commit позволяет сохранить успешно
+обработанные понятия и продолжить с ошибочными.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+src/knowledge_base.py — update_all_embeddings():
+
+  ИЛЛЮСТРАЦИЯ:
+    def update_all_embeddings(self) -> int:
+        """Пересчитать эмбеддинги всех понятий.
+
+        commit() после каждого понятия (partial save).
+        При ошибке одного — лог ERROR и продолжение.
+        В конце — инвалидация кэша под _matrix_lock.
+
+        Returns:
+            Количество успешно обновлённых понятий.
+        """
+        if self._embedding_model is None:
+            raise RuntimeError("эмбеддинг-модель не задана")
+
+        rows = self._conn.execute("SELECT id, term FROM concepts").fetchall()
+        updated = 0
+        for row in rows:
+            try:
+                blob = self._vector_to_blob(
+                    self.compute_concept_embedding(row["term"])
+                )
+                self._conn.execute(
+                    "UPDATE concepts SET embedding=? WHERE id=?",
+                    (blob, row["id"])
+                )
+                self._conn.commit()  # partial save после каждого
+                updated += 1
+            except Exception as exc:
+                self.logger.error(
+                    "Ошибка обновления эмбеддинга для %s: %s",
+                    row["id"], exc
+                )
+                self._conn.rollback()  # откат только этого понятия
+                continue
+
+        # Инвалидация кэша под _matrix_lock
+        with self._matrix_lock:
+            self._concepts_cache = None
+            self._embeddings_matrix = None
+            self._matrix_concept_ids = None
+
+        self.logger.info("Пересчитано эмбеддингов: %d/%d", updated, len(rows))
+        return updated
+
+  ВАЖНО:
+    - self._conn используется тот же (check_same_thread=False).
+    - rollback() откатывает только последнюю транзакцию.
+    - _matrix_lock захватывается ТОЛЬКО для инвалидации в конце.
+
+ТЕСТЫ
+-----
+  tests/test_knowledge_base.py:
+    - test_update_all_embeddings_partial_commit(tmp_path):
+        # Создать БД с 3 понятиями
+        # Замокать compute_concept_embedding так чтобы второе падало
+        # Вызвать update_all_embeddings
+        # Проверить что 2 из 3 обновлены
+
+    - test_update_all_embeddings_invalidates_cache():
+        # Вызвать update_all_embeddings
+        # Проверить что _concepts_cache is None
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  python -m scripts.update_kb --force (если есть данные)
+  Проверить что ошибки логируются но процесс продолжается.
+
+================================================================================
+ИЗМЕНЕНИЕ 82: CSV update_kb.py — term+domain как ключ
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Уточнить поведение scripts/update_kb.py при импорте CSV: ключ понятия =
+(term, domain). Разные domain для одного term -> разные понятия.
+Одинаковый term+domain в нескольких строках -> параметры объединяются.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+Раздел 32.4 финального описания явно описывает это поведение.
+Сейчас это может работать иначе (только по term или по term+domain без
+объединения параметров).
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+scripts/update_kb.py — алгоритм импорта CSV:
+
+  ИЛЛЮСТРАЦИЯ:
+    # 1. Сгруппировать строки по (term, domain)
+    groups: dict[tuple[str, str], list[dict]] = {}
+    for row in csv_reader:
+        term = row["term"].strip()
+        domain = row["domain"].strip()
+        key = (term, domain)
+        if key not in groups:
+            groups[key] = []
+        groups[key].append(row)
+
+    # 2. Для каждой группы объединить параметры
+    for (term, domain), rows in groups.items():
+        params = []
+        for row in rows:
+            param_name = row.get("param_name", "").strip()
+            if param_name:
+                params.append({
+                    "name": param_name,
+                    "label_ru": row.get("param_label_ru", ""),
+                    "type": row.get("param_type", "string"),
+                    "unit": row.get("param_unit") or None,
+                    "description": row.get("param_description") or None,
+                })
+
+        # 3. Дедупликация параметров по name
+        seen = set()
+        unique_params = []
+        for p in params:
+            if p["name"] not in seen:
+                seen.add(p["name"])
+                unique_params.append(p)
+
+        # 4. Сохранить
+        kb.save_concept(term, domain, unique_params)
+
+  CSV заголовок:
+    term,domain,param_name,param_label_ru,param_type,param_unit,param_description
+
+  Пример CSV:
+    "ключ гаечный","слесарный инструмент","size_mm","Размер (мм)","float","мм","Внутренний диаметр"
+    "ключ гаечный","слесарный инструмент","material","Материал","string","","Сталь, хром-ванадий"
+    "ключ","музыка","clef_type","Тип ключа","enum","","скрипичный, басовый"
+
+ТЕСТЫ
+-----
+  tests/test_update_kb.py:
+    - test_csv_same_term_different_domain():
+        # "ключ","музыка" и "ключ","техника" -> 2 понятия
+        # Проверить что создано 2 концепта
+
+    - test_csv_same_term_domain_merges_params():
+        # Две строки с одним term+domain -> параметры объединены
+        # Проверить что у концепта 2 параметра
+
+    - test_csv_deduplicates_params():
+        # Две строки с одним param_name -> один параметр
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  1. Создать CSV с 3 строками (один term, два domain + дубль param).
+  2. Запустить python -m scripts.update_kb --input test.csv --format csv --force.
+  3. Проверить что создано 2 понятия, параметры объединены.
+
+================================================================================
+ИЗМЕНЕНИЕ 83: evaluate.py — формат eval_dataset.json и Context Accuracy
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Привести scripts/evaluate.py в соответствие с разделом 32.6 финального
+описания: формат data/eval_dataset.json, вычисление Precision@5 и
+Context Accuracy.
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+Сейчас evaluate.py может использовать другой формат данных или не
+вычислять Context Accuracy. Финальное описание требует:
+  - expected_domain для проверки определения домена
+  - expected_params для Precision@5
+  - Context Accuracy = % запросов с правильным доменом
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+data/eval_dataset.json — формат:
+  [
+    {
+      "term": "ключ гаечный",
+      "hints": ["техника"],
+      "expected_domain": "слесарный инструмент",
+      "expected_params": ["material", "size_mm", "torque_nm"]
+    },
+    {
+      "term": "ключ скрипичный",
+      "hints": ["музыка"],
+      "expected_domain": "музыка",
+      "expected_params": ["clef_type", "staff_position"]
+    }
+  ]
+
+scripts/evaluate.py — алгоритм:
+  ИЛЛЮСТРАЦИЯ:
+    import json
+    from pathlib import Path
+    from main import run_pipeline, _init_components
+    from src.config import Config
+
+    def evaluate(config_path: str, dataset_path: str) -> dict:
+        cfg = Config.from_json(config_path)
+        components = _init_components(cfg)
+        dataset = json.loads(Path(dataset_path).read_text(encoding="utf-8"))
+
+        total = len(dataset)
+        precision_sum = 0.0
+        domain_correct = 0
+
+        for item in dataset:
+            result = run_pipeline(
+                term=item["term"],
+                hints=item.get("hints", []),
+                debug=False,
+                min_confidence=None,
+                cfg=cfg,
+                *components
+            )
+
+            # Context Accuracy
+            domain = result.get("selected_context", {}).get("domain", "")
+            if domain == item.get("expected_domain"):
+                domain_correct += 1
+
+            # Precision@5
+            predicted_params = [p["name"] for p in result.get("parameters", [])[:5]]
+            expected = set(item.get("expected_params", []))
+            hits = sum(1 for p in predicted_params if p in expected)
+            precision_sum += hits / 5.0
+
+        context_accuracy = domain_correct / total if total > 0 else 0.0
+        avg_precision = precision_sum / total if total > 0 else 0.0
+
+        return {
+            "total_cases": total,
+            "precision_at_5": round(avg_precision, 4),
+            "context_accuracy": round(context_accuracy, 4),
+            "domain_correct": domain_correct,
+            "domain_incorrect": total - domain_correct,
+        }
+
+  Целевые показатели (из раздела 26):
+    Precision@5 >= 0.7
+    Context Accuracy >= 0.7
+
+ТЕСТЫ
+-----
+  tests/test_evaluate.py (НОВЫЙ ФАЙЛ):
+    - test_evaluate_dataset_format():
+        # Проверить что eval_dataset.json существует и валиден
+
+    - test_evaluate_returns_precision_and_context():
+        # Запустить evaluate на мини-датасете
+        # Проверить что есть ключи precision_at_5, context_accuracy
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  python -m scripts.evaluate --config configs/config.json --dataset data/eval_dataset.json
+  Вывод: Precision@5: X.XX, Context Accuracy: X.XX
+
+================================================================================
+ИЗМЕНЕНИЕ 84: build_synonyms.py — конвертация RuWordNet
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Реализовать scripts/build_synonyms.py для конвертации данных RuWordNet
+в формат data/synonyms.json. Финальное описание (раздел 32.7).
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+RuWordNet — крупнейший русскоязычный лексикон с синсетами, гиперонимами
+и гипонимами. Конвертация в synonyms.json позволяет системе использовать
+качественные синонимы без ручного составления словаря.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+scripts/build_synonyms.py:
+
+  Зависимость: pip install ruwordnet (опциональная).
+
+  ИЛЛЮСТРАЦИЯ:
+    import json
+    import sys
+    from pathlib import Path
+
+    _RUWORDNET_AVAILABLE = True
+    try:
+        from ruwordnet import RuWordNet
+    except ImportError:
+        _RUWORDNET_AVAILABLE = False
+
+    def build_synonyms(output_path: Path) -> dict:
+        if not _RUWORDNET_AVAILABLE:
+            print("Ошибка: ruwordnet не установлен. pip install ruwordnet")
+            sys.exit(1)
+
+        wn = RuWordNet()
+        synonyms_dict = {}
+
+        for synset in wn.get_synsets():
+            # Лемматизировать название синсета
+            lemma = lemmatizer.lemmatize_word(synset.name.lower())
+            if not lemma:
+                continue
+
+            # Синонимы из синсета (weight=0.8)
+            for word in synset.words:
+                word_lemma = lemmatizer.lemmatize_word(word.name.lower())
+                if word_lemma and word_lemma != lemma:
+                    if lemma not in synonyms_dict:
+                        synonyms_dict[lemma] = []
+                    synonyms_dict[lemma].append({
+                        "word": word_lemma,
+                        "weight": 0.8
+                    })
+
+            # Гиперонимы (weight=0.5)
+            for hyper in synset.hypernyms:
+                hyper_lemma = lemmatizer.lemmatize_word(hyper.name.lower())
+                if hyper_lemma and hyper_lemma != lemma:
+                    if lemma not in synonyms_dict:
+                        synonyms_dict[lemma] = []
+                    synonyms_dict[lemma].append({
+                        "word": hyper_lemma,
+                        "weight": 0.5
+                    })
+
+        # Дедупликация
+        for lemma in synonyms_dict:
+            seen = set()
+            unique = []
+            for s in synonyms_dict[lemma]:
+                if s["word"] not in seen:
+                    seen.add(s["word"])
+                    unique.append(s)
+            synonyms_dict[lemma] = unique
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            json.dumps(synonyms_dict, ensure_ascii=False, indent=2),
+            encoding="utf-8"
+        )
+        return {"synonyms_count": len(synonyms_dict), "saved_to": str(output_path)}
+
+  Альтернатива без RuWordNet:
+    Вручную заполнить data/synonyms.json для ключевых доменов.
+    Формат:
+      {
+        "ключ": [
+          {"word": "инструмент", "weight": 0.8},
+          {"word": "отмычка", "weight": 0.4}
+        ]
+      }
+
+ТЕСТЫ
+-----
+  tests/test_build_synonyms.py (НОВЫЙ ФАЙЛ):
+    - test_build_synonyms_creates_json(tmp_path):
+        # Замокать RuWordNet
+        # Вызвать build_synonyms
+        # Проверить что JSON создан
+
+    - test_build_synonyms_format():
+        # Проверить формат: {lemma: [{word, weight}]}
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  pip install ruwordnet
+  python -m scripts.build_synonyms --output data/synonyms.json
+  Проверить что synonyms.json создан и содержит синонимы.
+
+================================================================================
+ИЗМЕНЕНИЕ 85: SearchCache — потокобезопасность через threading.Lock
+================================================================================
+
+ЧТО НУЖНО СДЕЛАТЬ
+-----------------
+Убедиться что кэш результатов поиска в KnowledgeBase использует
+threading.Lock для всех операций. Финальное описание (раздел 32.8).
+
+ПОЧЕМУ ЭТО НУЖНО
+----------------
+При параллельных FastAPI-запросах (asyncio.to_thread) одновременные
+записи/чтения OrderedDict без лока приводят к race condition.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+src/knowledge_base.py — кэш поиска:
+
+  ИЛЛЮСТРАЦИЯ:
+    from collections import OrderedDict
+    import threading
+    import time
+
+    class SearchCache:
+        def __init__(self, maxsize: int, ttl_seconds: int = 300):
+            self._cache: OrderedDict = OrderedDict()
+            self._maxsize = maxsize
+            self._ttl = ttl_seconds
+            self._lock = threading.Lock()
+
+        def get(self, key: tuple) -> list | None:
+            with self._lock:
+                entry = self._cache.get(key)
+                if entry is None:
+                    return None
+                result, ts = entry
+                # Проверка TTL
+                if self._ttl > 0 and (time.time() - ts) > self._ttl:
+                    del self._cache[key]
+                    return None
+                # LRU: перемещаем в конец
+                self._cache.move_to_end(key)
+                return result
+
+        def put(self, key: tuple, result: list) -> None:
+            with self._lock:
+                if len(self._cache) >= self._maxsize:
+                    self._cache.popitem(last=False)
+                self._cache[key] = (result, time.time())
+
+        def clear(self) -> None:
+            with self._lock:
+                self._cache.clear()
+
+  Интеграция в KnowledgeBase:
+    self._search_cache = SearchCache(
+        maxsize=config.search_cache_size,
+        ttl_seconds=config.search_cache_ttl_seconds
+    )
+
+  Ключ кэша (из раздела 10.7):
+    (hash(query_vector.tobytes()), min_confidence, max_candidates, domain_filter)
+
+  Инвалидация:
+    При save_concept или update_all_embeddings -> self._search_cache.clear()
+
+ТЕСТЫ
+-----
+  tests/test_knowledge_base.py:
+    - test_search_cache_thread_safety():
+        # Запустить 10 потоков одновременно пишущих в кэш
+        # Проверить что нет исключений
+
+    - test_search_cache_clear_invalidation():
+        # Добавить запись
+        # Вызвать clear()
+        # Проверить что get возвращает None
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  1. Запустить API с несколькими worker'ами.
+  2. Отправить 10 параллельных запросов.
+  3. Проверить что нет ошибок в логах.
+
+================================================================================
+ИТОГОВАЯ ПРОВЕРКА ВСЕГО БЛОКА 81-85
+================================================================================
+
+1. Прогон всех тестов:
+   python -m pytest tests/ -v --tb=short
+   Ожидание: 0 FAILED, 0 ERROR.
+
+2. Проверка update_all_embeddings:
+   Запустить с ошибочными данными -> partial save, не полный rollback.
+
+3. Проверка CSV update_kb:
+   Импортировать CSV с одним term, двумя domain -> 2 понятия.
+
+4. Проверка evaluate.py:
+   python -m scripts.evaluate -> Precision@5 и Context Accuracy.
+
+5. Проверка build_synonyms:
+   pip install ruwordnet && python -m scripts.build_synonyms
+
+6. Проверка SearchCache:
+   Параллельные запросы -> без ошибок.
+
+7. Обратная совместимость:
+   Старые тесты по-прежнему проходят.
+
+================================================================================

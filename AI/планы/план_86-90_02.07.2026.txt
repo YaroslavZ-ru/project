@@ -1,0 +1,900 @@
+ОБЯЗАТЕЛЬНО ДЛЯ ИИ: ВСЁ ЧТО НАПИСАНО В ЭТОМ ФАЙЛЕ — РЕКОМЕНДАЦИИ, А НЕ ПРИКАЗЫ.
+ПРИМЕРЫ КОДА — ТОЛЬКО ИЛЛЮСТРАЦИИ НАМЕРЕНИЯ, НЕ КОПИРОВАТЬ БУКВАЛЬНО.
+ПИШИТЕ КАК ЛУЧШЕ, ЕСЛИ ЗНАЕТЕ. ГЛАВНОЕ — СОБЛЮДАТЬ ОПИСАННОЕ ПОВЕДЕНИЕ И СТРУКТУРУ.
+
+================================================================================
+План реализации AI-Terminator — Изменения 86-90
+ФИНАЛЬНАЯ ВЕРСИЯ 02.07.2026
+================================================================================
+
+================================================================================
+ЧТО УЖЕ ЕСТЬ (после изменений 1-85)
+================================================================================
+
+Полностью реализованы все модули пайплайна:
+  src/config.py          — Config (все поля, from_json, for_environment)
+  src/text_cleaner.py    — clean_text
+  src/lemmatizer.py      — Lemmatizer (синглтон, LRU-кэш, threading.Lock)
+  src/synonyms.py        — SynonymDict
+  src/preprocess.py      — preprocess (= preprocess_full), preprocess_base
+  src/embeddings.py      — FastTextWrapper (ленивая загрузка, fallback, LRU-кэш)
+  src/vectorize.py       — vectorize (float64 → float32)
+  src/cache.py           — QueryVectorCache (LRU, thread-safe)
+  src/knowledge_base.py  — KnowledgeBase (search_similar_concepts, FAISS,
+                           матричный поиск, кэш поиска с TTL, save_concept,
+                           compute_concept_embedding, update_all_embeddings,
+                           get_all_concepts, get_related_concepts,
+                           load_domain_centroids, get_closest_domain,
+                           _embeddings_matrix с thread-safe доступом,
+                           _maybe_rebuild_faiss)
+  src/aggregation.py     — aggregate_parameters, detect_ambiguity,
+                           determine_context, generate_clarification_questions
+  src/fallback.py        — fallback_response, detect_domain
+  src/generative.py      — GenerativeExpander (expand)
+  src/sessions.py        — SessionManager (create_session, get_session,
+                           update_session, delete_session, cleanup_expired,
+                           session_storage="memory"|"sqlite")
+  src/metrics.py         — MetricsCollector (record_request, cache_hit/miss,
+                           get_summary, get_prometheus_text)
+  src/utils.py           — timed (try/finally), прочие утилиты
+  src/api.py             — FastAPI: POST /v1/query, POST /v1/save_concept,
+                           POST /v1/feedback, POST /process_batch,
+                           GET /v1/health, GET /v1/metrics, GET /v1/kb/stats,
+                           rate limiting, API key, Pydantic-схемы, CORS,
+                           asyncio.to_thread для ML-вызовов
+  src/observability.py   — трассировка запросов
+  src/admin.py           — администрирование KB
+  src/feedback.py        — обратная связь
+
+  main.py                — run_pipeline (полный конвейер шагов 0-5),
+                           _init_components (lemmatizer, synonym_dict,
+                           embedding_model, vector_cache, kb, metrics,
+                           generative, sessions), CLI (--config, --debug,
+                           --once, --input)
+
+  scripts/               — init_db, seed_data, setup_all, build_fallback,
+                           build_faiss, build_synonyms, build_centroids,
+                           update_kb, update_relations, evaluate, profile,
+                           export_kb, run_api, healthcheck, backup_db,
+                           restore_db, regression
+
+  configs/               — config.json, development.json, production.json,
+                           domain_keywords.json, domain_templates.json
+
+  tests/                 — тесты для всех модулей (20+ файлов)
+
+  Инфраструктура:        — docker-compose.yml, docker-compose.dev.yml,
+                           .github/workflows/ci.yml, release.yml,
+                           docs/index.md, api.md, configuration.md,
+                           scripts.md, CHANGELOG.md, README.md
+
+================================================================================
+ПРИЧИНЫ ВЫБОРА ИЗМЕНЕНИЙ 86-90
+================================================================================
+
+Проанализировав финальное описание (32 раздела) и все 17 существующих планов,
+выявлены пять направлений, которые либо не полностью покрыты существующими
+планами, либо требуют финальной доработки:
+
+1. ИЗМЕРЕНИЕ ПРОИЗВОДИТЕЛЬНОСТИ — описание (раздел 25.1) задаёт конкретные
+   пороговые значения (предобработка < 5 мс, pipeline < 300 мс и т.д.),
+   но нет плана по верификации этих требований через профилирование.
+
+2. ИНТЕГРАЦИОННЫЕ E2E ТЕСТЫ — описание (раздел 19 в tests/) требует
+   test_pipeline.py, проверяющий полный конвейер от входа до выхода
+   с реальными данными, что выходит за рамки unit-тестов.
+
+3. ВАЛИДАЦИЯ КОНФИГА — описание (раздел 27.4) описывает расширенную
+   валидацию при загрузке (проверка совместимости use_faiss/faiss_index_path,
+   проверка доступности transformers при use_generative), которая может
+   быть не полностью реализована в текущем from_json.
+
+4. STANDALONE РЕЖИМ CLI — описание (раздел 7.1) детально описывает
+   циклический STDIN-режим и флаг --once. Это ключевой интерфейс
+   для отладки и тестирования без API.
+
+5. ФИНАЛЬНАЯ ДОКУМЕНТАЦИЯ И РЕЛИЗ — описание содержит требования к
+   README, CHANGELOG, MetroFrameworkdeploy, которых нет в отдельном плане.
+
+================================================================================
+ОБЩИЕ ПРИНЦИПЫ ДЛЯ ВСЕХ ИЗМЕНЕНИЙ 86-90
+================================================================================
+
+1. Ничего не ломать: существующая функциональность остаётся рабочей.
+2. Все пути строятся через pathlib.Path.
+3. Логирование через logging.getLogger(__name__).
+4. Type hints Python 3.10+: X | None, list[str].
+5. Опциональные зависимости оборачиваются в try/except ImportError.
+6. encoding="utf-8" везде явно.
+7. Docstring Google-style на русском.
+8. sys.path — ТОЛЬКО внутри if __name__ == "__main__".
+9. Тесты запускаются: python -m pytest tests/ -v
+10. Каждое изменение проверяется: pytest + ручной запуск.
+
+================================================================================
+ИЗМЕНИЕ 86: Профилирование и верификация производительности
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+Финальное описание (раздел 25.1) задаёт конкретные пороги:
+  - Предобработка (Шаг 1): < 5 мс
+  - Векторизация (Шаг 2): < 50 мс (первый), < 1 мс (кэш)
+  - Поиск numpy (Шаг 3): < 20 мс (1000 понятий), < 200 мс (10000)
+  - Агрегация (Шаг 4): < 10 мс
+  - Весь pipeline: < 300 мс (кэш-промах), < 5 мс (полный кэш)
+
+Скрипт scripts/profile.py существует, но нет автоматизированной проверки
+этих порогов и отчёта о соответствии.
+
+ПОЧЕМУ ЭТО ВАЖНО
+-----------------
+Без верификации невозможно утверждать, что система соответствует
+требованиям ТЗ. Профилирование выявляет узкие места до продакшна.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+scripts/profile.py — расширение существующего скрипта:
+
+  Добавить функцию run_benchmark(config_path: str, n: int = 10) -> dict:
+
+    ИЛЛЮСТРАЦИЯ:
+      import time
+      from main import run_pipeline, _init_components
+
+      def run_benchmark(config_path: str, n: int = 10) -> dict:
+          """Запуск бенчмарка и проверка порогов производительности.
+
+          Args:
+            config_path: Путь к config.json.
+            n: Количество запросов для усреднения.
+
+          Returns:
+            Словарь с результатами и статусом прохождения порогов.
+          """
+          cfg = Config.from_json(Path(config_path))
+          components = _init_components(cfg)
+
+          test_queries = [
+              {"term": "ключ", "hints": ["техника"]},
+              {"term": "ключ гаечный", "hints": ["инструмент"]},
+              {"term": "ключ скрипичный", "hints": ["музыка"]},
+              {"term": "bolt", "hints": []},
+              {"term": "резистор", "hints": ["электроника", "ток"]},
+          ]
+
+          timings = {
+              "preprocess_ms": [],
+              "vectorize_ms": [],
+              "search_ms": [],
+              "aggregation_ms": [],
+              "total_ms": [],
+          }
+
+          for _ in range(n):
+              for q in test_queries:
+                  t0 = time.perf_counter()
+                  result = run_pipeline(
+                      term=q["term"],
+                      hints=q.get("hints", []),
+                      debug=False,
+                      min_confidence=None,
+                      cfg=cfg,
+                      *components
+                  )
+                  total = (time.perf_counter() - t0) * 1000
+                  timings["total_ms"].append(total)
+
+          # Вычисление статистики
+          stats = {}
+          for key, values in timings.items():
+              if values:
+                  stats[key] = {
+                      "mean_ms": round(sum(values) / len(values), 2),
+                      "p50_ms": round(sorted(values)[len(values)//2], 2),
+                      "p95_ms": round(sorted(values)[int(len(values)*0.95)], 2),
+                      "p99_ms": round(sorted(values)[int(len(values)*0.99)], 2),
+                  }
+
+          # Проверка порогов (из раздела 25.1)
+          thresholds = {
+              "total_ms": 300,      # весь pipeline < 300 мс
+          }
+          checks = {}
+          for metric, threshold in thresholds.items():
+              if metric in stats:
+                  passed = stats[metric]["mean_ms"] < threshold
+                  checks[metric] = {
+                      "threshold_ms": threshold,
+                      "actual_ms": stats[metric]["mean_ms"],
+                      "passed": passed,
+                  }
+
+          return {
+              "stats": stats,
+              "checks": checks,
+              "all_passed": all(c["passed"] for c in checks.values()),
+          }
+
+    Добавить argparse --benchmark:
+      parser.add_argument("--benchmark", action="store_true",
+                          help="Запустить бенчмарка производительности")
+      parser.add_argument("--n", type=int, default=10,
+                          help="Количество итераций (default: 10)")
+
+    Вывод при --benchmark:
+      {"total_ms": {"mean_ms": 45.2, "p50_ms": 42.1, "p95_ms": 89.3},
+       "checks": {"total_ms": {"threshold_ms": 300, "actual_ms": 45.2, "passed": true}},
+       "all_passed": true}
+
+ТЕСТЫ
+-----
+  tests/test_performance.py (НОВЫЙ ФАЙЛ):
+    - test_benchmark_returns_valid_structure():
+        # run_benchmark возвращает dict с stats и checks
+
+    - test_benchmark_passes_on_small_dataset():
+        # На малом датасете pipeline должен укладываться в 300 мс
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  python -m scripts.profile --benchmark --n 5
+  Убедиться что all_passed == true и timings адекватны.
+
+================================================================================
+ИЗМЕНИЕ 87: Интеграционные E2E тесты (test_pipeline.py)
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+Описание проекта (папка tests/) требует файл test_pipeline.py —
+интеграционный E2E-тест, проверяющий полный конвейер от входа до выхода.
+Существующие unit-тесты проверяют модули по отдельности. E2E-тест
+проверяет их взаимодействие на реальных (или приближённых к реальным) данных.
+
+ПОЧЕМУ ЭТО ВАЖНО
+-----------------
+Unit-тесты с моками не ловят ошибки интеграции: неправильную передачу
+данных между модулями, несовместимые форматы, граничные случаи на стыке.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+  tests/test_pipeline.py:
+
+    Фикстура@pytest.fixture:
+      @pytest.fixture(scope="module")
+      def pipeline_components():
+          """Инициализация компонентов для E2E-тестов.
+
+          Использует реальную (или fallback) модель.
+          Создаётся один раз на модуль для скорости.
+          """
+          cfg = Config.from_json(
+              Path(__file__).parent.parent / "configs" / "config.json"
+          )
+          components = _init_components(cfg)
+          return cfg, components
+
+    Тест 1 — базовый пайплайн:
+      def test_pipeline_basic(pipeline_components):
+          """Проверка что pipeline возвращает правильную структуру."""
+          cfg, components = pipeline_components
+          result = run_pipeline(
+              term="ключ",
+              hints=["техника"],
+              debug=False,
+              min_confidence=None,
+              cfg=cfg,
+              *components
+          )
+          assert result["status"] in ("ok", "ambiguous", "error")
+          assert result["term"] == "ключ"
+          assert "selected_context" in result
+          assert "parameters" in result
+          assert "warnings" in result
+
+    Тест 2 — pipeline с debug:
+      def test_pipeline_debug_mode(pipeline_components):
+          """debug=True добавляет debug_info."""
+          cfg, components = pipeline_components
+          result = run_pipeline(
+              term="ключ",
+              hints=["техника"],
+              debug=True,
+              min_confidence=None,
+              cfg=cfg,
+              *components
+          )
+          assert "debug_info" in result
+          assert "query_vector" in result["debug_info"]
+          assert len(result["debug_info"]["query_vector"]) == 300
+          assert "candidates_raw" in result["debug_info"]
+
+    Тест 3 — неизвестный термин -> fallback:
+      def test_pipeline_unknown_term_fallback(pipeline_components):
+          """Неизвестный термин активирует fallback."""
+          cfg, components = pipeline_components
+          result = run_pipeline(
+              term="абракадабра",
+              hints=[],
+              debug=False,
+              min_confidence=None,
+              cfg=cfg,
+              *components
+          )
+          # Должен быть fallback (status ok, но warnings непусты)
+          assert result["status"] == "ok"
+          assert len(result["warnings"]) > 0
+
+    Тест 4 — пустой термин -> error:
+      def test_pipeline_empty_term():
+          """Пустой термин возвращает error."""
+          cfg = Config.from_json(
+              Path(__file__).parent.parent / "configs" / "config.json"
+          )
+          # Без инициализации компонентов — только preprocess
+          from src.preprocess import preprocess
+          from src.lemmatizer import Lemmatizer
+          lem = Lemmatizer()
+          result = preprocess("", [], cfg, None, lem)
+          assert result["status"] == "error"
+
+    Тест 5 — неоднозначный термин:
+      def test_pipeline_ambiguous(pipeline_components):
+          """Термин из нескольких доменов без подсказок -> ambiguous."""
+          cfg, components = pipeline_components
+          result = run_pipeline(
+              term="ключ",
+              hints=[],
+              debug=False,
+              min_confidence=None,
+              cfg=cfg,
+              *components
+          )
+          # "ключ" встречается в "слесарный инструмент" и "музыка"
+          # Если оба домена найдены с близким confidence -> ambiguous
+          assert result["status"] in ("ok", "ambiguous")
+
+    Тест 6 — кэширование:
+      def test_pipeline_cache_hit(pipeline_components):
+          """Повторный запрос использует кэш (vectorize вызван 1 раз)."""
+          cfg, components = pipeline_components
+          # Первый запрос
+          result1 = run_pipeline(
+              term="ключ",
+              hints=["техника"],
+              debug=False,
+              min_confidence=None,
+              cfg=cfg,
+              *components
+          )
+          # Второй запрос — должен использовать кэш
+          result2 = run_pipeline(
+              term="ключ",
+              hints=["техника"],
+              debug=False,
+              min_confidence=None,
+              cfg=cfg,
+              *components
+          )
+          # Результаты идентичны
+          assert result1["parameters"] == result2["parameters"]
+
+    Тест 7 — hints=None не падает:
+      def test_pipeline_none_hints(pipeline_components):
+          """hints=None обрабатывается как []."""
+          cfg, components = pipeline_components
+          result = run_pipeline(
+              term="ключ",
+              hints=None,
+              debug=False,
+              min_confidence=None,
+              cfg=cfg,
+              *components
+          )
+          assert result["status"] in ("ok", "ambiguous", "error")
+
+    Тест 8 — составной термин:
+      def test_pipeline_compound_term(pipeline_components):
+          """Составной термин корректно обрабатывается."""
+          cfg, components = pipeline_components
+          result = run_pipeline(
+              term="ключ гаечный",
+              hints=["техника", "вращение"],
+              debug=False,
+              min_confidence=None,
+              cfg=cfg,
+              *components
+          )
+          assert result["status"] in ("ok", "ambiguous")
+          assert result["term"] == "ключ гаечный"
+
+    Тест 9 — min_confidence из конфига:
+      def test_pipeline_default_confidence(pipeline_components):
+          """min_confidence=None берётся из конфига."""
+          cfg, components = pipeline_components
+          result = run_pipeline(
+              term="ключ",
+              hints=["техника"],
+              debug=False,
+              min_confidence=None,
+              cfg=cfg,
+              *components
+          )
+          # Не падает, min_confidence взят из cfg
+          assert result["status"] in ("ok", "ambiguous", "error")
+
+    Тест 10 — min_confidence из аргумента:
+      def test_pipeline_custom_confidence(pipeline_components):
+          """min_confidence из аргумента перекрывает конфиг."""
+          cfg, components = pipeline_components
+          result = run_pipeline(
+              term="ключ",
+              hints=["техника"],
+              debug=False,
+              min_confidence=0.9,
+              cfg=cfg,
+              *components
+          )
+          # Высокий порог может не найти кандидатов -> fallback
+          assert result["status"] in ("ok", "ambiguous", "error")
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  python -m pytest tests/test_pipeline.py -v
+  Ожидание: 10 тестов, 0 FAILED.
+
+================================================================================
+ИЗМЕНИЕ 88: Расширенная валидация конфигурации
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+Описание (раздел 27.4) описывает дополнительные проверки при загрузке
+конфига, которые могут отсутствовать в текущем Config.from_json:
+  - Если use_faiss=True и faiss_index_path пуст -> WARNING
+  - Если use_generative=True: проверить доступность transformers/torch
+  - faiss_threshold >= matrix_search_min_concepts
+  - Если use_metrics=True: проверить prometheus_client
+
+ПОЧЕМУ ЭТО ВАЖНО
+-----------------
+Невалидные комбинации конфига приводят к ошибкам при运行时.
+Предварительная проверка экономит время отладки.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+  src/config.py — метод from_json(), добавить после основной валидации:
+
+    ИЛЛЮСТРАЦИЯ:
+      # Проверка совместимости use_faiss и faiss_index_path
+      if data.get("use_faiss") and not data.get("faiss_index_path"):
+          logger.warning(
+              "use_faiss=true, но faiss_index_path пуст. "
+              "FAISS-индекс не будет загружен."
+          )
+
+      # Проверка faiss_threshold vs matrix_search_min_concepts
+      faiss_t = data.get("faiss_threshold", 10_000)
+      matrix_min = data.get("matrix_search_min_concepts", 100)
+      if faiss_t < matrix_min:
+          logger.warning(
+              "faiss_threshold (%d) < matrix_search_min_concepts (%d). "
+              "FAISS будет использоваться при меньшем числе понятий, чем матричный поиск.",
+              faiss_t, matrix_min
+          )
+
+      # Проверка доступности transformers при use_generative
+      if data.get("use_generative"):
+          try:
+              import transformers  # noqa: F401
+              import torch  # noqa: F401
+          except ImportError:
+              logger.warning(
+                  "use_generative=true, но transformers/torch не установлены. "
+                  "Генеративный модуль будет отключён."
+              )
+              data["use_generative"] = False
+
+      # Проверка prometheus_client при use_metrics
+      if data.get("use_metrics"):
+          try:
+              import prometheus_client  # noqa: F401
+          except ImportError:
+              logger.warning(
+                  "use_metrics=true, но prometheus_client не установлен. "
+                  "Метрики Prometheus будут отключены."
+              )
+              data["use_metrics"] = False
+
+    Добавить в Config поля (если отсутствуют):
+      search_cache_size: int = 100
+      search_cache_ttl_seconds: int = 300
+      matrix_search_min_concepts: int = 100
+
+    Валидация новых полей:
+      search_cache_size > 0
+      search_cache_ttl_seconds >= 0
+      matrix_search_min_concepts > 0
+
+  tests/test_config.py:
+    - test_faiss_warning_when_no_index_path():
+        # use_faiss=true, faiss_index_path="" -> warning в логе
+
+    - test_generative_disabled_when_no_torch(monkeypatch):
+        # Имитировать отсутствие transformers -> use_generative=false
+
+    - test_faiss_threshold_less_than_matrix_min():
+        # faiss_threshold=50, matrix_search_min_concepts=100 -> warning
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  1. Запустить с use_faiss=true, faiss_index_path="" -> warning.
+  2. Запустить с use_generative=true без transformers -> use_generative=false.
+  3. python -m pytest tests/test_config.py -v
+
+================================================================================
+ИЗМЕНИЕ 89: Standalone CLI — STDIN loop и --once
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+Описание (раздел 7.1) детально описывает standalone-режим main.py:
+  - Чтение JSON из STDIN в цикле
+  - --once для однократной обработки
+  - Обработка пустых строк, exit/quit
+  - Вывод JSON в stdout + '\n'
+  - Обработка json.JSONDecodeError
+
+Это ключевой интерфейс для отладки без API-сервера.
+
+ПОЧЕМУ ЭТО ВАЖНО
+-----------------
+  - permite тестирование пайплайна через echo/pipe;
+  - удобно для скриптов и автоматизации;
+  - не требует запуска FastAPI-сервера.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+  main.py — блок if __name__ == "__main__":
+
+    Убедиться что реализовано в точности по описанию:
+
+    ИЛЛЮСТРАЦИЯ (структура, не для копирования):
+      if __name__ == "__main__":
+          parser = argparse.ArgumentParser()
+          parser.add_argument("--config", default="configs/config.json")
+          parser.add_argument("--debug", action="store_true")
+          parser.add_argument("--once", action="store_true")
+          args = parser.parse_args()
+
+          cfg = Config.from_json(Path(args.config))
+          components = _init_components(cfg)
+
+          # Warm-up модели
+          _ = embedding_model.get_word_vector('а')
+
+          if args.once:
+              # Однократный режим
+              line = sys.stdin.readline().strip()
+              if not line:
+                  sys.exit(0)
+              try:
+                  data = json.loads(line)
+              except json.JSONDecodeError as e:
+                  print(json.dumps(
+                      {"status": "error", "message": f"Неверный JSON: {e}"},
+                      ensure_ascii=False
+                  ))
+                  sys.exit(1)
+              result = run_pipeline(
+                  term=data["term"],
+                  hints=data.get("hints", []),
+                  debug=args.debug or data.get("debug", False),
+                  min_confidence=data.get("min_confidence"),
+                  cfg=cfg,
+                  *components
+              )
+              print(json.dumps(result, ensure_ascii=False))
+
+          else:
+              # Циклический режим
+              logger.info("Старт standalone режима. Введите JSON или 'exit'.")
+              while True:
+                  try:
+                      line = sys.stdin.readline()
+                  except (EOFError, KeyboardInterrupt):
+                      break
+                  if not line:
+                      break
+                  line = line.strip()
+                  if not line:
+                      continue
+                  if line.lower() in ("exit", "quit"):
+                      break
+                  try:
+                      data = json.loads(line)
+                  except json.JSONDecodeError as e:
+                      print(json.dumps(
+                          {"status": "error", "message": f"Неверный JSON: {e}"},
+                          ensure_ascii=False
+                      ))
+                      continue
+                  if "term" not in data or not data["term"]:
+                      print(json.dumps(
+                          {"status": "error", "message": "Поле 'term' обязательно"},
+                          ensure_ascii=False
+                      ))
+                      continue
+                  result = run_pipeline(
+                      term=data["term"],
+                      hints=data.get("hints", []),
+                      debug=args.debug or data.get("debug", False),
+                      min_confidence=data.get("min_confidence"),
+                      cfg=cfg,
+                      *components
+                  )
+                  print(json.dumps(result, ensure_ascii=False))
+
+  ВАЖНЫЕ ДЕТАЛИ:
+    - Каждый ответ — одна строка JSON + '\n'.
+    - Пустые строки игнорируются.
+    - exit/quit завершают программу.
+    - debug из CLI (--debug) ПЕРЕКРЫВАЕТ debug из JSON.
+    - warm-up модели ПЕРЕД циклом (init_components + get_word_vector('а')).
+
+  tests/test_standalone.py (НОВЫЙ ФАЙЛ):
+    - test_once_mode_processes_one_query():
+        # Эмулировать stdin с одним JSON -> получить ответ
+
+    - test_once_mode_invalid_json():
+        # Невалидный JSON -> {"status":"error","message":"Неверный JSON..."}
+
+    - test_loop_mode_exits_on_exit():
+        # stdin: JSON, "exit" -> программа завершается
+
+    - test_loop_mode_ignores_empty_lines():
+        # stdin: "", "\n", JSON -> обрабатывается только JSON
+
+    - test_loop_mode_continues_after_error():
+        # stdin: невалидный JSON, валидный JSON -> оба обработаны
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  echo '{"term":"ключ","hints":["техника"]}' | python main.py --once
+  -> Вывод: валидный JSON с результатом.
+
+  echo '{"term":"ключ"}' | python main.py --once --debug
+  -> Вывод: JSON с debug_info.
+
+================================================================================
+ИЗМЕНИЕ 90: Финальная документация и подготовка к релизу
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+Проект завершает цикл разработки. Необходимо:
+  1. Проверить полноту README.md
+  2. Проверить CHANGELOG.md
+  3. Убедиться что все эндпоинты API задокументированы
+  4. Проверить docker-compose.yml и Dockerfile
+  5. Проверить .github/workflows/ci.yml
+  6. Подготовить release notes
+
+ПОЧЕМУ ЭТО ВАЖНО
+-----------------
+Документация — часть продукта. Без неё система непригодна
+для передачи другой команде или деплоя.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+  README.md — проверить наличие секций:
+    - Описание проекта и назначение
+    - Быстрый старт (setup_project.py, pip install, init_db, seed_data)
+    - Конфигурация (ссылка на docs/configuration.md)
+    - API (ссылка на docs/api.md)
+    - Скрипты (ссылка на docs/scripts.md)
+    - Тесты (pytest tests/)
+    - Docker (docker-compose up)
+    - License
+
+  CHANGELOG.md — добавить запись для текущей версии:
+    ## [0.1.0] - 2026-07-02
+    ### Added
+    - Полный пайплайн: preprocess → vectorize → search → aggregate → response
+    - REST API на FastAPI с rate limiting и API key
+    - Сессии (in-memory и SQLite)
+    - Генеративное расширение параметров
+    - FAISS-индекс с автоматической пересборкой
+    - Пакетная обработка (POST /process_batch)
+    - Обратная связь (POST /feedback)
+    - Метрики Prometheus
+    - CI/CD, Docker, документация
+
+  docs/ — проверить:
+    - docs/index.md: обзор проекта
+    - docs/api.md: все эндпоинты с примерами запросов/ответов
+    - docs/configuration.md: все поля конфига с описаниями
+    - docs/scripts.md: все скрипты с примерами запуска
+
+  Dockerfile — проверить:
+    - FROM python:3.10-slim
+    - COPY requirements.txt
+    - RUN pip install --no-cache-dir -r requirements.txt
+    - COPY . .
+    - CMD ["python", "-m", "scripts.run_api"]
+
+  docker-compose.yml — проверить:
+    - Сервис web с Dockerfile
+    - Сервис db (PostgreSQL или volume для SQLite)
+    - Healthcheck
+    - Переменные окружения
+
+  .github/workflows/ci.yml — проверить:
+    - Python 3.10
+    - pytest tests/
+    - Linting (ruff или flake8)
+    - Build Docker image
+
+  tests/release_check.py (НОВЫЙ ФАЙЛ):
+    И автоматизированная проверка готовности к релизу:
+
+    ИЛЛЮСТРАЦИЯ:
+      def check_release_readiness(project_root: Path) -> dict:
+          """Проверка готовности проекта к релизу.
+
+          Args:
+            project_root: Корень проекта.
+
+          Returns:
+            Словарь с результатами проверок.
+          """
+          checks = {}
+
+          # 1. README существует и непустой
+          readme = project_root / "README.md"
+          checks["readme_exists"] = readme.exists() and readme.stat().st_size > 100
+
+          # 2. CHANGELOG существует
+          checks["changelog_exists"] = (project_root / "CHANGELOG.md").exists()
+
+          # 3. Все модули src/ импортируются
+          src_modules = [
+              "config", "text_cleaner", "lemmatizer", "synonyms",
+              "preprocess", "embeddings", "vectorize", "cache",
+              "knowledge_base", "aggregation", "fallback", "generative",
+              "sessions", "metrics", "utils", "api",
+          ]
+          import_errors = []
+          for mod in src_modules:
+              try:
+                  __import__(f"src.{mod}")
+              except ImportError as e:
+                  import_errors.append(f"{mod}: {e}")
+          checks["all_modules_import"] = len(import_errors) == 0
+          checks["import_errors"] = import_errors
+
+          # 4. Все скрипты scripts/ существуют
+          scripts = [
+              "init_db", "seed_data", "setup_all", "build_fallback",
+              "build_faiss", "build_synonyms", "update_kb", "evaluate",
+              "profile", "export_kb", "run_api", "healthcheck",
+          ]
+          missing_scripts = [
+              s for s in scripts
+              if not (project_root / "scripts" / f"{s}.py").exists()
+          ]
+          checks["all_scripts_exist"] = len(missing_scripts) == 0
+          checks["missing_scripts"] = missing_scripts
+
+          # 5. configs/config.json валиден
+          try:
+              import json
+              json.loads((project_root / "configs" / "config.json").read_text())
+              checks["config_valid"] = True
+          except Exception:
+              checks["config_valid"] = False
+
+          # 6. Dockerfile существует
+          checks["dockerfile_exists"] = (project_root / "Dockerfile").exists()
+
+          # 7. docker-compose.yml существует
+          checks["docker_compose_exists"] = (
+              project_root / "docker-compose.yml"
+          ).exists()
+
+          checks["all_passed"] = all(
+              v for k, v in checks.items()
+              if k.endswith("_exists") or k in (
+                  "all_modules_import", "all_scripts_exist", "config_valid"
+              )
+          )
+          return checks
+
+    Блок if __name__ == "__main__":
+      import json
+      root = Path(__file__).parent.parent
+      result = check_release_readiness(root)
+      print(json.dumps(result, ensure_ascii=False, indent=2))
+      if not result["all_passed"]:
+          sys.exit(1)
+
+  tests/test_release_check.py:
+    - test_release_check_returns_all_fields():
+        # check_release_readiness возвращает все нужные ключи
+
+ПРОВЕРКА РАБОТОСПОСОБНОСТИ
+--------------------------
+  python -m tests.release_check (или импортировать и вызвать)
+  -> all_passed: true
+
+  docker-compose build && docker-compose up
+  -> Сервис запускается, /v1/health возвращает {"status":"ok"}
+
+================================================================================
+ИТОГОВАЯ ПРОВЕРКА ВСЕГО БЛОКА 86-90
+================================================================================
+
+1. Прогон всех тестов:
+   python -m pytest tests/ -v --tb=short
+   Ожидание: 0 FAILED, 0 ERROR.
+
+2. Профилирование:
+   python -m scripts.profile --benchmark
+   Ожидание: all_passed=true, pipeline < 300 мс.
+
+3. E2E тесты:
+   python -m pytest tests/test_pipeline.py -v
+   Ожидание: 10 тестов пройдены.
+
+4. Валидация конфига:
+   Проверить warning при use_faiss=true без index_path.
+   Проверить отключение use_generative при отсутствии torch.
+
+5. Standalone CLI:
+   echo '{"term":"ключ"}' | python main.py --once
+   -> Валидный JSON.
+
+6. Документация:
+   README.md, CHANGELOG.md, docs/ — проверены.
+   docker-compose build && docker-compose up -> работает.
+
+7. Release check:
+   python -c "from tests.release_check import check_release_readiness; ..."
+   -> all_passed: true.
+
+8. Обратная совместимость:
+   Старые тесты по-прежнему проходят.
+
+================================================================================
+ИТОГ ВСЕХ ПЛАНОВ (1-90)
+================================================================================
+
+После выполнения изменений 86-90 завершается полный цикл планирования
+проекта AI-Terminator:
+
+  Планы 1-5:     Инфраструктура (структура, зависимости, main, config)
+  Планы 6-10:    Шаг 1 — предобработка (lemmatizer, synonyms, cleaner, preprocess)
+  Планы 11-15:   Шаг 2 — векторизация (embeddings, vectorize, cache)
+  Планы 16-19:   Шаги 3-5 — поиск, агрегация, ответ (KB, aggregation, fallback)
+  Планы 20-24:   Расширения (utils, generative, sessions, update_kb, build_fallback)
+  Планы 25-34:   API и тестирование
+  Планы 35-49:   Дополнительные модули и покрытие
+  Планы 50-54:   API-расширения и тесты
+  Планы 55-60:   Продакшен-готовность (наблюдаемость, admin, backup)
+  Планы 61-65:   API-функции (batch, persistent sessions, coherence, logging)
+  Планы 66-70:   Расширения API (save_concept, relations, feedback, ambiguous)
+  Планы 71-75:   Оптимизация (FAISS rebuild, CSV export, multi-worker)
+  Планы 76-80:   Надёжность (fallback fix, TTL, UUID, FAISS small data, M-*)
+  Планы 81-85:   Импорт/экспорт и thread safety
+  Планы 86-90:   Профилирование, E2E тесты, валидация, CLI, документация
+
+ВСЕ 32 РАЗДЕЛА ФИНАЛЬНОГО ОПИСАНИЯ ПОКРЫТЫ ПЛАНАМИ.
+РЕАЛИЗАЦИЯ БУДЕТ ВЫПОЛНЕНА ПО ПЛАНУ.
+
+================================================================================

@@ -1,0 +1,696 @@
+================================================================================
+План реализации AI-Terminator — Изменения 55-60
+ФИНАЛЬНАЯ ВЕРСИЯ 01.07.2026
+================================================================================
+
+КОНТЕКСТ ЭТОГО ПЛАНА
+--------------------
+Проект AI-Terminator прошёл все ключевые этапы разработки: архитектура,
+предобработка, векторизация, поисковый движок, API, оценка качества,
+CI/CD, контейнеризация и документация. Этот новый блок 55-60 направлен на
+повышение эксплуатационной зрелости, поддерживаемости и готовности к
+действительному использованию в продакшене.
+
+ЦЕЛЬ БЛОКА 55-60
+----------------
+Сформировать рабочие операции и продуктовые расширения, которые
+не только поддерживают существующую функциональность, но и делают её
+удобной для команды и безопасной для развертывания:
+  - наблюдаемость и диагностика в реальном времени;
+  - администрирование базы знаний и управление данными;
+  - обратная связь пользователя и уточнение неоднозначных запросов;
+  - оптимизация производительности и регрессия;
+  - безопасность конфигурации и боевое развертывание;
+  - финальная упаковка проекта для выпуска.
+
+================================================================================
+ЧТО УЖЕ ЕСТЬ (после изменений 1-54)
+================================================================================
+
+  - Полностью реализованный ядро пайплайна: preprocess, embeddings,
+    vectorize, knowledge_base, aggregation, fallback, generative,
+    session_manager, ambiguity, relations, centroids.
+  - REST API на FastAPI с /v1/query, /v1/health, /v1/metrics, /v1/kb/stats.
+  - Защита API: rate limiting, API key, Pydantic-ответы,
+    неблокирующие ML-вызовы asyncio.to_thread.
+  - Метрики в памяти и Prometheus-интеграция.
+  - Конфигурация dev/prod, mkdocs-документация, CI/CD, Docker,
+    `docker-compose.yml`, `docker-compose.dev.yml`.
+  - Скрипты управления: init_db, seed_data, setup_all, build_fallback,
+    update_kb, evaluate, profile, healthcheck, run_api, export_kb.
+  - README, CHANGELOG, документация в docs/, полноценное .gitignore.
+
+================================================================================
+ОБЩИЕ ПРИНЦИПЫ ДЛЯ ВСЕГО БЛОКА 55-60
+================================================================================
+
+1. Ничего не ломать: существующая функциональность остаётся рабочей.
+2. Новые возможности вводятся через опциональные флаги конфигурации.
+3. Все пути строятся через pathlib.Path; sys.path.insert — только внутри
+   if __name__ == "__main__".
+4. Логирование остаётся структурированным и пригодным для централизованного
+   сбора и анализа.
+5. Type hints, docstrings Google-style и статическая типизация everywhere.
+6. Все новые скрипты идемпотентны: повторный запуск не ломает данные.
+7. Опциональные зависимости оборачиваются в try/except ImportError.
+8. Сценарии ошибок документируются и проверяются в тестах.
+9. Весь новый API и скрипты должны поддерживать режимы debug/verbose.
+10. Документация обновляется параллельно с кодом, чтобы не было рассинхронизации.
+
+================================================================================
+ФАЙЛЫ, КОТОРЫЕ БУДУТ ДОБАВЛЕНЫ
+================================================================================
+
+  src/observability.py
+  src/admin.py
+  src/feedback.py
+  scripts/backup_db.py
+  scripts/restore_db.py
+  scripts/regression.py
+
+================================================================================
+ФАЙЛЫ, КОТОРЫЕ БУДУТ ИЗМЕНЕНЫ
+================================================================================
+
+  src/api.py
+  src/config.py
+  src/metrics.py
+  src/knowledge_base.py
+  src/aggregation.py
+  src/sessions.py
+  main.py
+  README.md
+  docs/index.md
+  docs/api.md
+  docs/configuration.md
+  docs/scripts.md
+  docker-compose.yml
+  docker-compose.dev.yml
+  .github/workflows/ci.yml
+  Makefile
+  make.bat
+  CHANGELOG.md
+
+================================================================================
+ИЗМЕНЕНИЕ 55: Обзорная наблюдаемость и трассировка запросов
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+Сейчас API возвращает результат запроса и считает базовые метрики.
+Для боевого использования нужно добавить прозрачную трассировку, которая
+покажет, как запрос прошёл через этапы предобработки, векторизации,
+поиска и агрегации, а также сохранить уникальный идентификатор запроса
+для корреляции логов и обратной связи.
+
+ПОЧЕМУ ЭТО ВАЖНО
+----------------
+  - позволяет отлаживать медленные или неисправные запросы;
+  - упрощает расследование ошибок в условиях распределённой системы;
+  - даёт возможность связать лог события с конкретным `request_id`;
+  - является базой для улучшения SLA и оперативного реагирования.
+
+ТЕЧЕНИЕ ЗАДАЧИ
+--------------
+1. Создать модуль `src/observability.py`.
+2. Расширить `main.py` и `src/api.py` для передачи `request_id`.
+3. Уточнить формат логов и метрик.
+4. Обновить тесты и документацию.
+
+ПОДРОБНАЯ РЕАЛИЗАЦИЯ
+-------------------
+
+  src/observability.py
+    - импорт: datetime, logging, uuid, typing.
+    - класс RequestStage:
+        * name: str
+        * duration_s: float
+        * details: dict[str, typing.Any] | None
+        * timestamp: str
+
+    - класс RequestTraceContext:
+        * request_id: str
+        * started_at: float
+        * stages: list[RequestStage]
+        * metadata: dict[str, typing.Any]
+        * log_level: str = "INFO"
+
+    - методы RequestTraceContext:
+        * add_stage(name: str, duration_s: float, details: dict | None = None) -> None
+        * get_summary() -> dict[str, typing.Any]
+        * to_dict() -> dict[str, typing.Any]
+        * elapsed() -> float
+
+    - функции модуля:
+        * generate_request_id() -> str
+          - использовать uuid.uuid4().hex
+        * format_log_record(record: dict[str, typing.Any]) -> str
+          - возвращает сериализованный JSON для stdout/файлов.
+        * get_default_trace_context(request_id: str | None = None) -> RequestTraceContext
+
+    - дополнительные утилиты:
+        * is_json_serializable(value: typing.Any) -> bool
+          - гарантирует, что поля логов переводятся в JSON.
+
+  src/api.py
+    - добавить опциональный header `X-Request-Id`.
+    - при обработке POST /v1/query:
+        * request_id = request.headers.get("X-Request-Id") или generate_request_id().
+        * context = RequestTraceContext(request_id=request_id)
+        * передать context в `_api_run_pipeline`.
+    - логировать начало и конец каждого HTTP запроса:
+        logger.info({"event": "request.start", "request_id": request_id, "path": str(request.url)})
+        logger.info({"event": "request.complete", "request_id": request_id, "status": status_code, "duration_s": total_time})
+    - при исключении возвращать JSON с `request_id` и `detail`.
+    - добавить поле `request_id` в Pydantic-модель `QueryResponse`.
+
+  main.py
+    - изменить сигнатуру `run_pipeline(..., request_id: str | None = None, trace_context: RequestTraceContext | None = None)`.
+    - использовать `RequestTraceContext` для фиксации этапов:
+        preprocess -> vectorize -> search -> aggregation -> fallback -> generative.
+    - передавать `trace_context` в результат:
+        result["request_id"] = request_id
+        result["trace"] = trace_context.to_dict() если debug=True или если request_id задан.
+    - при каждом основном шаге использовать `time.monotonic()` и `add_stage(...)`.
+
+  src/metrics.py
+    - добавить поле `_request_labels: dict[str, int]`
+      или метрику Counter с лейблами `endpoint`, `status`.
+    - в методе `record_request`: принимать `endpoint: str` и `status: str`.
+    - добавить `record_stage_duration(stage: str, duration_s: float)`.
+    - если `use_metrics=True`, экспортировать метрики для каждого этапа:
+        `ait_stage_duration_seconds`, `ait_requests_total`.
+
+  docs/api.md
+    - зафиксировать поведение `X-Request-Id`.
+    - документировать, что `request_id` возвращается в JSON даже при ошибке.
+    - добавить пример ответа `{ "request_id": "<uuid>", "result": [...], "trace": {...} }`.
+    - объяснить, как использовать `request_id` для поддержки.
+
+  tests/test_api.py
+    - добавить тест запроса без `X-Request-Id` => ответ содержит `request_id`.
+    - добавить тест запроса со своим `X-Request-Id` => ответ возвращает тот же идентификатор.
+    - добавить тест ошибки 401/403 => `request_id` присутствует.
+
+  tests/test_pipeline.py
+    - проверить, что `run_pipeline(..., debug=True)` возвращает `trace`.
+    - проверить, что `trace["stages"]` содержит `preprocess`, `vectorize`, `search`.
+
+ТЕСТЫ И ПРОВЕРКА
+----------------
+  1. `python -m pytest tests/test_api.py -q`.
+  2. `python -m pytest tests/test_pipeline.py -q`.
+  3. `curl -X POST http://localhost:8000/v1/query -H "Content-Type: application/json" -d '{"term":"ключ","hints":["техника"]}'`.
+     Ожидаемый ответ: JSON с полем `"request_id"`.
+  4. `curl -X POST http://localhost:8000/v1/query -H "X-Request-Id: abc123" ...`.
+     Ожидаемый результат: тот же `request_id` в ответе.
+
+================================================================================
+ИЗМЕНЕНИЕ 56: Администрирование KB и резервное копирование данных
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+База знаний является критическим хранилищем проекта. Уже есть парные функции
+по обновлению и инициализации, но нет удобных инструментов для резервного
+копирования, восстановления и диагностики целостности данных.
+
+ПОЧЕМУ ЭТО ВАЖНО
+----------------
+  - обеспечивает возможность отката после ошибочного обновления;
+  - позволяет безопасно переносить БД между средами;
+  - делает проект доступным для администраторов без ручного копирования файлов;
+  - упрощает контроль целостности и подготовку к инцидентам.
+
+ЦЕЛИ
+-----
+  - автоматизировать создание резервных копий SQLite.
+  - добавить проверку структуры БД и данных.
+  - предоставить безопасный сценарий восстановления из резервной копии.
+  - расширить документацию и конфиг.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+  scripts/backup_db.py
+    - импорт: argparse, logging, shutil, sys, time.
+    - определить `DEFAULT_BACKUP_DIR = Path("backups")`.
+    - `main()` принимает опции:
+        --config          путь к configs/config.json
+        --output          путь к целевой папке (по умолчанию backup_dir из конфига)
+        --force           перезаписать файл, если уже существует.
+    - шаги:
+        1. загрузить конфиг `Config.from_json(config_path)`.
+        2. построить `backup_dir = Path(output) or Path(cfg.backup_dir)`.
+        3. создать папку `backup_dir` с `mkdir(parents=True, exist_ok=True)`.
+        4. проверить, что файл `cfg.db_path` существует.
+        5. сформировать имя `knowledge_base_%Y%m%d_%H%M%S.db`.
+        6. скопировать файл через `shutil.copy2`.
+        7. вывести `OK: backup created at ...`.
+    - возвращать exit 0 при успехе, 1 при ошибке.
+    - логировать WARNING при `backup_dir` в сети или на недоступном носителе.
+
+  scripts/restore_db.py
+    - импорт: argparse, logging, shutil, sqlite3, sys.
+    - `main()` принимает опции:
+        --source          путь к резервной копии SQLite
+        --config          путь к configs/config.json
+        --force           выполнять восстановление без запроса подтверждения.
+    - шаги:
+        1. проверить, что `source` существует.
+        2. открыть `sqlite3.connect(source)`.
+        3. выполнить `SELECT name FROM sqlite_master WHERE type='table'`.
+        4. убедиться, что таблица `concepts` присутствует.
+        5. закрыть соединение.
+        6. скопировать файл в `cfg.db_path` через `shutil.copy2`.
+        7. вывести `OK: database restored to ...`.
+    - если `cfg.enable_admin_tools` false — выводить WARN и завершать.
+
+  src/admin.py
+    - импорт: sqlite3, logging, pathlib.Path, typing.
+    - `validate_kb_integrity(db_path: Path) -> dict[str, typing.Any]`:
+        * проверяет доступность файла.
+        * проверяет наличие таблиц `concepts`, `parameters`, `relations`, `metadata`.
+        * проверяет индексы `idx_concepts_domain`, `idx_parameters_concept_id`, `idx_relations_source`, `idx_relations_target`.
+        * проверяет schema_version в metadata.
+        * возвращает словарь с полями `status`, `details`, `errors`, `warnings`.
+    - `list_unmapped_relations(db_path: Path) -> list[dict[str, typing.Any]]`:
+        * ищет концепты, у которых нет ни исходящих, ни входящих отношений.
+        * возвращает список словарей `{ concept_id, term, domain }`.
+    - `refresh_faiss_index(kb: KnowledgeBase) -> None`:
+        * вызывает `kb.update_all_embeddings()` и `kb._build_faiss_index()` если `use_faiss`.
+        * логирует прогресс.
+    - `backup_database(db_path: Path, backup_dir: Path) -> Path`:
+        * малая вспомогательная функция для копирования файла.
+
+  src/config.py
+    - добавить поля:
+        * `backup_dir: str = "backups"`
+        * `enable_admin_tools: bool = False`
+    - проверка `_validate`:
+        * `backup_dir` должен быть строкой и не пустым.
+        * если `enable_admin_tools` не bool — `ValueError`.
+    - `Config.from_json` должна корректно читать новые поля.
+
+  docs/configuration.md
+    - описать `backup_dir` и `enable_admin_tools`.
+    - пояснить использование `scripts/backup_db.py` и `scripts/restore_db.py`.
+    - добавить примеры команд.
+
+  README.md
+    - добавить раздел `Администрирование базы знаний`.
+    - описать шаги резервного копирования и восстановления.
+    - предупредить об обязательном выключении сервиса перед `restore`.
+
+  .github/workflows/ci.yml
+    - в `ci` добавить шаг `Check config secrets`:
+        * проверять, что `configs/config.json` не содержит `API_KEY`.
+        * проверять, что `configs/config.json` не содержит секретных строк.
+
+ТЕСТЫ
+-----
+  tests/test_admin.py
+    - `test_validate_kb_integrity_reports_missing_tables`.
+    - `test_list_unmapped_relations_returns_concepts_without_relations`.
+    - `test_refresh_faiss_index_calls_expected_methods`.
+  tests/test_backup_restore.py
+    - `test_backup_db_creates_file(tmp_path)`.
+    - `test_restore_db_from_valid_backup(tmp_path)`.
+    - `test_restore_db_requires_enable_admin_tools_false_raises`.
+
+ПРОВЕРКА
+--------
+  python -m scripts.backup_db --config configs/config.json
+  python -m scripts.restore_db --config configs/config.json --source backups/knowledge_base_...db
+  Ожидаемый вывод: `OK: backup created` и `OK: database restored`.
+
+================================================================================
+ИЗМЕНЕНИЕ 57: Обратная связь пользователя и уточняющие вопросы
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+Система уже выявляет неоднозначные запросы и может сигнализировать о выборе домена.
+Сейчас нет механизма, который бы позволял пользователю сохранять своё уточнение и
+использовать его для анализа качества.
+
+ПОЧЕМУ ЭТО ВАЖНО
+----------------
+  - улучшает взаимодействие с конечным пользователем;
+  - собирает сигналы о том, какие домены действительно были нужны;
+  - помогает выявлять слабые места в KB.
+
+ЦЕЛИ
+-----
+  - создать хранилище обратной связи;
+  - добавить API для отправки фидбэка;
+  - сохранять связи между `request_id` и выбранным доменом;
+  - документировать сцены уточнения.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+  src/feedback.py
+    - импорт: json, logging, pathlib.Path, threading, typing.
+    - класс `FeedbackStore`:
+        * Инициализируется с `storage_path: Path`.
+        * `storage_path.parent.mkdir(parents=True, exist_ok=True)`.
+        * `_lock = threading.Lock()`.
+        * `_data: list[dict[str, typing.Any]]` загружается из JSON, если файл существует.
+    - методы:
+        * `record_feedback(request_id: str, chosen_domain: str, accepted: bool, comments: str | None = None) -> dict[str, typing.Any]`.
+        * `get_feedback_summary() -> dict[str, typing.Any]`.
+        * `save() -> None`.
+    - структура записи:
+        {
+          "request_id": str,
+          "timestamp": str,
+          "chosen_domain": str,
+          "accepted": bool,
+          "comments": str | None,
+          "source": "api_feedback"
+        }
+    - поведение:
+        * если `request_id` пустой — `ValueError`.
+        * если тот же `request_id` уже существует — сохранять как новую запись с новым timestamp.
+
+  src/aggregation.py
+    - если ещё нет, добавить функцию `generate_clarification_questions(ambiguity_info: dict, term: str) -> list[str]`.
+    - задача: формировать понятные пользователю варианты при `is_ambiguous=True`.
+    - пример:
+        * "Вы имеете в виду 'ключ' как музыкальный термин?"
+        * "Или как инструмент для ремонта?"
+
+  src/api.py
+    - добавить модель `FeedbackRequest` с полями:
+        * `request_id: str`
+        * `chosen_domain: str`
+        * `accepted: bool`
+        * `comments: str | None = None`
+    - добавить POST `/v1/feedback`:
+        * проверять `cfg.enable_feedback` если такое поле добавлено; иначе горячий фидбэк всегда доступен.
+        * сохранять запись через `FeedbackStore`.
+        * возвращать `{"status": "ok", "request_id": request_id}`.
+    - учитывать `request_id` в логах.
+    - возвращать 400 если `request_id` отсутствует.
+
+  src/sessions.py
+    - при сохранении domain из неоднозначного запроса добавлять метку `candidate_clarification`.
+    - сохранять связь с `request_id` (если присутствует) в сессии, если это критично.
+
+  docs/api.md
+    - описать новый endpoint `/v1/feedback`.
+    - привести пример тела запроса и примеры ответов.
+    - указать формат поля `comments`.
+
+  docs/index.md
+    - добавить блок о сборе обратной связи и уточнении запросов.
+
+  README.md
+    - добавить раздел `Обратная связь`.
+    - объяснить, как пользователи могут подтверждать правильный домен.
+
+ТЕСТЫ
+-----
+  tests/test_feedback.py
+    - `test_record_feedback_creates_entry`.
+    - `test_feedback_summary_counts_accepted_and_rejected`.
+    - `test_api_feedback_endpoint_requires_request_id`.
+    - `test_api_feedback_endpoint_returns_ok`.
+
+ПРОВЕРКА
+--------
+  curl -X POST http://localhost:8000/v1/feedback \
+       -H "Content-Type: application/json" \
+       -d '{"request_id":"abc123","chosen_domain":"музыка","accepted":true}'
+  Ожидаемый ответ: `{"status":"ok","request_id":"abc123"}`.
+
+================================================================================
+ИЗМЕНЕНИЕ 58: Производительность, профилирование и масштабирование
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+Проект уже содержит базовые метрики и API, но нет регрессионного сценария,
+позволяющего сравнивать производительность с базовой линией. Также не хватает
+детального замера длительности этапов пайплайна.
+
+ПОЧЕМУ ЭТО ВАЖНО
+----------------
+  - позволяет определить узкие места в реальном коде;
+  - поддерживает принятие решений при оптимизации;
+  - даёт команды возможность контролировать изменения производительности;
+  - помогает обнаруживать деградации после изменения модели или данных.
+
+ЦЕЛИ
+-----
+  - собрать промежуточные метрики по этапам.
+  - добавить сценарий регрессии производительности.
+  - подготовить коллекцию данных для анализа.
+  - улучшить потенциальный FAISS-воркфлоу.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+  scripts/regression.py
+    - импорт: argparse, json, logging, statistics, sys, time.
+    - `main()` принимает:
+        * `--config` путь к JSON-конфигу;
+        * `--dataset` путь к `data/eval_dataset.json`;
+        * `--output` путь к JSON-отчёту;
+        * `--runs` количество повторений на каждом примере.
+    - процесс:
+        1. загрузить конфиг и компоненты через `_init_components`.
+        2. загрузить датасет.
+        3. для каждого кейса повторить `runs` раз вызов `run_pipeline`.
+        4. собирать `duration_s`, `trace` если `debug=True`, `status`, `request_id`.
+        5. вычислять статистики `min`, `max`, `median`, `p90`.
+        6. сохранять `report.json` со структурой:
+            {
+              "cases": [...],
+              "overall": {...},
+              "timestamp": "..."
+            }
+    - отчёт должен быть читаемым и пригодным для автоматизированного анализа.
+
+  src/metrics.py
+    - добавить `record_stage_duration(stage: str, duration_s: float)`.
+    - хранить внутренние агрегаты: `stage_durations: dict[str, list[float]]`.
+    - метод `get_stage_summary() -> dict[str, dict[str, float]]`.
+    - если `use_metrics=True`, обновлять Prometheus-гистограммы.
+
+  src/knowledge_base.py
+    - добавить метод `warmup()`:
+        * загружает FAISS-индекс в память, если `use_faiss`.
+        * выполняет один dummy-запрос, чтобы снять задержку загрузки.
+        * логирует время подготовки.
+    - уточнить, что `search_similar_concepts` не создает индексы на каждом запросе.
+    - добавить комментарии о том, что `use_faiss` имеет смысл только при `db_size >= faiss_threshold`.
+
+  main.py
+    - при `debug=True` возвращать `stage_durations` в ответе.
+    - передавать `stage` и `duration_s` в `metrics.record_stage_duration`.
+    - логировать `performance_summary` на уровне DEBUG.
+
+  docs/scripts.md
+    - описать `scripts/regression.py`.
+    - показать, как запускать и интерпретировать отчёт.
+
+  README.md
+    - добавить раздел `Профилирование и регрессия`.
+    - описать, почему важно запускать `scripts/regression.py` после изменений.
+
+ТЕСТЫ
+-----
+  tests/test_regression.py
+    - `test_regression_writes_report(tmp_path)`.
+    - `test_metrics_record_stage_duration`.
+    - `test_warmup_does_not_raise`.
+
+ПРОВЕРКА
+--------
+  python -m scripts.regression --config configs/config.json --dataset data/eval_dataset.json --output report.json --runs 2
+  Проверить, что `report.json` содержит `overall`, `cases`, `timestamp`.
+
+================================================================================
+ИЗМЕНЕНИЕ 59: Безопасность и продакшн-конфигурация
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+API уже защищён базовыми механизмами, но конфигурация проекта не полностью
+готова для production: секреты могут быть захардкожены, контейнеры не
+настроены на безопасные переменные окружения, и отсутствует чёткая
+инструкция запуска.
+
+ПОЧЕМУ ЭТО ВАЖНО
+----------------
+  - снижает риск утечки секретов;
+  - упрощает развёртывание на реальных серверах;
+  - делает проект воспроизводимым и управляемым;
+  - соответствует корпоративным требованиям безопасности.
+
+ЦЕЛИ
+-----
+  - вынести секреты в `.env`/окружение.
+  - доработать Docker и docker-compose для production.
+  - подготовить документацию безопасности.
+  - добавить проверку отсутствия секретов в CI.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+  configs/config.json
+    - оставить только безопасные дефолты.
+    - удалить любые реальные ключи или пароли.
+
+  .env.example
+    - добавить переменные:
+        * `API_KEY`
+        * `FASTTEXT_MODEL_PATH`
+        * `FALLBACK_EMBEDDINGS_PATH`
+        * `DB_PATH`
+        * `BACKUP_DIR`
+        * `USE_METRICS`
+        * `API_HOST`
+        * `API_PORT`
+    - описать значения по умолчанию и допустимые форматы.
+
+  docker-compose.yml
+    - задать `environment` для всех переменных, используемых приложением.
+    - добавить том `./logs:/app/logs`.
+    - разделить сервисы `web` и `db` (если потребуется в будущем).
+    - не хранить секреты в файле, использовать `.env`.
+
+  docker-compose.dev.yml
+    - монтировать код локально.
+    - указать команду `python -m scripts.run_api`.
+    - задать `ports: - "8000:8000"`.
+
+  scripts/run_api.py
+    - при запуске читать переменные окружения через `os.getenv`.
+    - разрешать `--host` и `--port` через CLI.
+
+  .github/workflows/ci.yml
+    - добавить шаг `Check config secrets`:
+        * проверять, что `configs/config.json` не содержит `API_KEY`.
+        * проверять, что `configs/config.json` не содержит секретных строк.
+    - не сохранявать реальные ключи в workflow.
+
+  README.md
+    - добавить раздел `Production deployment`.
+    - объяснить, как создать `.env` из `.env.example`.
+    - показать команду `docker-compose up --build`.
+    - описать, что `FASTTEXT_MODEL_PATH` должен указывать на скачанную модель.
+
+  docs/configuration.md
+    - документировать чтение конфигурации из окружения.
+    - описать, как `api_host/api_port` используются с docker.
+
+  docs/index.md
+    - добавить ссылку на раздел `Production Deployment`.
+
+ТЕСТЫ
+-----
+  tests/test_configuration.py
+    - `test_env_example_contains_required_keys`.
+    - `test_config_does_not_contain_hardcoded_api_key`.
+  tests/test_docker_compose.py
+    - проверка синтаксиса YAML.
+
+ПРОВЕРКА
+--------
+  docker-compose -f docker-compose.yml up --build --detach
+  Проверить, что сервис запускается и слушает порт 8000.
+  Проверить, что `API_KEY` передаётся через окружение, а не конфиг.
+
+================================================================================
+ИЗМЕНЕНИЕ 60: Финальная упаковка, документация и выпуск
+================================================================================
+
+КОНТЕКСТ И ЗАДАЧА
+-----------------
+После добавления администрирования, наблюдаемости, обратной связи и
+боевого развёртывания проект должен быть собран в понятный релизный
+пакет. Необходимо завершить документацию, добавить чеклисты и привести
+README к состоянию, в котором его можно показать новой команде.
+
+ПОЧЕМУ ЭТО ВАЖНО
+----------------
+  - позволяет новым участникам проекта быстро вникнуть;
+  - фиксирует все изменения и сценарии использования;
+  - делает проект готовым к демонстрации и выпуску;
+  - закрывает цикл разработки.
+
+ЦЕЛИ
+-----
+  - подготовить релизный чеклист;
+  - расширить документацию;
+  - зафиксировать изменения в CHANGELOG;
+  - добавить полезные цели в Makefile и make.bat.
+
+ДЕТАЛИ РЕАЛИЗАЦИИ
+-------------------
+
+  README.md
+    - добавить разделы:
+        * `Быстрый старт`;
+        * `Структура проекта`;
+        * `Запуск`;
+        * `Примеры запросов к API`;
+        * `Скрипты администрирования`;
+        * `Мониторинг и логирование`;
+        * `Production deployment`;
+        * `Информация для разработчиков`.
+    - привести пример `curl` для `/v1/query` и `/v1/feedback`.
+    - дать краткую инструкцию по `pytest`, `mkdocs` и `docker-compose`.
+
+  docs/index.md
+    - обновить введение и добавить ссылки на новые разделы.
+    - сохранить навигацию для `api`, `configuration`, `scripts`.
+
+  docs/api.md
+    - документировать все публичные эндпоинты,
+      включая `X-Request-Id` и `request_id`.
+    - добавить пример ответа с `trace` и `request_id`.
+    - описать `/v1/feedback`.
+
+  docs/configuration.md
+    - добавить разделы про `backup_dir`, `enable_admin_tools`,
+      `use_metrics`, `api_host/api_port`.
+    - показать пример конфига dev/prod и `.env`.
+
+  docs/scripts.md
+    - описать новые скрипты: `backup_db`, `restore_db`, `regression`.
+    - перечислить параметры и примеры.
+
+  CHANGELOG.md
+    - добавить раздел `[Unreleased]` с подзаголовком `Изменения 55-60`.
+    - перечислить:
+        * наблюдаемость и `request_id`;
+        * администрирование и backup/restore;
+        * механизм обратной связи;
+        * регрессионный анализ производительности;
+        * продакшн-конфигурацию и `.env`;
+        * финальную документацию и упаковку.
+
+  Makefile / make.bat
+    - добавить цели:
+        * `docs-build`;
+        * `docs-serve`;
+        * `backup-db`;
+        * `restore-db`;
+        * `regression`;
+        * `release`.
+    - `release` должна запускать `python -m pytest`, `ruff check`, `python -m mkdocs build`.
+
+  tests/
+    - убедиться, что добавленные тесты покрывают новые модули.
+    - запустить полный `pytest tests/`.
+
+ПРОВЕРКА
+--------
+  python -m pytest tests/ -q
+  ruff check src/ scripts/ tests/ main.py
+  python -m mkdocs build
+  Проверить, что документация собирается без ошибок.
