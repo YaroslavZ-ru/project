@@ -35,6 +35,7 @@ from src.fallback import fallback_response
 from src.generative import GenerativeExpander
 from src.knowledge_base import KnowledgeBase
 from src.lemmatizer import Lemmatizer
+from src.observability import RequestTraceContext, generate_request_id, get_default_trace_context
 from src.preprocess import preprocess
 from src.sessions import SessionManager
 from src.synonyms import SynonymDict
@@ -185,6 +186,8 @@ def run_pipeline(
     generative_expander=None,
     session_manager=None,
     session_id: str | None = None,
+    request_id: str | None = None,
+    trace_context: RequestTraceContext | None = None,
 ) -> dict:
     """Центральный пайплайн обработки запроса.
 
@@ -197,14 +200,21 @@ def run_pipeline(
         debug:          если True -- добавить debug_info в ответ.
         min_confidence: порог поиска (None = брать из конфига).
         cfg:            экземпляр Config (пока None).
+        request_id:     уникальный ID запроса для трассировки.
+        trace_context:  контекст трассировки для фиксации этапов.
 
     Returns:
         Словарь с полями: status, term, selected_context,
-        parameters, suggested_refinements, warnings.
+        parameters, suggested_refinements, warnings, request_id, trace.
     """
-    logger.info("Запуск пайплайна: term=%r hints=%r", term, hints)
+    logger.info("Запуск пайплайна: term=%r hints=%r request_id=%s", term, hints, request_id[:8] if request_id else "?")
     if hints is None:
         hints = []
+
+    # Создать контекст трассировки, если не передан
+    if trace_context is None:
+        trace_context = get_default_trace_context(request_id)
+        request_id = trace_context.request_id
 
     # --- Блок B: Центроид сессии ---
     session_hint_domain: str | None = None
@@ -222,22 +232,28 @@ def run_pipeline(
     effective_min_confidence = min_confidence if min_confidence is not None else cfg.min_confidence
 
     # Шаг 1: предобработка
+    t_stage = time.monotonic()
     processed = preprocess(term, hints, cfg, synonym_dict, lemmatizer)
+    trace_context.add_stage("preprocess", time.monotonic() - t_stage, {"lemmas": len(processed.get("all_lemmas", []))})
     if processed["status"] == "error":
-        return {"status": "error", "message": processed["message"]}
+        return {"status": "error", "message": processed["message"], "request_id": request_id}
     warnings_list = list(processed.get("warnings", []))
 
     # Шаг 2: векторизация (с кэшем)
+    t_stage = time.monotonic()
     query_vector = None
+    cache_hit = False
     if vector_cache is not None:
         query_vector = vector_cache.get(term, hints, cfg)
         if query_vector is not None:
+            cache_hit = True
             logger.info("Кэш-попадание вектора для: %r", term)
     if query_vector is None:
         query_vector = vectorize(processed, embedding_model)
         if vector_cache is not None:
             vector_cache.put(term, hints, cfg, query_vector)
         logger.info("Вычислен новый вектор для: %r", term)
+    trace_context.add_stage("vectorize", time.monotonic() - t_stage, {"cache_hit": cache_hit})
     if np.all(query_vector == 0):
         warnings_list.append(
             "Вектор запроса нулевой. Модель эмбеддингов недоступна. Поиск не выполнен."
@@ -260,19 +276,21 @@ def run_pipeline(
                 logger.debug("Запрос %r подтверждает домен сессии %r", term, session_hint_domain)
 
     # --- Шаг 3: Поиск кандидатов ---
+    t_stage = time.monotonic()
     candidates: list = []
     if kb is not None and not np.all(query_vector == 0):
-        t0 = time.monotonic()
         candidates = kb.search_similar_concepts(
             query_vector,
             min_confidence=effective_min_confidence,
             max_candidates=cfg.max_candidates,
         )
-        logger.info("Поиск: %d кандидатов за %.3fс", len(candidates), time.monotonic() - t0)
     elif kb is None:
         warnings_list.append("KnowledgeBase не инициализирован. Поиск пропущен.")
+    trace_context.add_stage("search", time.monotonic() - t_stage, {"candidates_count": len(candidates)})
+    logger.info("Поиск: %d кандидатов за %.3fс", len(candidates), time.monotonic() - t_stage)
 
     # --- Шаг 4: Агрегация или fallback ---
+    t_stage = time.monotonic()
     if candidates:
         hints_lemmas = processed.get("hints_lemmas", [])
         parameters = aggregate_parameters(candidates, hints_lemmas, cfg.max_parameters)
@@ -323,13 +341,17 @@ def run_pipeline(
         needs_clarification = False
         response = fallback_response(term, processed, cfg)
         response["needs_clarification"] = False
+        response["request_id"] = request_id
         if debug:
             response["debug_info"] = {
                 "query_vector": query_vector.tolist(),
                 "candidates_raw": [],
                 "scores_distribution": [],
             }
+            response["trace"] = trace_context.to_dict()
+        trace_context.add_stage("aggregation", time.monotonic() - t_stage, {"fallback": True})
         return response
+    trace_context.add_stage("aggregation", time.monotonic() - t_stage, {"parameters_count": len(parameters)})
 
     # --- Шаг 5: Сборка ответа ---
     result: dict = {
@@ -340,6 +362,7 @@ def run_pipeline(
         "parameters": parameters,
         "suggested_refinements": suggested_refinements,
         "warnings": warnings_list,
+        "request_id": request_id,
     }
 
     if debug:
@@ -348,6 +371,7 @@ def run_pipeline(
             "candidates_raw": candidates,
             "scores_distribution": [p["confidence"] for p in parameters],
         }
+        result["trace"] = trace_context.to_dict()
 
     # Сохранение домена в сессию
     if session_manager and session_id:
@@ -466,6 +490,7 @@ def main() -> None:
         logger.info("Прогрев модели...")
         _ = embedding_model.get_word_vector("а")
         logger.info("Прогрев завершён.")
+        request_id = generate_request_id()
         result = run_pipeline(
             term=parsed["term"],
             hints=parsed.get("hints", []),
@@ -480,6 +505,7 @@ def main() -> None:
             generative_expander=generative_expander,
             session_manager=session_manager,
             session_id=parsed.get("session_id"),
+            request_id=request_id,
         )
 
     except ValueError as exc:

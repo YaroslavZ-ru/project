@@ -334,3 +334,26 @@ def test_pipeline_needs_clarification_false_by_default(pipeline_components):
     """fallback-ответ должен содержать needs_clarification=False."""
     result = call_pipeline(pipeline_components, "ключ")
     assert not result.get("needs_clarification")
+
+
+def test_pipeline_returns_request_id(pipeline_components):
+    """Ответ должен содержать request_id."""
+    result = call_pipeline(pipeline_components, "ключ")
+    assert "request_id" in result, "Поле request_id должно быть в ответе"
+    assert isinstance(result["request_id"], str)
+    assert len(result["request_id"]) == 32  # uuid4 hex
+
+
+def test_pipeline_returns_trace_in_debug_mode(pipeline_components):
+    """При debug=True ответ должен содержать trace с этапами."""
+    result = call_pipeline(pipeline_components, "ключ", debug=True)
+    assert "trace" in result, "Поле trace должно быть в ответе при debug=True"
+    trace = result["trace"]
+    assert "request_id" in trace
+    assert "stages" in trace
+    assert isinstance(trace["stages"], list)
+    # Должны быть этапы preprocess, vectorize, search
+    stage_names = [s["name"] for s in trace["stages"]]
+    assert "preprocess" in stage_names
+    assert "vectorize" in stage_names
+    assert "search" in stage_names

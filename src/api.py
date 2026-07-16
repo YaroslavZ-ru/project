@@ -25,6 +25,7 @@ from src.generative import GenerativeExpander
 from src.knowledge_base import KnowledgeBase
 from src.lemmatizer import Lemmatizer
 from src.metrics import MetricsCollector
+from src.observability import RequestTraceContext, generate_request_id, get_default_trace_context
 from src.preprocess import preprocess
 from src.sessions import SessionManager
 from src.synonyms import SynonymDict
@@ -102,7 +103,9 @@ if _FASTAPI_AVAILABLE:
         parameters: list[ParameterModel] = []
         suggested_refinements: list[str] = []
         warnings: list[str] = []
+        request_id: str | None = None
         debug_info: dict | None = None
+        trace: dict | None = None
 
     class HealthResponse(BaseModel):
         status: str
@@ -178,6 +181,8 @@ def _api_run_pipeline(
     session_manager,
     session_id: str | None,
     metrics: MetricsCollector | None,
+    request_id: str | None = None,
+    trace_context: RequestTraceContext | None = None,
 ) -> dict:
     """Запустить пайплайн и зафиксировать метрики.
 
@@ -196,12 +201,19 @@ def _api_run_pipeline(
         session_manager:    менеджер сессий.
         session_id:         ID сессии или None.
         metrics:            коллектор метрик или None.
+        request_id:         уникальный ID запроса для трассировки.
+        trace_context:      контекст трассировки для фиксации этапов.
 
     Returns:
         Словарь результата пайплайна.
     """
     start = time.monotonic()
     result: dict = {"status": "error", "message": "Неизвестная ошибка"}
+
+    # Создать контекст трассировки, если не передан
+    if trace_context is None:
+        trace_context = get_default_trace_context(request_id)
+        request_id = trace_context.request_id
 
     try:
         if hints is None:
@@ -212,19 +224,25 @@ def _api_run_pipeline(
         )
 
         # Шаг 1: предобработка
+        t_stage = time.monotonic()
         processed = preprocess(term, hints, cfg, synonym_dict, lemmatizer)
+        trace_context.add_stage("preprocess", time.monotonic() - t_stage, {"lemmas": len(processed.get("all_lemmas", []))})
         if processed["status"] == "error":
-            result = {"status": "error", "message": processed["message"]}
+            result = {"status": "error", "message": processed["message"], "request_id": request_id}
             return result
 
         warnings_list = list(processed.get("warnings", []))
 
         # Шаг 2: векторизация с кэшем
+        t_stage = time.monotonic()
         query_vector = None
+        cache_hit = False
         if vector_cache is not None:
             query_vector = vector_cache.get(term, hints, cfg)
-            if query_vector is not None and metrics:
-                metrics.record_cache_hit()
+            if query_vector is not None:
+                cache_hit = True
+                if metrics:
+                    metrics.record_cache_hit()
 
         if query_vector is None:
             if metrics:
@@ -232,6 +250,7 @@ def _api_run_pipeline(
             query_vector = vectorize(processed, embedding_model)
             if vector_cache is not None:
                 vector_cache.put(term, hints, cfg, query_vector)
+        trace_context.add_stage("vectorize", time.monotonic() - t_stage, {"cache_hit": cache_hit})
 
         if np.all(query_vector == 0):
             warnings_list.append(
@@ -239,6 +258,7 @@ def _api_run_pipeline(
             )
 
         # Шаг 3: поиск кандидатов
+        t_stage = time.monotonic()
         candidates: list = []
         if kb is not None and not np.all(query_vector == 0):
             candidates = kb.search_similar_concepts(
@@ -248,8 +268,10 @@ def _api_run_pipeline(
             )
         elif kb is None:
             warnings_list.append("KnowledgeBase не инициализирован. Поиск пропущен.")
+        trace_context.add_stage("search", time.monotonic() - t_stage, {"candidates_count": len(candidates)})
 
         # Шаг 4: агрегация или fallback
+        t_stage = time.monotonic()
         if candidates:
             hints_lemmas = processed.get("hints_lemmas", [])
             parameters = aggregate_parameters(candidates, hints_lemmas, cfg.max_parameters)
@@ -278,15 +300,19 @@ def _api_run_pipeline(
                 "parameters": parameters,
                 "suggested_refinements": suggested_refinements,
                 "warnings": warnings_list,
+                "request_id": request_id,
             }
         else:
             result = fallback_response(term, processed, cfg)
+            result["request_id"] = request_id
+        trace_context.add_stage("aggregation", time.monotonic() - t_stage, {"parameters_count": len(result.get("parameters", []))})
 
         if debug and "debug_info" not in result:
             result["debug_info"] = {
                 "query_vector": query_vector.tolist(),
                 "candidates_raw": candidates,
             }
+            result["trace"] = trace_context.to_dict()
 
         # Сессия
         if session_manager and session_id:
@@ -304,7 +330,7 @@ def _api_run_pipeline(
 
     except Exception as exc:  # noqa: BLE001
         logger.exception("Ошибка в пайплайне API: %s", exc)
-        result = {"status": "error", "message": f"Внутренняя ошибка: {exc}"}
+        result = {"status": "error", "message": f"Внутренняя ошибка: {exc}", "request_id": request_id}
 
     finally:
         duration = time.monotonic() - start
@@ -464,6 +490,10 @@ else:
             if not _check_rate_limit(ip, _cfg.rate_limit_rpm):
                 raise HTTPException(429, detail="Слишком много запросов. Попробуйте позже.")
         hints = [h.strip() for h in body.hints if h.strip()][:3]
+        # Получить или сгенерировать request_id
+        request_id = request.headers.get("X-Request-Id") or generate_request_id()
+        trace_context = get_default_trace_context(request_id)
+        logger.info("request.start request_id=%s path=%s", request_id[:8], str(request.url))
         try:
             result = await asyncio.to_thread(
                 _api_run_pipeline,
@@ -481,12 +511,15 @@ else:
                 _session_manager,
                 body.session_id,
                 _metrics,
+                request_id,
+                trace_context,
             )
         except ValueError as exc:
             raise HTTPException(400, detail=str(exc)) from exc
         except Exception as exc:
             logger.exception("Необработанная ошибка в /v1/query: %s", exc)
             raise HTTPException(500, detail="Внутренняя ошибка сервера") from None
+        logger.info("request.complete request_id=%s status=%s", request_id[:8], result.get("status"))
         return _cast(QueryResponse, QueryResponse.model_validate(result))
 
     @app.post("/query", response_model=QueryResponse, include_in_schema=False)
