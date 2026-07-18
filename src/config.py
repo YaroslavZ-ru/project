@@ -98,6 +98,14 @@ class Config:
     rate_limit_rpm: int = 60
     # --- Окружения (изм. 53) ---
     environment: str = "development"
+    # --- Изменение 61: Пакетная обработка ---
+    max_batch_size: int = 10
+    # --- Изменение 62: Персистентные сессии ---
+    session_storage: str = "memory"
+    # --- Изменение 63: Детекция несвязных подсказок ---
+    hints_coherence_threshold: float = 0.2
+    # --- Изменение 65: JSON-lines логирование ---
+    log_format: str = "text"
 
     # ------------------------------------------------------------------
     @classmethod
@@ -307,6 +315,28 @@ class Config:
 
         if data.get("api_key_enabled") and not data.get("api_key", "").strip():
             logger.warning("api_key_enabled=true, но api_key пустой. Задайте api_key.")
+
+        # --- Изменение 61: max_batch_size ---
+        mbs = data.get("max_batch_size")
+        if mbs is not None:
+            if not isinstance(mbs, int) or mbs <= 0:
+                raise ValueError(f"max_batch_size должен быть положительным целым, получено: {mbs!r}")
+
+        # --- Изменение 62: session_storage ---
+        ss = data.get("session_storage")
+        if ss is not None and ss not in ("memory", "sqlite"):
+            raise ValueError(f"session_storage должен быть 'memory' или 'sqlite', получено: {ss!r}")
+
+        # --- Изменение 63: hints_coherence_threshold ---
+        hct = data.get("hints_coherence_threshold")
+        if hct is not None:
+            if not isinstance(hct, (int, float)) or not (0.0 <= float(hct) <= 1.0):
+                raise ValueError(f"hints_coherence_threshold должен быть float в [0.0, 1.0], получено: {hct!r}")
+
+        # --- Изменение 65: log_format ---
+        lf = data.get("log_format")
+        if lf is not None and lf not in ("text", "json"):
+            raise ValueError(f"log_format должен быть 'text' или 'json', получено: {lf!r}")
 
     # ------------------------------------------------------------------
     @classmethod

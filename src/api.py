@@ -16,7 +16,7 @@ import time
 
 import numpy as np
 
-from src.aggregation import aggregate_parameters, determine_context
+from src.aggregation import aggregate_parameters, check_hints_coherence, determine_context
 from src.cache import QueryVectorCache
 from src.config import Config
 from src.embeddings import FastTextWrapper
@@ -78,6 +78,7 @@ if _FASTAPI_AVAILABLE:
         session_id: str | None = Field(None, description="ID сессии (опционально)")
         debug: bool = Field(False, description="Включить debug_info в ответ")
         min_confidence: float | None = Field(None, ge=0.0, le=1.0, description="Порог уверенности")
+        selected_domain: str | None = Field(None, description="Выбранный домен при неоднозначности")
 
     class ParameterModel(BaseModel):
         name: str
@@ -117,6 +118,25 @@ if _FASTAPI_AVAILABLE:
         concepts_count: int
         parameters_count: int
         db_path: str
+
+    # --- Изменение 61: Пакетная обработка ---
+
+    class BatchQueryItem(BaseModel):
+        term: str = Field(..., min_length=1, max_length=200)
+        hints: list[str] = Field(default_factory=list)
+        session_id: str | None = None
+        selected_domain: str | None = None
+
+    class BatchQueryRequest(BaseModel):
+        requests: list[BatchQueryItem] = Field(..., min_length=1)
+        debug: bool = False
+        max_batch_size: int | None = None
+
+    class BatchQueryResponse(BaseModel):
+        results: list[QueryResponse]
+        total: int
+        successful: int
+        failed: int
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +203,7 @@ def _api_run_pipeline(
     metrics: MetricsCollector | None,
     request_id: str | None = None,
     trace_context: RequestTraceContext | None = None,
+    selected_domain: str | None = None,
 ) -> dict:
     """Запустить пайплайн и зафиксировать метрики.
 
@@ -233,6 +254,18 @@ def _api_run_pipeline(
 
         warnings_list = list(processed.get("warnings", []))
 
+        # Изменение 63: Проверка связности подсказок
+        if hints and len(hints) >= 2 and _embedding_model is not None:
+            coherence_threshold = getattr(_cfg, "hints_coherence_threshold", 0.2)
+            coherence = check_hints_coherence(hints, _embedding_model, coherence_threshold)
+            if not coherence["coherent"]:
+                warnings_list.append(
+                    f"Подсказки имеют низкую семантическую связность "
+                    f"(сходство {coherence['avg_similarity']:.2f} < {coherence_threshold}). "
+                    f"Результаты могут быть неточными."
+                )
+                logger.info("Несвязные подсказки: %s", coherence["reason"])
+
         # Шаг 2: векторизация с кэшем
         t_stage = time.monotonic()
         query_vector = None
@@ -265,6 +298,7 @@ def _api_run_pipeline(
                 query_vector,
                 min_confidence=effective_min_confidence,
                 max_candidates=cfg.max_candidates,
+                domain_filter=selected_domain,
             )
         elif kb is None:
             warnings_list.append("KnowledgeBase не инициализирован. Поиск пропущен.")
@@ -346,25 +380,34 @@ def _api_run_pipeline(
 # ---------------------------------------------------------------------------
 
 
-def _configure_api_logging(log_level: str, project_root) -> None:
+def _configure_api_logging(log_level: str, project_root, log_format: str = "text") -> None:
     """Настроить логирование API: StreamHandler + RotatingFileHandler.
 
     Args:
         log_level:    уровень логирования.
         project_root: корень проекта.
+        log_format:   формат логов "text" или "json" (изм. 65).
     """
     import logging
     from logging.handlers import RotatingFileHandler
     from pathlib import Path
     import sys
 
+    from src.utils import JSONFormatter
+
     FORMAT = "[%(asctime)s] %(levelname)s %(name)s: %(message)s"
     root_logger = logging.getLogger()
     if root_logger.handlers:
         return
     root_logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
+
+    if log_format == "json":
+        formatter = JSONFormatter()
+    else:
+        formatter = logging.Formatter(FORMAT)
+
     sh = logging.StreamHandler(sys.stdout)
-    sh.setFormatter(logging.Formatter(FORMAT))
+    sh.setFormatter(formatter)
     root_logger.addHandler(sh)
     logs_dir = Path(project_root) / "logs"
     if logs_dir.exists():
@@ -375,7 +418,7 @@ def _configure_api_logging(log_level: str, project_root) -> None:
                 backupCount=3,
                 encoding="utf-8",
             )
-            fh.setFormatter(logging.Formatter(FORMAT))
+            fh.setFormatter(formatter)
             root_logger.addHandler(fh)
         except (OSError, PermissionError):
             pass
@@ -402,6 +445,7 @@ else:
         _configure_api_logging(
             getattr(_cfg, "log_level", "INFO") if _cfg else "INFO",
             PROJECT_ROOT,
+            getattr(_cfg, "log_format", "text") if _cfg else "text",
         )
         try:
             _cfg = Config.from_json("configs/config.json", project_root=PROJECT_ROOT)
@@ -513,6 +557,7 @@ else:
                 _metrics,
                 request_id,
                 trace_context,
+                body.selected_domain,
             )
         except ValueError as exc:
             raise HTTPException(400, detail=str(exc)) from exc
@@ -584,3 +629,65 @@ else:
     @app.get("/kb/stats", include_in_schema=False)
     async def kb_stats_legacy():
         return await kb_stats()
+
+    # --- Изменение 61: Пакетная обработка ---
+
+    @app.post("/v1/process_batch", response_model=BatchQueryResponse)
+    async def process_batch(request: Request, body: BatchQueryRequest) -> BatchQueryResponse:
+        """Обработать пакет запросов: несколько терминов за один HTTP-запрос."""
+        _verify_api_key(request)
+        if _cfg is None:
+            raise HTTPException(503, detail="Сервис запускается. Попробуйте позже.")
+
+        effective_limit = body.max_batch_size or _cfg.max_batch_size
+        if len(body.requests) > effective_limit:
+            raise HTTPException(
+                400,
+                detail=f"Пакет слишком большой: {len(body.requests)} > {effective_limit}",
+            )
+
+        results: list = []
+        for item in body.requests:
+            try:
+                hints = [h.strip() for h in item.hints if h.strip()][:3]
+                request_id = generate_request_id()
+                trace_context = get_default_trace_context(request_id)
+                result = await asyncio.to_thread(
+                    _api_run_pipeline,
+                    item.term,
+                    hints,
+                    body.debug,
+                    None,
+                    _cfg,
+                    _lemmatizer,
+                    _synonym_dict,
+                    _embedding_model,
+                    _vector_cache,
+                    _kb,
+                    _generative_expander,
+                    _session_manager,
+                    item.session_id,
+                    _metrics,
+                    request_id,
+                    trace_context,
+                )
+                results.append(QueryResponse.model_validate(result))
+            except Exception as exc:
+                logger.error("Ошибка в batch для %r: %s", item.term, exc)
+                results.append(QueryResponse(
+                    status="error",
+                    term=item.term,
+                    warnings=[f"Ошибка обработки: {exc}"],
+                ))
+
+        successful = sum(1 for r in results if r.status == "ok")
+        return BatchQueryResponse(
+            results=results,
+            total=len(results),
+            successful=successful,
+            failed=len(results) - successful,
+        )
+
+    @app.post("/process_batch", response_model=BatchQueryResponse, include_in_schema=False)
+    async def process_batch_legacy(request: Request, body: BatchQueryRequest) -> BatchQueryResponse:
+        return await process_batch(request, body)

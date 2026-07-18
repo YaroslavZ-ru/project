@@ -92,3 +92,68 @@ class TestEdgeCases:
         sm = SessionManager(make_config())
         assert sm.get_domain("") is None
         assert sm.get_domain(None) is None
+
+
+# --- Изменение 62: Тесты SQLite сессий ---
+
+
+def make_sqlite_config(db_path, ttl=3600, maxsize=10, interval=3600):
+    """Фабрика мок-конфига для SQLite SessionManager."""
+    return SimpleNamespace(
+        session_ttl_seconds=ttl,
+        session_cache_size=maxsize,
+        session_cleanup_interval_seconds=interval,
+        session_storage="sqlite",
+        db_path=str(db_path),
+    )
+
+
+class TestSQLiteSessions:
+    def test_sqlite_create_and_get(self, tmp_path):
+        """SQLite: создание и получение сессии."""
+        db = tmp_path / "test.db"
+        sm = SessionManager(make_sqlite_config(db))
+        sm.update_session("s1", "музыка", "ключ")
+        assert sm.get_domain("s1") == "музыка"
+        assert sm.session_count() == 1
+
+    def test_sqlite_update_domain(self, tmp_path):
+        """SQLite: обновление домена."""
+        db = tmp_path / "test.db"
+        sm = SessionManager(make_sqlite_config(db))
+        sm.update_session("s1", "техника")
+        sm.update_session("s1", "музыка")
+        assert sm.get_domain("s1") == "музыка"
+
+    def test_sqlite_get_nonexistent(self, tmp_path):
+        """SQLite: несуществующая сессия -> None."""
+        db = tmp_path / "test.db"
+        sm = SessionManager(make_sqlite_config(db))
+        assert sm.get_domain("nonexistent") is None
+
+    def test_sqlite_persistence(self, tmp_path):
+        """SQLite: сессия переживает пересоздание SessionManager."""
+        db = tmp_path / "test.db"
+        sm1 = SessionManager(make_sqlite_config(db))
+        sm1.update_session("s1", "музыка")
+        # Создаём новый менеджер с тем же файлом
+        sm2 = SessionManager(make_sqlite_config(db))
+        assert sm2.get_domain("s1") == "музыка"
+
+    def test_sqlite_cleanup(self, tmp_path):
+        """SQLite: cleanup удаляет устаревшие сессии."""
+        db = tmp_path / "test.db"
+        sm = SessionManager(make_sqlite_config(db, ttl=0))
+        sm.update_session("s1", "a")
+        sm.update_session("s2", "b")
+        time.sleep(0.01)
+        removed = sm.cleanup()
+        assert removed >= 2
+
+    def test_sqlite_empty_session_id(self, tmp_path):
+        """SQLite: пустой session_id игнорируется."""
+        db = tmp_path / "test.db"
+        sm = SessionManager(make_sqlite_config(db))
+        sm.update_session("", "музыка")
+        sm.update_session(None, "техника")
+        assert sm.session_count() == 0

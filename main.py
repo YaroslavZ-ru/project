@@ -54,18 +54,25 @@ LOG_FILE: Path = PROJECT_ROOT / "logs" / "ai_terminator.log"
 # ---------------------------------------------------------------------------
 
 
-def _setup_logging(log_level: str = "INFO") -> logging.Logger:
+def _setup_logging(log_level: str = "INFO", log_format: str = "text") -> logging.Logger:
     """Инициализировать логгер с StreamHandler и RotatingFileHandler.
 
     Args:
-        log_level: уровень логирования (из конфига, например DEBUG).
+        log_level:  уровень логирования (из конфига, например DEBUG).
+        log_format: формат логов "text" или "json" (изм. 65).
 
     Returns:
         Настроенный логгер приложения.
     """
+    from src.utils import JSONFormatter
+
     LOG_FORMAT = "[%(asctime)s] %(levelname)s %(name)s: %(message)s"
     DATE_FMT = "%Y-%m-%d %H:%M:%S"
-    fmt = logging.Formatter(LOG_FORMAT, DATE_FMT)
+
+    if log_format == "json":
+        fmt = JSONFormatter()
+    else:
+        fmt = logging.Formatter(LOG_FORMAT, DATE_FMT)
 
     level = getattr(logging, log_level.upper(), logging.INFO)
     logger = logging.getLogger("ai_terminator")
@@ -100,7 +107,29 @@ def _setup_logging(log_level: str = "INFO") -> logging.Logger:
     return logger
 
 
-logger = _setup_logging(log_level="INFO")
+logger = _setup_logging(log_level="INFO", log_format="text")
+
+
+def _reconfigure_logging(log_level: str = "INFO", log_format: str = "text") -> None:
+    """Переконфигурировать существующий логгер (изм. 65).
+
+    Заменяет форматтеры во всех обработчиках root-логгера.
+    Используется после загрузки конфига, когда известен log_format.
+    """
+    from src.utils import JSONFormatter
+
+    LOG_FORMAT = "[%(asctime)s] %(levelname)s %(name)s: %(message)s"
+    DATE_FMT = "%Y-%m-%d %H:%M:%S"
+
+    if log_format == "json":
+        fmt = JSONFormatter()
+    else:
+        fmt = logging.Formatter(LOG_FORMAT, DATE_FMT)
+
+    root = logging.getLogger()
+    for handler in root.handlers:
+        handler.setFormatter(fmt)
+    root.setLevel(getattr(logging, log_level.upper(), logging.INFO))
 
 
 # ---------------------------------------------------------------------------
@@ -464,6 +493,11 @@ def main() -> None:
         logger.error("Ошибка загрузки конфига: %s", exc)
         print(json.dumps({"status": "error", "message": str(exc)}, ensure_ascii=False))
         sys.exit(1)
+
+    # Изменение 65: Переопределение логирования с учётом log_format из конфига
+    log_format = getattr(cfg, "log_format", "text")
+    if log_format != "text":
+        _reconfigure_logging(log_level=cfg.log_level, log_format=log_format)
 
     # --- Чтение входа ---
     try:

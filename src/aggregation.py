@@ -1,8 +1,78 @@
 import logging
 
+import numpy as np
+
 from src.lemmatizer import Lemmatizer
 
 logger = logging.getLogger(__name__)
+
+
+# --- Изменение 63: Детекция несвязных подсказок ---
+
+
+def check_hints_coherence(
+    hints: list[str],
+    embedding_model,
+    threshold: float = 0.2,
+) -> dict:
+    """Проверить семантическую связность подсказок.
+
+    Вычисляет косинусное сходство между векторами подсказок и сравнивает
+    среднее значение с порогом. Если среднее сходство ниже порога,
+    подсказки считаются несвязными.
+
+    Args:
+        hints:          список подсказок (1-3 слова/фразы).
+        embedding_model: модель эмбеддингов (FastTextWrapper или мок с get_phrase_vector).
+        threshold:      порог связности (по умолчанию 0.2).
+
+    Returns:
+        Словарь с полями:
+            coherent:       bool — True если связны, False если нет.
+            avg_similarity: float — среднее косинусное сходство по парам.
+            pairs:          list[dict] — информация по каждой паре.
+            reason:         str — описание результата.
+    """
+    if len(hints) < 2:
+        return {
+            "coherent": True,
+            "avg_similarity": 1.0,
+            "pairs": [],
+            "reason": "недостаточно подсказок для проверки",
+        }
+
+    pairs: list[dict] = []
+    for i in range(len(hints)):
+        for j in range(i + 1, len(hints)):
+            vec_i = embedding_model.get_phrase_vector(hints[i])
+            vec_j = embedding_model.get_phrase_vector(hints[j])
+            norm_i = float(np.linalg.norm(vec_i))
+            norm_j = float(np.linalg.norm(vec_j))
+            if norm_i > 1e-9 and norm_j > 1e-9:
+                sim = float(np.dot(vec_i, vec_j) / (norm_i * norm_j))
+            else:
+                sim = 0.0
+            pairs.append({"hint_i": hints[i], "hint_j": hints[j], "similarity": round(sim, 4)})
+
+    avg_sim = sum(p["similarity"] for p in pairs) / len(pairs) if pairs else 0.0
+
+    if avg_sim < threshold:
+        return {
+            "coherent": False,
+            "avg_similarity": round(avg_sim, 4),
+            "pairs": pairs,
+            "reason": (
+                f"Среднее сходство подсказок ({avg_sim:.2f}) "
+                f"ниже порога ({threshold})"
+            ),
+        }
+
+    return {
+        "coherent": True,
+        "avg_similarity": round(avg_sim, 4),
+        "pairs": pairs,
+        "reason": "подсказки связаны",
+    }
 
 
 def _compute_hint_match(param: dict, hint_set: set) -> float:

@@ -32,6 +32,21 @@ def api_client():
     mock_cfg.auto_save_domain_on_ok = False
     mock_cfg.auto_save_domain_on_fallback = False
     mock_cfg.use_metrics = False
+    mock_cfg.max_batch_size = 10
+    mock_cfg.hints_coherence_threshold = 0.2
+    mock_cfg.log_format = "text"
+    mock_cfg.max_term_length = 100
+    mock_cfg.max_hint_length = 50
+    mock_cfg.max_synonyms_per_token = 2
+    mock_cfg.use_synonyms = False
+    mock_cfg.use_faiss = False
+    mock_cfg.faiss_threshold = 10000
+    mock_cfg.use_relations = False
+    mock_cfg.use_generative = False
+    mock_cfg.session_ttl_seconds = 3600
+    mock_cfg.session_cache_size = 1000
+    mock_cfg.session_cleanup_interval_seconds = 60
+    mock_cfg.session_storage = "memory"
 
     # Мок базы знаний
     mock_kb = MagicMock()
@@ -52,6 +67,8 @@ def api_client():
     # Мок лемматизатора
     mock_lemmatizer = MagicMock()
     mock_lemmatizer.lemmatize.return_value = ["ключ"]
+    mock_lemmatizer.lemmatize_phrase.return_value = ["ключ"]
+    mock_lemmatizer.lemmatize_word.return_value = "ключ"
 
     # Мок словаря синонимов
     mock_synonyms = MagicMock()
@@ -143,4 +160,82 @@ def test_query_too_many_hints_truncated(api_client):
         "/query",
         json={"term": "болт", "hints": ["а", "б", "в", "г", "д"]},
     )
+    assert response.status_code == 200
+
+
+# --- Изменение 61: Тесты пакетной обработки ---
+
+
+def test_batch_query_single_item(api_client):
+    """Один элемент в пакете -- total=1, successful=1."""
+    response = api_client.post("/v1/process_batch", json={
+        "requests": [{"term": "ключ", "hints": ["техника"]}]
+    })
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    assert data["successful"] == 1
+    assert data["failed"] == 0
+    assert len(data["results"]) == 1
+
+
+def test_batch_query_multiple_items(api_client):
+    """Два элемента в пакете -- total=2."""
+    response = api_client.post("/v1/process_batch", json={
+        "requests": [
+            {"term": "ключ", "hints": ["техника"]},
+            {"term": "нота", "hints": ["музыка"]},
+        ]
+    })
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 2
+    assert data["successful"] == 2
+
+
+def test_batch_query_exceeds_limit(api_client):
+    """Пакет превышает max_batch_size -- 400."""
+    response = api_client.post("/v1/process_batch", json={
+        "requests": [{"term": f"слово{i}"} for i in range(20)]
+    })
+    assert response.status_code == 400
+
+
+def test_batch_query_empty_requests(api_client):
+    """Пустой список -- 422 (Pydantic validation)."""
+    response = api_client.post("/v1/process_batch", json={
+        "requests": []
+    })
+    assert response.status_code == 422
+
+
+def test_batch_query_legacy_endpoint(api_client):
+    """Legacy endpoint /process_batch работает."""
+    response = api_client.post("/process_batch", json={
+        "requests": [{"term": "ключ"}]
+    })
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+
+
+# --- Изменение 64: Тесты доменного фильтра ---
+
+
+def test_query_with_selected_domain(api_client):
+    """Запрос с selected_domain -- 200, не падает."""
+    response = api_client.post("/v1/query", json={
+        "term": "ключ",
+        "selected_domain": "музыка",
+    })
+    assert response.status_code == 200
+    data = response.json()
+    assert "status" in data
+
+
+def test_query_without_selected_domain(api_client):
+    """Запрос без selected_domain -- 200, работает как раньше."""
+    response = api_client.post("/v1/query", json={
+        "term": "ключ",
+        "hints": ["техника"],
+    })
     assert response.status_code == 200

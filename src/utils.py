@@ -1,11 +1,12 @@
 """src/utils.py -- утилиты общего назначения AI-Terminator.
 
 Модуль не импортирует ничего из src/ -- нет риска циклических импортов.
-Использует только stdlib: logging, functools, time.
+Использует только stdlib: logging, functools, time, json.
 """
 
 from collections.abc import Callable
 import functools
+import json
 import logging
 import time
 from typing import Any
@@ -108,3 +109,48 @@ def unique_ordered(seq: list) -> list:
             if item not in result:
                 result.append(item)
     return result
+
+
+# --- Изменение 65: JSON-lines форматтер ---
+
+
+class JSONFormatter(logging.Formatter):
+    """Форматтер: каждая строка лога — валидный JSON-объект.
+
+    Формат (JSON-lines):
+        {"ts": "...", "level": "...", "logger": "...", "msg": "...", ...}
+
+    Поддерживает дополнительные контекстные поля из record:
+        term, hints, elapsed_ms, n_concepts, request_id, status, concept_id, path.
+    """
+
+    # Поля, которые извлекаются из record если присутствуют
+    _CONTEXT_FIELDS = (
+        "term", "hints", "elapsed_ms", "n_concepts",
+        "request_id", "status", "concept_id", "path",
+    )
+
+    def _format_ts(self, record: logging.LogRecord) -> str:
+        """Форматировать временную метку в ISO 8601 с микросекундами."""
+        import datetime
+        ct = self.converter(record.created)
+        base = datetime.datetime(*ct[:6], tzinfo=datetime.timezone.utc)
+        ms = int(record.msecs)
+        return base.replace(microsecond=ms * 1000).strftime("%Y-%m-%dT%H:%M:%S.") + f"{ms:03d}Z"
+
+    def format(self, record: logging.LogRecord) -> str:
+        log_data: dict[str, Any] = {
+            "ts": self._format_ts(record),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        # Добавляем дополнительные контекстные поля
+        for key in self._CONTEXT_FIELDS:
+            val = getattr(record, key, None)
+            if val is not None:
+                log_data[key] = val
+        # Exc_info
+        if record.exc_info and record.exc_info[0]:
+            log_data["exception"] = self.formatException(record.exc_info)
+        return json.dumps(log_data, ensure_ascii=False)

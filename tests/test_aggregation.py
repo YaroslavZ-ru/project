@@ -1,7 +1,9 @@
+import numpy as np
 import pytest
 
 from src.aggregation import (
     aggregate_parameters,
+    check_hints_coherence,
     detect_ambiguity,
     determine_context,
     generate_clarification_questions,
@@ -181,3 +183,75 @@ def test_generate_clarification_questions_not_ambiguous():
     }
     questions = generate_clarification_questions(info, "ключ")
     assert questions == []
+
+
+# --- Изменение 63: Тесты check_hints_coherence ---
+
+
+class MockEmbeddingModel:
+    """Мок модели эмбеддингов для тестов coherence."""
+
+    def __init__(self, vectors: dict[str, np.ndarray] | None = None):
+        self._vectors = vectors or {}
+
+    def get_phrase_vector(self, phrase: str) -> np.ndarray:
+        if phrase in self._vectors:
+            return self._vectors[phrase]
+        # Генерируем детерминированный вектор на основе хеша
+        rng = np.random.RandomState(abs(hash(phrase)) % (2**31))
+        vec = rng.randn(300).astype(np.float32)
+        vec /= np.linalg.norm(vec) + 1e-9
+        return vec
+
+
+def test_check_hints_coherent_similar():
+    """Похожие подсказки (высокое сходство) -> coherent=True."""
+    # Два почти одинаковых вектора (малый угол)
+    base = np.ones(300, dtype=np.float32)
+    base /= np.linalg.norm(base)
+    vec_a = base.copy()
+    vec_b = base.copy()
+    vec_b[0] += 0.01  # минимум отличий
+    vec_b /= np.linalg.norm(vec_b)
+
+    model = MockEmbeddingModel({"техника": vec_a, "инструмент": vec_b})
+    result = check_hints_coherence(["техника", "инструмент"], model, threshold=0.2)
+    assert result["coherent"] is True
+    assert result["avg_similarity"] > 0.99
+
+
+def test_check_hints_incoherent():
+    """Различные подсказки (низкое сходство) -> coherent=False."""
+    vec_a = np.array([1, 0, 0] + [0] * 297, dtype=np.float32)
+    vec_b = np.array([0, 1, 0] + [0] * 297, dtype=np.float32)
+    model = MockEmbeddingModel({"техника": vec_a, "рецепт": vec_b})
+    result = check_hints_coherence(["техника", "рецепт"], model, threshold=0.2)
+    assert result["coherent"] is False
+    assert result["avg_similarity"] < 0.2
+
+
+def test_check_hints_single():
+    """Одна подсказка -> всегда coherent."""
+    model = MockEmbeddingModel()
+    result = check_hints_coherence(["техника"], model)
+    assert result["coherent"] is True
+    assert result["pairs"] == []
+
+
+def test_check_hints_empty():
+    """Пустой список -> всегда coherent."""
+    model = MockEmbeddingModel()
+    result = check_hints_coherence([], model)
+    assert result["coherent"] is True
+    assert result["pairs"] == []
+
+
+def test_check_hints_coherence_structure():
+    """Проверка структуры ответа."""
+    model = MockEmbeddingModel()
+    result = check_hints_coherence(["а", "б"], model)
+    assert "coherent" in result
+    assert "avg_similarity" in result
+    assert "pairs" in result
+    assert "reason" in result
+    assert len(result["pairs"]) == 1  # C(2,2) = 1 пара

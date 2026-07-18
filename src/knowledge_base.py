@@ -395,7 +395,7 @@ class KnowledgeBase:
         results.sort(key=lambda x: x["similarity"], reverse=True)
         return results[:max_cand]
 
-    def search_similar_concepts(self, query_vector, min_confidence=None, max_candidates=None):
+    def search_similar_concepts(self, query_vector, min_confidence=None, max_candidates=None, domain_filter=None):
         if min_confidence is None:
             min_confidence = self._config.min_confidence
         if max_candidates is None:
@@ -410,6 +410,16 @@ class KnowledgeBase:
         if not concepts:
             self.logger.warning("База пуста, поиск невозможен")
             return []
+        # Изменение 64: Фильтрация по домену
+        if domain_filter:
+            filtered = [c for c in concepts if c.get("domain") == domain_filter]
+            if filtered:
+                concepts = filtered
+            else:
+                self.logger.warning(
+                    "Домен '%s' не найден или не содержит понятий. Поиск без фильтра.",
+                    domain_filter,
+                )
         if self._config.use_faiss and len(concepts) > self._config.faiss_threshold:
             if self._faiss_index is None and not self._load_faiss_index_from_disk():
                 self._build_faiss_index(concepts)
