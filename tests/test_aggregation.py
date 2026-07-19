@@ -3,6 +3,7 @@ import pytest
 
 from src.aggregation import (
     aggregate_parameters,
+    apply_feedback_correction,
     check_hints_coherence,
     detect_ambiguity,
     determine_context,
@@ -255,3 +256,67 @@ def test_check_hints_coherence_structure():
     assert "pairs" in result
     assert "reason" in result
     assert len(result["pairs"]) == 1  # C(2,2) = 1 пара
+
+
+# --- Изменение 67: Тесты domain_candidates в detect_ambiguity ---
+
+
+def test_detect_ambiguity_returns_domain_candidates():
+    """detect_ambiguity возвращает domain_candidates с confidence и example_term."""
+    candidates = [
+        {"domain": "музыка", "similarity": 0.85, "term": "нота"},
+        {"domain": "техника", "similarity": 0.83, "term": "ключ"},
+        {"domain": "музыка", "similarity": 0.79, "term": "нота"},
+        {"domain": "техника", "similarity": 0.78, "term": "ключ"},
+    ]
+    result = detect_ambiguity(candidates, threshold=0.7, delta=0.1)
+    assert "domain_candidates" in result
+    assert len(result["domain_candidates"]) >= 2
+    for dc in result["domain_candidates"]:
+        assert "domain" in dc
+        assert "confidence" in dc
+        assert "example_term" in dc
+
+
+# --- Изменение 68: Тесты apply_feedback_correction ---
+
+
+class MockKB:
+    """Мок KnowledgeBase для тестов feedback."""
+
+    def __init__(self, feedback_data: dict):
+        self._feedback = feedback_data
+
+    def get_feedback_stats(self, concept_id: str) -> dict:
+        return self._feedback.get(concept_id, {"avg_rating": None, "votes": 0})
+
+
+def test_feedback_correction_boosts_high_rated():
+    """Высокий рейтинг (5) увеличивает similarity."""
+    kb = MockKB({"c1": {"avg_rating": 5.0, "votes": 5}})
+    candidates = [{"concept_id": "c1", "similarity": 0.5}]
+    result = apply_feedback_correction(candidates, kb, weight=0.1, min_votes=3)
+    assert result[0]["similarity"] > 0.5
+
+
+def test_feedback_correction_penalizes_low_rated():
+    """Низкий рейтинг (1) уменьшает similarity."""
+    kb = MockKB({"c1": {"avg_rating": 1.0, "votes": 5}})
+    candidates = [{"concept_id": "c1", "similarity": 0.5}]
+    result = apply_feedback_correction(candidates, kb, weight=0.1, min_votes=3)
+    assert result[0]["similarity"] < 0.5
+
+
+def test_feedback_correction_ignores_insufficient_votes():
+    """Недостаточно голосов — без изменений."""
+    kb = MockKB({"c1": {"avg_rating": 5.0, "votes": 2}})
+    candidates = [{"concept_id": "c1", "similarity": 0.5}]
+    result = apply_feedback_correction(candidates, kb, weight=0.1, min_votes=3)
+    assert result[0]["similarity"] == 0.5
+
+
+def test_feedback_correction_empty():
+    """Пустой список кандидатов — без ошибок."""
+    kb = MockKB({})
+    result = apply_feedback_correction([], kb, weight=0.1, min_votes=3)
+    assert result == []

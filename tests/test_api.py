@@ -54,6 +54,7 @@ def api_client():
     mock_kb._conn = MagicMock()  # db_available=True
     mock_kb._db_path = Path("data/knowledge_base.db")
     mock_kb.get_all_concepts.return_value = []
+    mock_kb.save_concept.return_value = "test-concept-id-123"
 
     # Мок модели
     import numpy as np
@@ -239,3 +240,71 @@ def test_query_without_selected_domain(api_client):
         "hints": ["техника"],
     })
     assert response.status_code == 200
+
+
+# --- Изменение 66: Тесты save_concept ---
+
+
+def test_save_concept_new(api_client):
+    """Сохранение нового понятия -- 200 с concept_id."""
+    response = api_client.post("/v1/save_concept", json={
+        "term": "тестовый термин",
+        "domain": "тестовый домен",
+        "parameters": [
+            {"name": "test_param", "label_ru": "Тестовый параметр", "type": "string"}
+        ]
+    })
+    assert response.status_code == 200
+    data = response.json()
+    assert "concept_id" in data
+    assert data["status"] == "ok"
+
+
+def test_save_concept_requires_term(api_client):
+    """Без term -- 422 (Pydantic validation)."""
+    response = api_client.post("/v1/save_concept", json={"domain": "test"})
+    assert response.status_code == 422
+
+
+def test_save_concept_with_relations(api_client):
+    """Сохранение с отношениями -- 200."""
+    response = api_client.post("/v1/save_concept", json={
+        "term": "деталь X",
+        "domain": "машиностроение",
+        "parameters": [],
+        "relations": [{"target_term": "деталь Y", "relation_type": "related_to"}]
+    })
+    assert response.status_code == 200
+
+
+# --- Изменение 68: Тесты feedback ---
+
+
+def test_feedback_endpoint(api_client):
+    """Отправка feedback -- 200."""
+    response = api_client.post("/v1/feedback", json={
+        "term": "ключ",
+        "rating": 5,
+        "comment": "Отличный результат"
+    })
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "ok"
+    assert data["term"] == "ключ"
+
+
+def test_feedback_requires_rating(api_client):
+    """Без rating -- 422."""
+    response = api_client.post("/v1/feedback", json={
+        "term": "ключ"
+    })
+    assert response.status_code == 422
+
+
+def test_feedback_invalid_rating(api_client):
+    """rating вне диапазона 1-5 -- 422."""
+    response = api_client.post("/v1/feedback", json={
+        "term": "ключ",
+        "rating": 6
+    })
+    assert response.status_code == 422

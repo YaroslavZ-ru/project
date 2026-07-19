@@ -13,6 +13,13 @@
 | log_level | str | INFO | DEBUG/INFO/WARNING/ERROR |
 | api_host | str | 127.0.0.1 | Адрес API |
 | api_port | int | 8000 | Порт API |
+| use_relations | bool | false | Включить расширение через граф отношений |
+| relation_max_depth | int | 1 | Глубина обхода графа (макс. 3) |
+| relation_decay_factor | float | 0.5 | Коэффициент затухания веса по глубине |
+| relation_confidence_mult | float | 0.7 | Множитель confidence для параметров из графа |
+| use_feedback_correction | bool | false | Коррекция по обратной связи (rating 1-5) |
+| feedback_weight | float | 0.1 | Вес коррекции feedback (0.0-1.0) |
+| feedback_min_votes | int | 3 | Минимум голосов для применения коррекции |
 
 ## Окружения
 

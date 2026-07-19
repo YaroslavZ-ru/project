@@ -16,7 +16,12 @@ import time
 
 import numpy as np
 
-from src.aggregation import aggregate_parameters, check_hints_coherence, determine_context
+from src.aggregation import (
+    aggregate_parameters,
+    apply_feedback_correction,
+    check_hints_coherence,
+    determine_context,
+)
 from src.cache import QueryVectorCache
 from src.config import Config
 from src.embeddings import FastTextWrapper
@@ -89,11 +94,19 @@ if _FASTAPI_AVAILABLE:
         enum_values: list[str] | None = None
         confidence: float = 1.0
 
+    # --- Изменение 69: domain_candidates ---
+
+    class DomainCandidate(BaseModel):
+        domain: str
+        confidence: float
+        example_term: str | None = None
+
     class SelectedContext(BaseModel):
         domain: str | None = None
         concept_id: str | None = None
         term: str | None = None
         similarity: float | None = None
+        domain_candidates: list[DomainCandidate] | None = None
 
     class QueryResponse(BaseModel):
         model_config = ConfigDict(extra="ignore")
@@ -137,6 +150,41 @@ if _FASTAPI_AVAILABLE:
         total: int
         successful: int
         failed: int
+
+    # --- Изменение 66: Сохранение понятий ---
+
+    class ConceptParameter(BaseModel):
+        name: str = Field(..., min_length=1)
+        label_ru: str = Field(..., min_length=1)
+        type: str = Field(..., pattern=r"^(string|integer|float|boolean|enum)$")
+        description: str | None = None
+        unit: str | None = None
+        enum_values: list[str] | None = None
+        confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+
+    class ConceptRelation(BaseModel):
+        target_term: str = Field(..., min_length=1)
+        relation_type: str = Field(..., pattern=r"^(is_a|part_of|related_to|synonym)$")
+        confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+
+    class SaveConceptRequest(BaseModel):
+        term: str = Field(..., min_length=1, max_length=200)
+        domain: str = Field(..., min_length=1)
+        parameters: list[ConceptParameter] = Field(default_factory=list)
+        relations: list[ConceptRelation] = Field(default_factory=list)
+
+    class SaveConceptResponse(BaseModel):
+        concept_id: str
+        status: str = "ok"
+
+    # --- Изменение 68: Обратная связь ---
+
+    class FeedbackRequest(BaseModel):
+        session_id: str | None = None
+        concept_id: str | None = None
+        term: str = Field(..., min_length=1)
+        rating: int = Field(..., ge=1, le=5)
+        comment: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -304,11 +352,40 @@ def _api_run_pipeline(
             warnings_list.append("KnowledgeBase не инициализирован. Поиск пропущен.")
         trace_context.add_stage("search", time.monotonic() - t_stage, {"candidates_count": len(candidates)})
 
+        # --- Изменение 68: Коррекция по обратной связи ---
+        if (
+            getattr(cfg, "use_feedback_correction", False)
+            and kb is not None
+            and candidates
+        ):
+            candidates = apply_feedback_correction(
+                candidates,
+                kb,
+                weight=getattr(cfg, "feedback_weight", 0.1),
+                min_votes=getattr(cfg, "feedback_min_votes", 3),
+            )
+
         # Шаг 4: агрегация или fallback
         t_stage = time.monotonic()
         if candidates:
             hints_lemmas = processed.get("hints_lemmas", [])
-            parameters = aggregate_parameters(candidates, hints_lemmas, cfg.max_parameters)
+
+            # --- Изменение 67: Параметры из графа отношений ---
+            related_params: list = []
+            if getattr(cfg, "use_relations", False) and kb is not None:
+                for candidate in candidates:
+                    concept_id = candidate.get("concept_id")
+                    if concept_id:
+                        rp = kb.get_related_concept_params(
+                            concept_id,
+                            depth=getattr(cfg, "relation_max_depth", 1),
+                        )
+                        related_params.extend(rp)
+
+            if related_params:
+                parameters = aggregate_parameters(candidates, hints_lemmas, cfg.max_parameters, related_params=related_params)
+            else:
+                parameters = aggregate_parameters(candidates, hints_lemmas, cfg.max_parameters)
             selected_context = determine_context(candidates)
             suggested_refinements: list = []
 
@@ -317,6 +394,8 @@ def _api_run_pipeline(
                 and generative_expander is not None
                 and len(parameters) < cfg.min_parameters_for_generative
             ):
+                if metrics:
+                    metrics.record_generative_call()
                 gen_params = generative_expander.expand(term, hints, parameters, cfg)
                 if gen_params:
                     parameters.extend(gen_params)
@@ -337,6 +416,8 @@ def _api_run_pipeline(
                 "request_id": request_id,
             }
         else:
+            if metrics:
+                metrics.record_fallback_activation()
             result = fallback_response(term, processed, cfg)
             result["request_id"] = request_id
         trace_context.add_stage("aggregation", time.monotonic() - t_stage, {"parameters_count": len(result.get("parameters", []))})
@@ -691,3 +772,91 @@ else:
     @app.post("/process_batch", response_model=BatchQueryResponse, include_in_schema=False)
     async def process_batch_legacy(request: Request, body: BatchQueryRequest) -> BatchQueryResponse:
         return await process_batch(request, body)
+
+    # --- Изменение 66: POST /v1/save_concept ---
+
+    @app.post("/v1/save_concept", response_model=SaveConceptResponse)
+    async def save_concept_endpoint(request: Request, body: SaveConceptRequest) -> SaveConceptResponse:
+        """Сохранить новое понятие в базу знаний."""
+        _verify_api_key(request)
+        if _cfg is None or _kb is None:
+            raise HTTPException(503, detail="Сервис не готов")
+
+        try:
+            parameters = [
+                {
+                    "name": p.name,
+                    "label_ru": p.label_ru,
+                    "type": p.type,
+                    "description": p.description,
+                    "unit": p.unit,
+                    "enum_values": p.enum_values,
+                    "confidence": p.confidence,
+                }
+                for p in body.parameters
+            ]
+
+            relations = [
+                {
+                    "target_term": r.target_term,
+                    "relation_type": r.relation_type,
+                    "confidence": r.confidence,
+                }
+                for r in body.relations
+            ]
+
+            concept_id = await asyncio.to_thread(
+                _kb.save_concept,
+                body.term,
+                body.domain,
+                parameters,
+                relations if relations else None,
+            )
+            return SaveConceptResponse(concept_id=concept_id)
+        except Exception as exc:
+            logger.exception("Ошибка save_concept: %s", exc)
+            raise HTTPException(500, detail=f"Ошибка сохранения: {exc}") from exc
+
+    @app.post("/save_concept", response_model=SaveConceptResponse, include_in_schema=False)
+    async def save_concept_legacy(request: Request, body: SaveConceptRequest) -> SaveConceptResponse:
+        return await save_concept_endpoint(request, body)
+
+    # --- Изменение 68: POST /v1/feedback ---
+
+    @app.post("/v1/feedback")
+    async def feedback_endpoint(request: Request, body: FeedbackRequest) -> dict:
+        """Принять обратную связь по результату поиска (rating 1-5)."""
+        _verify_api_key(request)
+        if _cfg is None:
+            raise HTTPException(503, detail="Сервис не готов")
+
+        try:
+            if _kb is not None:
+                with _kb._db_lock:
+                    _kb._conn.execute(
+                        "INSERT INTO feedback (session_id, concept_id, term, rating, comment) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (body.session_id, body.concept_id, body.term, body.rating, body.comment),
+                    )
+                    _kb._conn.commit()
+            else:
+                import sqlite3 as _sqlite3
+
+                conn = _sqlite3.connect(str(_cfg.db_path))
+                try:
+                    conn.execute(
+                        "INSERT INTO feedback (session_id, concept_id, term, rating, comment) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (body.session_id, body.concept_id, body.term, body.rating, body.comment),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+            return {"status": "ok", "term": body.term}
+        except Exception as exc:
+            logger.exception("Ошибка feedback: %s", exc)
+            raise HTTPException(500, detail=f"Ошибка сохранения feedback: {exc}") from exc
+
+    @app.post("/feedback", include_in_schema=False)
+    async def feedback_legacy(request: Request, body: FeedbackRequest) -> dict:
+        return await feedback_endpoint(request, body)

@@ -227,6 +227,17 @@ def detect_ambiguity(
         "domains": domains_list,
         "top_domain": top_domain,
         "runner_up": runner_up,
+        "domain_candidates": [
+            {
+                "domain": d,
+                "confidence": round(s, 4),
+                "example_term": next(
+                    (c.get("term") for c in candidates if (c.get("domain") or "неизвестно") == d),
+                    None,
+                ),
+            }
+            for d, s in sorted_domains
+        ],
     }
 
 
@@ -252,3 +263,137 @@ def generate_clarification_questions(
         f"Вы имеете в виду '{term}' в контексте '{top}'?",
         f"Или '{term}' в контексте '{runner}'?",
     ]
+
+
+# --- Изменение 67: Параметр related_params в aggregate_parameters ---
+
+# Сохраняем оригинальную функцию для совместимости
+_aggregate_parameters_original = aggregate_parameters
+
+
+def _aggregate_parameters_extended(
+    candidates: list,
+    hints_lemmas: list,
+    max_parameters: int,
+    related_params: list | None = None,
+) -> list:
+    """Расширенная агрегация с поддержкой параметров из графа отношений.
+
+    Args:
+        candidates:     список кандидатов из поиска.
+        hints_lemmas:   леммы подсказок.
+        max_parameters: макс. параметров в ответе.
+        related_params: параметры из графа отношений (с пониженным весом).
+
+    Returns:
+        Список агрегированных параметров.
+    """
+    if not candidates and not related_params:
+        return []
+
+    groups: dict = {}
+
+    # Основные кандидаты
+    for candidate in candidates:
+        sim = candidate["similarity"]
+        for param in candidate.get("parameters", []):
+            name = param["name"]
+            if name not in groups:
+                groups[name] = {
+                    "param": param.copy(),
+                    "similarities": [],
+                    "freq": 0,
+                }
+            groups[name]["similarities"].append(sim)
+            groups[name]["freq"] += 1
+
+    # Параметры из графа отношений (с relation_confidence_mult)
+    conf_mult = 0.7
+    for rp in (related_params or []):
+        name = rp.get("name", "")
+        if not name:
+            continue
+        rp_conf = float(rp.get("confidence", 1.0)) * conf_mult
+        if name not in groups:
+            groups[name] = {
+                "param": rp.copy(),
+                "similarities": [],
+                "freq": 0,
+            }
+        groups[name]["similarities"].append(rp_conf)
+        groups[name]["freq"] += 1
+        # Убрать служебные ключи
+        groups[name]["param"].pop("_relation_type", None)
+        groups[name]["param"].pop("_source_concept_id", None)
+
+    if not groups:
+        return []
+
+    max_freq = max(g["freq"] for g in groups.values())
+    hint_set = {lemma for sub in hints_lemmas for lemma in sub}
+
+    for g in groups.values():
+        freq_norm = g["freq"] / max_freq
+        avg_sim = sum(g["similarities"]) / len(g["similarities"])
+        hint_match = _compute_hint_match(g["param"], hint_set)
+        g["score"] = 0.6 * freq_norm + 0.3 * avg_sim + 0.1 * hint_match
+
+    sorted_groups = sorted(groups.values(), key=lambda g: g["score"], reverse=True)
+    top_groups = sorted_groups[:max_parameters]
+
+    max_score = top_groups[0]["score"] if top_groups else 1.0
+    if max_score <= 0:
+        max_score = 1.0
+
+    result = []
+    for g in top_groups:
+        p = g["param"].copy()
+        p["confidence"] = round(g["score"] / max_score, 4)
+        p["source"] = "knowledge_base"
+        result.append(p)
+
+    logger.info("aggregate: %d кандидатов -> %d параметров", len(candidates), len(result))
+    return result
+
+
+# --- Изменение 68: Коррекция по обратной связи ---
+
+
+def apply_feedback_correction(
+    candidates: list[dict],
+    kb,
+    weight: float,
+    min_votes: int,
+) -> list[dict]:
+    """Скорректировать similarity кандидатов на основе обратной связи.
+
+    Понятия с высоким рейтингом получают boost, с низким — penalty.
+
+    Args:
+        candidates: список кандидатов (каждый с concept_id и similarity).
+        kb:         KnowledgeBase (для get_feedback_stats).
+        weight:     вес коррекции (cfg.feedback_weight).
+        min_votes:  минимум голосов для применения (cfg.feedback_min_votes).
+
+    Returns:
+        Обновлённый список кандидатов.
+    """
+    if not candidates:
+        return candidates
+
+    for c in candidates:
+        concept_id = c.get("concept_id")
+        if not concept_id:
+            continue
+        stats = kb.get_feedback_stats(concept_id)
+        if stats["votes"] < min_votes:
+            continue
+        avg = stats["avg_rating"]
+        if avg is None:
+            continue
+        multiplier = 1.0 + (avg - 3.0) * weight
+        multiplier = max(0.5, min(multiplier, 1.5))
+        c["similarity"] = min(c["similarity"] * multiplier, 1.0)
+
+    candidates.sort(key=lambda x: x.get("similarity", 0.0), reverse=True)
+    return candidates

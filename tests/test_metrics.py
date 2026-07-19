@@ -80,3 +80,70 @@ def test_thread_safety():
         t.join()
 
     assert mc.get_summary()["requests_total"] == 500
+
+
+# --- Изменение 68/70: Тесты новых метрик ---
+
+
+def test_record_ambiguous():
+    """Запись ambiguous-запроса увеличивает requests_ambiguous."""
+    mc = MetricsCollector(use_metrics=False)
+    mc.record_request(10.0, "ambiguous")
+    s = mc.get_summary()
+    assert s["requests_ambiguous"] == 1
+    assert s["requests_total"] == 1
+
+
+def test_ema_pipeline_ms():
+    """EMA-усреднение avg_pipeline_ms работает корректно."""
+    mc = MetricsCollector(use_metrics=False)
+    mc.record_request(0.1, "ok", elapsed_ms=100.0)
+    mc.record_request(0.2, "ok", elapsed_ms=200.0)
+    s = mc.get_summary()
+    # EMA: first = 100, second = 0.9*100 + 0.1*200 = 110
+    assert s["avg_pipeline_ms"] == 110.0
+
+
+def test_record_generative_call():
+    """Запись вызова генеративного расширения."""
+    mc = MetricsCollector(use_metrics=False)
+    mc.record_generative_call()
+    assert mc.get_summary()["generative_calls"] == 1
+
+
+def test_record_generative_timeout():
+    """Запись таймаута генеративного расширения."""
+    mc = MetricsCollector(use_metrics=False)
+    mc.record_generative_timeout()
+    assert mc.get_summary()["generative_timeouts"] == 1
+
+
+def test_record_fallback():
+    """Запись активации fallback."""
+    mc = MetricsCollector(use_metrics=False)
+    mc.record_fallback_activation()
+    assert mc.get_summary()["fallback_activations"] == 1
+
+
+def test_record_search_cache():
+    """Запись cache_hits_search и cache_misses_search."""
+    mc = MetricsCollector(use_metrics=False)
+    mc.record_search_cache_hit()
+    mc.record_search_cache_hit()
+    mc.record_search_cache_miss()
+    s = mc.get_summary()
+    assert s["cache_hits_search"] == 2
+    assert s["cache_misses_search"] == 1
+
+
+def test_new_counters_initial_zero():
+    """Новые счётчики инициализируются нулями."""
+    mc = MetricsCollector(use_metrics=False)
+    s = mc.get_summary()
+    assert s["requests_ambiguous"] == 0
+    assert s["generative_calls"] == 0
+    assert s["generative_timeouts"] == 0
+    assert s["fallback_activations"] == 0
+    assert s["cache_hits_search"] == 0
+    assert s["cache_misses_search"] == 0
+    assert s["avg_pipeline_ms"] == 0.0

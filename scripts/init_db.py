@@ -55,16 +55,30 @@ def init_db(db_path: str) -> None:
             key   TEXT PRIMARY KEY,
             value TEXT
         )""",
+        # --- Изменение 68: Таблица обратной связи ---
+        """
+        CREATE TABLE IF NOT EXISTS feedback (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id  TEXT,
+            concept_id  TEXT,
+            term        TEXT NOT NULL,
+            rating      INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
+            comment     TEXT,
+            created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (concept_id) REFERENCES concepts(id) ON DELETE SET NULL
+        )""",
         "CREATE INDEX IF NOT EXISTS idx_concepts_domain       ON concepts(domain)",
         "CREATE INDEX IF NOT EXISTS idx_parameters_concept_id ON parameters(concept_id)",
         "CREATE INDEX IF NOT EXISTS idx_relations_source      ON relations(source_concept_id)",
         "CREATE INDEX IF NOT EXISTS idx_relations_target      ON relations(target_concept_id)",
+        "CREATE INDEX IF NOT EXISTS idx_feedback_term         ON feedback(term)",
+        "CREATE INDEX IF NOT EXISTS idx_feedback_rating       ON feedback(rating)",
     ]
 
     try:
         for stmt in ddl_statements:
             conn.execute(stmt)
-        conn.execute("INSERT OR IGNORE INTO metadata (key,value) VALUES ('schema_version','2')")
+        conn.execute("INSERT OR IGNORE INTO metadata (key,value) VALUES ('schema_version','3')")
         conn.commit()
     except sqlite3.Error as exc:
         logger.error("Ошибка создания схемы: %s", exc)

@@ -87,6 +87,7 @@ class Config:
     use_relations: bool = False
     relation_max_depth: int = 1
     relation_decay_factor: float = 0.5
+    relation_confidence_mult: float = 0.7
     domain_centroids_min_concepts: int = 2
     use_metrics: bool = False
     api_host: str = "127.0.0.1"
@@ -106,6 +107,10 @@ class Config:
     hints_coherence_threshold: float = 0.2
     # --- Изменение 65: JSON-lines логирование ---
     log_format: str = "text"
+    # --- Изменение 68: Коррекция по обратной связи ---
+    use_feedback_correction: bool = False
+    feedback_weight: float = 0.1
+    feedback_min_votes: int = 3
 
     # ------------------------------------------------------------------
     @classmethod
@@ -269,6 +274,8 @@ class Config:
             "ambiguity_delta",
             "domain_centroid_threshold",
             "relation_decay_factor",
+            "relation_confidence_mult",
+            "feedback_weight",
         ):
             val = data.get(key)
             if val is None:
@@ -285,6 +292,7 @@ class Config:
             "auto_save_domain_on_fallback",
             "use_relations",
             "use_metrics",
+            "use_feedback_correction",
         ):
             val = data.get(key)
             if val is None:

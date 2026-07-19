@@ -24,6 +24,7 @@ import numpy as np
 
 from src.aggregation import (
     aggregate_parameters,
+    apply_feedback_correction,
     detect_ambiguity,
     determine_context,
     generate_clarification_questions,
@@ -318,11 +319,40 @@ def run_pipeline(
     trace_context.add_stage("search", time.monotonic() - t_stage, {"candidates_count": len(candidates)})
     logger.info("Поиск: %d кандидатов за %.3fс", len(candidates), time.monotonic() - t_stage)
 
+    # --- Изменение 68: Коррекция по обратной связи ---
+    if (
+        getattr(cfg, "use_feedback_correction", False)
+        and kb is not None
+        and candidates
+    ):
+        candidates = apply_feedback_correction(
+            candidates,
+            kb,
+            weight=getattr(cfg, "feedback_weight", 0.1),
+            min_votes=getattr(cfg, "feedback_min_votes", 3),
+        )
+
     # --- Шаг 4: Агрегация или fallback ---
     t_stage = time.monotonic()
     if candidates:
         hints_lemmas = processed.get("hints_lemmas", [])
-        parameters = aggregate_parameters(candidates, hints_lemmas, cfg.max_parameters)
+
+        # --- Изменение 67: Параметры из графа отношений ---
+        related_params: list = []
+        if getattr(cfg, "use_relations", False) and kb is not None:
+            for candidate in candidates:
+                concept_id = candidate.get("concept_id")
+                if concept_id:
+                    rp = kb.get_related_concept_params(
+                        concept_id,
+                        depth=getattr(cfg, "relation_max_depth", 1),
+                    )
+                    related_params.extend(rp)
+
+        if related_params:
+            parameters = aggregate_parameters(candidates, hints_lemmas, cfg.max_parameters, related_params=related_params)
+        else:
+            parameters = aggregate_parameters(candidates, hints_lemmas, cfg.max_parameters)
         selected_context = determine_context(candidates)
         suggested_refinements = []
 

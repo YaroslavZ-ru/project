@@ -56,10 +56,19 @@ class MetricsCollector:
             "requests_ok": 0,
             "requests_fallback": 0,
             "requests_error": 0,
+            "requests_ambiguous": 0,
             "cache_hits": 0,
             "cache_misses": 0,
+            "cache_hits_search": 0,
+            "cache_misses_search": 0,
+            "generative_calls": 0,
+            "generative_timeouts": 0,
+            "fallback_activations": 0,
         }
         self._total_duration: float = 0.0
+        # --- Изменение 70: EMA-усреднение ---
+        self._avg_pipeline_ms: float = 0.0
+        self._ema_alpha: float = 0.1
         self._lock = threading.Lock()
 
         # Prometheus-метрики -- только при _prometheus_on
@@ -87,18 +96,30 @@ class MetricsCollector:
                 )
                 self._prometheus_on = False
 
-    def record_request(self, duration_s: float, status: str) -> None:
+    def record_request(self, duration_s: float, status: str, elapsed_ms: float | None = None) -> None:
         """Записать один обработанный запрос.
 
         Args:
             duration_s: время обработки в секундах (>= 0).
-            status:     одно из "ok" | "fallback" | "error".
+            status:     одно из "ok" | "fallback" | "error" | "ambiguous".
+            elapsed_ms: время обработки в миллисекундах (для EMA). None = вычислить из duration_s.
         """
+        if elapsed_ms is None:
+            elapsed_ms = duration_s * 1000.0
+
         with self._lock:
             self._counts["requests_total"] += 1
             key = "requests_" + status
             self._counts[key] = self._counts.get(key, 0) + 1
             self._total_duration += max(0.0, duration_s)
+            # EMA: первый запрос задаёт начальное значение напрямую
+            if self._counts["requests_total"] == 1:
+                self._avg_pipeline_ms = elapsed_ms
+            else:
+                self._avg_pipeline_ms = (
+                    (1 - self._ema_alpha) * self._avg_pipeline_ms
+                    + self._ema_alpha * elapsed_ms
+                )
 
         if self._prometheus_on:
             try:
@@ -124,13 +145,41 @@ class MetricsCollector:
         with self._lock:
             self._counts["cache_misses"] += 1
 
+    def record_search_cache_hit(self) -> None:
+        """Зафиксировать попадание в кэш поиска."""
+        with self._lock:
+            self._counts["cache_hits_search"] += 1
+
+    def record_search_cache_miss(self) -> None:
+        """Зафиксировать промах кэша поиска."""
+        with self._lock:
+            self._counts["cache_misses_search"] += 1
+
+    def record_generative_call(self) -> None:
+        """Зафиксировать вызов генеративного расширения."""
+        with self._lock:
+            self._counts["generative_calls"] += 1
+
+    def record_generative_timeout(self) -> None:
+        """Зафиксировать таймаут генеративного расширения."""
+        with self._lock:
+            self._counts["generative_timeouts"] += 1
+
+    def record_fallback_activation(self) -> None:
+        """Зафиксировать активацию fallback-режима."""
+        with self._lock:
+            self._counts["fallback_activations"] += 1
+
     def get_summary(self) -> dict:
         """Вернуть снапшот внутренних метрик.
 
         Returns:
             Словарь с ключами:
               requests_total, requests_ok, requests_fallback, requests_error,
-              cache_hits, cache_misses, avg_duration_s, prometheus_active.
+              requests_ambiguous, cache_hits, cache_misses,
+              cache_hits_search, cache_misses_search,
+              generative_calls, generative_timeouts, fallback_activations,
+              avg_duration_s, avg_pipeline_ms, prometheus_active.
         """
         with self._lock:
             total = self._counts["requests_total"]
@@ -140,9 +189,16 @@ class MetricsCollector:
                 "requests_ok": self._counts["requests_ok"],
                 "requests_fallback": self._counts["requests_fallback"],
                 "requests_error": self._counts["requests_error"],
+                "requests_ambiguous": self._counts.get("requests_ambiguous", 0),
                 "cache_hits": self._counts["cache_hits"],
                 "cache_misses": self._counts["cache_misses"],
+                "cache_hits_search": self._counts.get("cache_hits_search", 0),
+                "cache_misses_search": self._counts.get("cache_misses_search", 0),
+                "generative_calls": self._counts.get("generative_calls", 0),
+                "generative_timeouts": self._counts.get("generative_timeouts", 0),
+                "fallback_activations": self._counts.get("fallback_activations", 0),
                 "avg_duration_s": round(avg_dur, 4),
+                "avg_pipeline_ms": round(self._avg_pipeline_ms, 2),
                 "prometheus_active": self._prometheus_on,
             }
 

@@ -38,6 +38,175 @@ class KnowledgeBase:
     def close(self):
         self._conn.close()
 
+    # --- Изменение 66: Сохранение понятий через API ---
+
+    def save_concept(
+        self,
+        term: str,
+        domain: str,
+        parameters: list[dict] | None = None,
+        relations: list[dict] | None = None,
+    ) -> str:
+        """Сохранить новое понятие в базу знаний.
+
+        Args:
+            term:       термин (название понятия).
+            domain:     домен (категория).
+            parameters: список параметров [{name, label_ru, type, ...}].
+            relations:  список отношений [{target_term, relation_type, confidence}].
+
+        Returns:
+            ID созданного понятия.
+        """
+        import uuid
+
+        concept_id = str(uuid.uuid4())
+
+        # Вычислить эмбеддинг для нового понятия
+        embedding_blob = None
+        if self._embedding_model is not None and self._synonym_dict is not None:
+            try:
+                emb = self.compute_concept_embedding(term)
+                embedding_blob = self._vector_to_blob(emb)
+            except Exception as exc:
+                self.logger.warning("Не удалось вычислить эмбеддинг для %r: %s", term, exc)
+
+        with self._db_lock:
+            self._conn.execute(
+                "INSERT INTO concepts (id, term, domain, embedding) VALUES (?, ?, ?, ?)",
+                (concept_id, term, domain, embedding_blob),
+            )
+
+            for p in (parameters or []):
+                enum_val = json.dumps(p.get("enum_values"), ensure_ascii=False) if p.get("enum_values") else None
+                self._conn.execute(
+                    "INSERT INTO parameters (concept_id, name, label_ru, type, description, unit, enum_values, confidence) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        concept_id,
+                        p.get("name", ""),
+                        p.get("label_ru", ""),
+                        p.get("type", "string"),
+                        p.get("description"),
+                        p.get("unit"),
+                        enum_val,
+                        p.get("confidence", 1.0),
+                    ),
+                )
+
+            if relations:
+                for r in relations:
+                    target_term = r.get("target_term", "")
+                    rel_type = r.get("relation_type", "related_to")
+                    rel_conf = r.get("confidence", 1.0)
+                    # Найти concept_id цели по term
+                    target_row = self._conn.execute(
+                        "SELECT id FROM concepts WHERE term = ? LIMIT 1",
+                        (target_term,),
+                    ).fetchone()
+                    if target_row:
+                        rel_id = str(uuid.uuid4())
+                        self._conn.execute(
+                            "INSERT OR IGNORE INTO relations (id, source_concept_id, target_concept_id, relation_type, confidence) "
+                            "VALUES (?, ?, ?, ?, ?)",
+                            (rel_id, concept_id, target_row["id"], rel_type, rel_conf),
+                        )
+
+            self._conn.commit()
+
+        self._concepts_cache = None
+        self.logger.info("Сохранено понятие: id=%s term=%r domain=%r", concept_id, term, domain)
+        return concept_id
+
+    # --- Изменение 67: Получение параметров связанных понятий ---
+
+    def get_related_concept_params(
+        self,
+        concept_id: str,
+        relation_types: list[str] | None = None,
+        depth: int = 1,
+    ) -> list[dict]:
+        """Получить параметры связанных понятий через граф отношений (BFS).
+
+        Args:
+            concept_id:     ID исходного понятия.
+            relation_types: типы отношений для поиска. None = ["is_a", "related_to"].
+            depth:          глубина обхода (макс. 3).
+
+        Returns:
+            Список параметров связанных понятий с метаданными.
+        """
+        if relation_types is None:
+            relation_types = ["is_a", "related_to"]
+        depth = min(depth, 3)
+
+        try:
+            queue: deque = deque([(concept_id, 0)])
+            visited: set = {concept_id}
+            result: list[dict] = []
+
+            while queue:
+                curr_id, level = queue.popleft()
+                if level >= depth:
+                    continue
+
+                placeholders = ",".join("?" * len(relation_types))
+                rows = self._conn.execute(
+                    f"SELECT target_concept_id, relation_type FROM relations "
+                    f"WHERE source_concept_id = ? AND relation_type IN ({placeholders})",
+                    [curr_id, *relation_types],
+                ).fetchall()
+
+                for row in rows:
+                    target_id = row["target_concept_id"]
+                    rel_type = row["relation_type"]
+                    if target_id in visited:
+                        continue
+                    visited.add(target_id)
+                    queue.append((target_id, level + 1))
+
+                    params = self._get_concept_params(target_id)
+                    for p in params:
+                        p["_relation_type"] = rel_type
+                        p["_source_concept_id"] = target_id
+                    result.extend(params)
+
+            return result
+        except sqlite3.Error as exc:
+            self.logger.error("Ошибка get_related_concept_params: %s", exc)
+            return []
+
+    def _get_concept_params(self, concept_id: str) -> list[dict]:
+        """Получить параметры одного понятия по ID."""
+        rows = self._conn.execute(
+            "SELECT name, label_ru, type, description, unit, enum_values, confidence "
+            "FROM parameters WHERE concept_id = ?",
+            (concept_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    # --- Изменение 68: Статистика обратной связи ---
+
+    def get_feedback_stats(self, concept_id: str) -> dict:
+        """Получить статистику обратной связи для понятия.
+
+        Args:
+            concept_id: ID понятия.
+
+        Returns:
+            {"avg_rating": float | None, "votes": int}.
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT AVG(rating), COUNT(*) FROM feedback WHERE concept_id = ?",
+                (concept_id,),
+            ).fetchone()
+            if row and row[1] > 0:
+                return {"avg_rating": float(row[0]), "votes": row[1]}
+            return {"avg_rating": None, "votes": 0}
+        except sqlite3.Error:
+            return {"avg_rating": None, "votes": 0}
+
     def _blob_to_vector(self, blob):
         if blob is None:
             return np.zeros(300, dtype=np.float32)

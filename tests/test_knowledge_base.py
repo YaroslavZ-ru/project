@@ -65,7 +65,7 @@ def test_schema_version(tmp_path):
     init_db(p)
     conn = sqlite3.connect(p)
     row = conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
-    assert row[0] == "2"
+    assert row[0] == "3"
     conn.close()
 
 
@@ -283,4 +283,78 @@ def test_get_closest_domain_empty_centroids(cfg, db_path):
     kb = KnowledgeBase(config=cfg2)
     result = kb.get_closest_domain(np.zeros(300, dtype=np.float32), {})
     assert result is None
+    kb.close()
+
+
+# --- Изменение 66/67: Тесты save_concept и get_related_concept_params ---
+
+
+def test_save_concept_and_get_related(cfg, db_path):
+    """Сохранение понятия и получение связанных параметров."""
+    from dataclasses import replace
+
+    cfg2 = replace(cfg, db_path=db_path)
+    kb = KnowledgeBase(config=cfg2)
+
+    # Сохранить два понятия
+    id1 = kb.save_concept("ключ", "инструмент", [{"name": "size", "label_ru": "Размер", "type": "float"}])
+    id2 = kb.save_concept("ключ гаечный", "инструмент", [{"name": "moment", "label_ru": "Момент", "type": "float"}])
+
+    # Добавить отношение is_a
+    import uuid
+    kb._conn.execute(
+        "INSERT INTO relations (id, source_concept_id, target_concept_id, relation_type, confidence) VALUES (?, ?, ?, ?, ?)",
+        (str(uuid.uuid4()), id2, id1, "is_a", 1.0),
+    )
+    kb._conn.commit()
+
+    # Получить параметры связанных понятий
+    params = kb.get_related_concept_params(id2, depth=1)
+    assert len(params) >= 1
+    param_names = [p["name"] for p in params]
+    assert "size" in param_names
+
+    kb.close()
+
+
+def test_get_related_concept_params_max_depth(cfg, db_path):
+    """Проверить что depth ограничивается 3."""
+    from dataclasses import replace
+
+    cfg2 = replace(cfg, db_path=db_path)
+    kb = KnowledgeBase(config=cfg2)
+
+    # Даже с depth=10, метод ограничит до 3
+    params = kb.get_related_concept_params("nonexistent", depth=10)
+    assert params == []
+
+    kb.close()
+
+
+def test_save_concept_generates_id(cfg, db_path):
+    """save_concept возвращает непустой concept_id."""
+    from dataclasses import replace
+
+    cfg2 = replace(cfg, db_path=db_path)
+    kb = KnowledgeBase(config=cfg2)
+
+    cid = kb.save_concept("тест", "домен")
+    assert cid
+    assert isinstance(cid, str)
+    assert len(cid) > 0
+
+    kb.close()
+
+
+def test_get_feedback_stats_empty(cfg, db_path):
+    """get_feedback_stats для несуществующего concept_id."""
+    from dataclasses import replace
+
+    cfg2 = replace(cfg, db_path=db_path)
+    kb = KnowledgeBase(config=cfg2)
+
+    stats = kb.get_feedback_stats("nonexistent")
+    assert stats["avg_rating"] is None
+    assert stats["votes"] == 0
+
     kb.close()
