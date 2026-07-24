@@ -1,4 +1,4 @@
-from collections import deque
+from collections import OrderedDict, deque
 import json
 import logging
 from pathlib import Path
@@ -11,6 +11,47 @@ import numpy as np
 from src.lemmatizer import Lemmatizer
 
 logger = logging.getLogger(__name__)
+
+
+class SearchCache:
+    """LRU-кэш результатов поиска с TTL.
+
+    Attributes:
+        _cache:     OrderedDict {key: (result, timestamp)}.
+        _maxsize:   максимальный размер кэша.
+        _ttl:       время жизни записи в секундах (0 = бессрочно).
+        _lock:      потокобезопасный доступ.
+    """
+
+    def __init__(self, maxsize: int = 100, ttl_seconds: int = 300) -> None:
+        self._cache: OrderedDict = OrderedDict()
+        self._maxsize = maxsize
+        self._ttl = ttl_seconds
+        self._lock = threading.Lock()
+
+    def get(self, key: tuple) -> list | None:
+        """Получить результат из кэша. None если нет или просрочено."""
+        with self._lock:
+            if key not in self._cache:
+                return None
+            result, ts = self._cache[key]
+            if self._ttl > 0 and (time.monotonic() - ts) > self._ttl:
+                del self._cache[key]
+                return None
+            self._cache.move_to_end(key)
+            return result
+
+    def put(self, key: tuple, result: list) -> None:
+        """Сохранить результат в кэш."""
+        with self._lock:
+            if len(self._cache) >= self._maxsize:
+                self._cache.popitem(last=False)
+            self._cache[key] = (result, time.monotonic())
+
+    def clear(self) -> None:
+        """Очистить весь кэш."""
+        with self._lock:
+            self._cache.clear()
 
 
 class KnowledgeBase:
@@ -34,6 +75,11 @@ class KnowledgeBase:
         self._embeddings_matrix: np.ndarray | None = None
         self._matrix_concept_ids: list[str] | None = None
         self._matrix_lock = threading.RLock()
+        # --- Изменение 77: Кэш поиска с TTL ---
+        self._search_cache = SearchCache(
+            maxsize=getattr(config, "search_cache_size", 100),
+            ttl_seconds=getattr(config, "search_cache_ttl_seconds", 300),
+        )
         self.logger = logging.getLogger(__name__)
 
     def __enter__(self):
@@ -123,6 +169,7 @@ class KnowledgeBase:
 
         self._concepts_cache = None
         self._invalidate_embeddings_matrix()
+        self._search_cache.clear()
         self.logger.info("Сохранено понятие: id=%s term=%r domain=%r", concept_id, term, domain)
         self._maybe_rebuild_faiss()
         return concept_id
@@ -327,6 +374,7 @@ class KnowledgeBase:
         self._conn.commit()
         self._faiss_index = None
         self._invalidate_embeddings_matrix()
+        self._search_cache.clear()
         self.logger.info("Пересчитано эмбеддингов: %d", updated)
         self._maybe_rebuild_faiss()
         return updated
@@ -758,6 +806,14 @@ class KnowledgeBase:
             self.logger.warning("Нулевой query_vector, поиск пропущен")
             return []
         query_vector = (query_vector / norm_q).astype(np.float32)
+
+        # Проверка кэша поиска
+        cache_key = (query_vector.tobytes(), min_confidence, max_candidates, domain_filter)
+        cached = self._search_cache.get(cache_key)
+        if cached is not None:
+            self.logger.debug("search cache hit для запроса")
+            return cached
+
         concepts = self.get_all_concepts()
         if not concepts:
             self.logger.warning("База пуста, поиск невозможен")
@@ -807,4 +863,5 @@ class KnowledgeBase:
             results = self._search_with_relations(
                 query_vector, results, min_confidence, max_candidates
             )
+        self._search_cache.put(cache_key, results)
         return results

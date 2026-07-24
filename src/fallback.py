@@ -24,12 +24,14 @@ def load_json_config(path: str | Path) -> dict[str, Any]:
 def detect_domain(all_lemmas: set, keywords_path) -> str:
     keywords = load_json_config(keywords_path)
     if not keywords:
-        return "общее"
+        return "general"
     domain_scores: dict = {}
     for domain, kws in keywords.items():
+        if domain == "general":
+            continue
         domain_scores[domain] = sum(1 for kw in kws for lemma in all_lemmas if kw in lemma)
-    if max(domain_scores.values()) == 0:
-        return "общее"
+    if not domain_scores or max(domain_scores.values()) == 0:
+        return "general"
     return str(max(domain_scores, key=lambda k: domain_scores.get(k, 0)))
 
 
@@ -45,11 +47,11 @@ def fallback_response(term: str, processed: dict, config: Config) -> dict:
 
     domain = detect_domain(all_lemmas, config.fallback_domain_keywords_path)
     templates = load_json_config(config.domain_templates_path)
-    template = templates.get(domain, templates.get("общее", {}))
+    template = templates.get(domain, templates.get("general", {}))
     params = [p.copy() for p in template.get("parameters", [])]
 
     for p in params:
-        p["confidence"] = 0.3
+        p["confidence"] = 0.4
         p["source"] = "template"
 
     logger.warning("фаллбэк: '%s' не найден. Домен: '%s'. Шаблонов: %d.", term, domain, len(params))
@@ -57,7 +59,7 @@ def fallback_response(term: str, processed: dict, config: Config) -> dict:
     return {
         "status": "ok",
         "term": term,
-        "selected_context": {"domain": domain, "confidence": 0.3},
+        "selected_context": {"domain": domain, "confidence": 0.4},
         "parameters": params,
         "suggested_refinements": [],
         "warnings": [

@@ -29,7 +29,13 @@ def test_detect_domain_music():
 
 def test_detect_domain_no_match():
     result = detect_domain({"хмурыкало"}, str(PROJECT_ROOT / "configs" / "domain_keywords.json"))
-    assert result == "общее"
+    assert result == "general"
+
+
+def test_detect_domain_general_not_in_competition():
+    """general не побеждает если есть совпадения в другом домене."""
+    result = detect_domain({"ключ", "инструмент"}, str(PROJECT_ROOT / "configs" / "domain_keywords.json"))
+    assert result != "general"
 
 
 def test_fallback_response_structure(cfg):
@@ -37,7 +43,7 @@ def test_fallback_response_structure(cfg):
     r = fallback_response("ключ", processed, cfg)
     for key in ("status", "term", "selected_context", "parameters", "warnings"):
         assert key in r
-    assert all(p["confidence"] == 0.3 for p in r["parameters"])
+    assert all(p["confidence"] == 0.4 for p in r["parameters"])
     assert all(p["source"] == "template" for p in r["parameters"])
     assert len(r["warnings"]) > 0
 

@@ -76,6 +76,12 @@ class SynonymDict:
                 weight = item.get("weight", 0.5)
                 if not isinstance(weight, (int, float)):
                     weight = 0.5
+                if weight < 0 or weight > 1:
+                    logger.warning(
+                        "Некорректный weight=%s для синонима %s, использую 0.5",
+                        weight, word,
+                    )
+                    weight = 0.5
                 clean_entries.append({"word": str(word), "weight": float(weight)})
             validated[key] = clean_entries
 

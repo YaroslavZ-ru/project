@@ -13,7 +13,7 @@
       {"name": "purpose",  "label_ru": "Назначение", "type": "string", "description": "Для каких работ"}
     ]
   },
-  "общее": {
+  "general": {
     "parameters": [
       {"name": "name",        "label_ru": "Наименование", "type": "string", "description": "Официальное название"},
       {"name": "description", "label_ru": "Описание",    "type": "string", "description": "Краткое описание"},

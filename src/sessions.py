@@ -127,6 +127,58 @@ class SessionManager:
         else:
             return self._get_session_memory(session_id)
 
+    def create_session(self, term: str, hints: list[str] | None = None) -> str:
+        """Создать новую сессию с уникальным UUID.
+
+        При коллизии UUID генерирует новый (максимум 3 попытки).
+
+        Args:
+            term:  термин запроса.
+            hints: список подсказок.
+
+        Returns:
+            session_id (UUID).
+        """
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            session_id = str(uuid.uuid4())
+            try:
+                if self._storage == "sqlite":
+                    conn = self._get_conn()
+                    try:
+                        conn.execute(
+                            "INSERT INTO sessions (id, term, domain, created_at, updated_at, expires_at) "
+                            "VALUES (?, ?, NULL, datetime('now'), datetime('now'), "
+                            "datetime('now', '+' || ? || ' seconds'))",
+                            (session_id, term, self._ttl),
+                        )
+                        conn.commit()
+                    finally:
+                        conn.close()
+                else:
+                    with self._lock:
+                        now = time.monotonic()
+                        self._sessions[session_id] = SessionEntry(
+                            session_id=session_id,
+                            domain=None,
+                            last_term=term,
+                            created_at=now,
+                            updated_at=now,
+                        )
+                logger.debug("Сессия создана: %s, term=%r", session_id, term)
+                return session_id
+            except sqlite3.IntegrityError:
+                if attempt < max_attempts - 1:
+                    logger.warning(
+                        "UUID коллизия, попытка %d/%d",
+                        attempt + 1, max_attempts,
+                    )
+                    continue
+                raise RuntimeError(
+                    f"Не удалось создать сессию после {max_attempts} попыток"
+                )
+        return session_id
+
     def update_session(
         self,
         session_id: str,
@@ -253,7 +305,12 @@ class SessionManager:
             else:
                 entry = self._sessions[session_id]
                 entry.domain = domain
-                entry.last_term = term if term is not None else entry.last_term
+                if term is not None and term != entry.last_term:
+                    logger.warning(
+                        "Сессия %s: попытка сменить термин с %r на %r. "
+                        "Создайте новую сессию.",
+                        session_id, entry.last_term, term,
+                    )
                 entry.updated_at = now
 
             logger.debug("Сессия обновлена: %s, domain=%s", session_id, domain)

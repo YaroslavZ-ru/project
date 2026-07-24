@@ -60,7 +60,7 @@ class Lemmatizer:
         try:
             parses = self._morph.parse(word)
             if parses:
-                best = max(parses, key=lambda p: p.score)
+                best = parses[0]
                 lemma = best.normal_form
             else:
                 lemma = word.lower()
