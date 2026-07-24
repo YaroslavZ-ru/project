@@ -67,12 +67,25 @@ def init_db(db_path: str) -> None:
             created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (concept_id) REFERENCES concepts(id) ON DELETE SET NULL
         )""",
+        # --- Изменение 92: Таблица сессий ---
+        """
+        CREATE TABLE IF NOT EXISTS sessions (
+            id           TEXT PRIMARY KEY,
+            term         TEXT NOT NULL,
+            hints        TEXT,
+            domain       TEXT,
+            history      TEXT,
+            created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+            expires_at   DATETIME
+        )""",
         "CREATE INDEX IF NOT EXISTS idx_concepts_domain       ON concepts(domain)",
         "CREATE INDEX IF NOT EXISTS idx_parameters_concept_id ON parameters(concept_id)",
         "CREATE INDEX IF NOT EXISTS idx_relations_source      ON relations(source_concept_id)",
         "CREATE INDEX IF NOT EXISTS idx_relations_target      ON relations(target_concept_id)",
         "CREATE INDEX IF NOT EXISTS idx_feedback_term         ON feedback(term)",
         "CREATE INDEX IF NOT EXISTS idx_feedback_rating       ON feedback(rating)",
+        "CREATE INDEX IF NOT EXISTS idx_sessions_expires      ON sessions(expires_at)",
     ]
 
     try:

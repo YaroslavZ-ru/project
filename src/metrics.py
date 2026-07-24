@@ -75,17 +75,27 @@ class MetricsCollector:
         if self._prometheus_on:
             try:
                 self._prom_requests_total = Counter(
-                    "ait_requests_total",
+                    "ai_terminator_requests_total",
                     "\u0412сего запросов AI-Terminator",
                     ["status"],
                 )
                 self._prom_duration = Histogram(
-                    "ait_request_duration_seconds",
-                    "\u0412ремя обработки запроса",
+                    "ai_terminator_pipeline_duration_seconds",
+                    "\u0412ремя выполнения pipeline",
+                    buckets=[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0],
                 )
                 self._prom_cache_hits = Counter(
-                    "ait_cache_hits_total",
-                    "\u041fопаданий в кэш векторов",
+                    "ai_terminator_cache_hits_total",
+                    "\u041a\u044d\u0448-\u043f\u043e\u043f\u0430\u0434\u0430\u043d\u0438\u044f",
+                    ["cache"],
+                )
+                self._prom_fallback = Counter(
+                    "ai_terminator_fallback_total",
+                    "\u0410\u043a\u0442\u0438\u0432\u0430\u0446\u0438\u0438 fallback",
+                )
+                self._prom_generative = Counter(
+                    "ai_terminator_generative_total",
+                    "\u0412\u044b\u0437\u043e\u0432\u044b \u0433\u0435\u043d\u0435\u0440\u0430\u0442\u0438\u0432\u043d\u043e\u0433\u043e \u043c\u043e\u0434\u0443\u043b\u044f",
                 )
                 logger.info("MetricsCollector: Prometheus-метрики зарегистрированы.")
             except ValueError:
