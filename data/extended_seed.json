@@ -1,0 +1,382 @@
+[
+  {
+    "term": "ключ гаечный",
+    "domain": "слесарный инструмент",
+    "parameters": [
+      {"name": "size_mm", "label_ru": "Размер (мм)", "type": "float", "unit": "мм"},
+      {"name": "material", "label_ru": "Материал", "type": "string"},
+      {"name": "torque_nm", "label_ru": "Момент затяжки", "type": "float", "unit": "Н·м"}
+    ]
+  },
+  {
+    "term": "ключ разводной",
+    "domain": "слесарный инструмент",
+    "parameters": [
+      {"name": "size_range_mm", "label_ru": "Диапазон размеров", "type": "string"},
+      {"name": "material", "label_ru": "Материал", "type": "string"}
+    ]
+  },
+  {
+    "term": "ключ торцевой",
+    "domain": "слесарный инструмент",
+    "parameters": [
+      {"name": "size_mm", "label_ru": "Размер (мм)", "type": "float", "unit": "мм"},
+      {"name": "drive_type", "label_ru": "Тип привода", "type": "enum", "enum_values": ["крест", "шестигранник", "звёздочка"]}
+    ]
+  },
+  {
+    "term": "ключ трещёточный",
+    "domain": "слесарный инструмент",
+    "parameters": [
+      {"name": "size_mm", "label_ru": "Размер (мм)", "type": "float", "unit": "мм"},
+      {"name": "ratchet_mechanism", "label_ru": "Тип трещётки", "type": "string"},
+      {"name": "reversible", "label_ru": "Реверсивный", "type": "boolean"}
+    ]
+  },
+  {
+    "term": "отвёртка",
+    "domain": "слесарный инструмент",
+    "parameters": [
+      {"name": "tip_type", "label_ru": "Тип жала", "type": "enum", "enum_values": ["крест", "плоская", "торкс", "шестигранник"]},
+      {"name": "length_mm", "label_ru": "Длина (мм)", "type": "float", "unit": "мм"},
+      {"name": "material", "label_ru": "Материал", "type": "string"}
+    ]
+  },
+  {
+    "term": "плоскогубцы",
+    "domain": "слесарный инструмент",
+    "parameters": [
+      {"name": "length_mm", "label_ru": "Длина (мм)", "type": "float", "unit": "мм"},
+      {"name": "type", "label_ru": "Тип", "type": "enum", "enum_values": ["обычные", "тонкогубцы", "бокорезы", "кусачки"]}
+    ]
+  },
+  {
+    "term": "молоток",
+    "domain": "слесарный инструмент",
+    "parameters": [
+      {"name": "weight_kg", "label_ru": "Масса (кг)", "type": "float", "unit": "кг"},
+      {"name": "head_type", "label_ru": "Тип головки", "type": "enum", "enum_values": ["слесарный", "киянка", "резиновый"]},
+      {"name": "handle_material", "label_ru": "Материал рукоятки", "type": "string"}
+    ]
+  },
+  {
+    "term": "ножовка",
+    "domain": "слесарный инструмент",
+    "parameters": [
+      {"name": "blade_length_mm", "label_ru": "Длина полотна (мм)", "type": "float", "unit": "мм"},
+      {"name": "teeth_per_inch", "label_ru": "Зубьев на дюйм", "type": "integer"},
+      {"name": "material", "label_ru": "Материал полотна", "type": "string"}
+    ]
+  },
+  {
+    "term": "болт",
+    "domain": "крепёж",
+    "parameters": [
+      {"name": "size_mm", "label_ru": "Размер (мм)", "type": "float", "unit": "мм"},
+      {"name": "thread_pitch", "label_ru": "Шаг резьбы", "type": "float", "unit": "мм"},
+      {"name": "material", "label_ru": "Материал", "type": "string"},
+      {"name": "head_type", "label_ru": "Тип головки", "type": "enum", "enum_values": ["шестигранник", "круглая", "потай", "полукруглая"]}
+    ]
+  },
+  {
+    "term": "гайка",
+    "domain": "крепёж",
+    "parameters": [
+      {"name": "size_mm", "label_ru": "Размер (мм)", "type": "float", "unit": "мм"},
+      {"name": "thread_pitch", "label_ru": "Шаг резьбы", "type": "float", "unit": "мм"},
+      {"name": "type", "label_ru": "Тип", "type": "enum", "enum_values": ["обычная", "барашковая", "корончатая", "стопорная"]}
+    ]
+  },
+  {
+    "term": "шуруп",
+    "domain": "крепёж",
+    "parameters": [
+      {"name": "length_mm", "label_ru": "Длина (мм)", "type": "float", "unit": "мм"},
+      {"name": "diameter_mm", "label_ru": "Диаметр (мм)", "type": "float", "unit": "мм"},
+      {"name": "head_type", "label_ru": "Тип головки", "type": "enum", "enum_values": ["потай", "полукруглая", "цилиндрическая"]},
+      {"name": "thread_type", "label_ru": "Тип резьбы", "type": "string"}
+    ]
+  },
+  {
+    "term": "саморез",
+    "domain": "крепёж",
+    "parameters": [
+      {"name": "length_mm", "label_ru": "Длина (мм)", "type": "float", "unit": "мм"},
+      {"name": "diameter_mm", "label_ru": "Диаметр (мм)", "type": "float", "unit": "мм"},
+      {"name": "tip_type", "label_ru": "Тип наконечника", "type": "enum", "enum_values": ["сверло", "самонарезающий", "для гипсокартона"]},
+      {"name": "coating", "label_ru": "Покрытие", "type": "string"}
+    ]
+  },
+  {
+    "term": "дюбель",
+    "domain": "крепёж",
+    "parameters": [
+      {"name": "diameter_mm", "label_ru": "Диаметр (мм)", "type": "float", "unit": "мм"},
+      {"name": "length_mm", "label_ru": "Длина (мм)", "type": "float", "unit": "мм"},
+      {"name": "type", "label_ru": "Тип", "type": "enum", "enum_values": ["пластиковый", "металлический", "химический", "_FRAME"]}
+    ]
+  },
+  {
+    "term": "анкер",
+    "domain": "крепёж",
+    "parameters": [
+      {"name": "diameter_mm", "label_ru": "Диаметр (мм)", "type": "float", "unit": "мм"},
+      {"name": "length_mm", "label_ru": "Длина (мм)", "type": "float", "unit": "мм"},
+      {"name": "load_capacity_kg", "label_ru": "Нагрузка (кг)", "type": "float", "unit": "кг"},
+      {"name": "type", "label_ru": "Тип", "type": "enum", "enum_values": ["клиновой", "aguesetting", "забивной", "химический"]}
+    ]
+  },
+  {
+    "term": "ключ скрипичный",
+    "domain": "музыка",
+    "parameters": [
+      {"name": "clef_type", "label_ru": "Тип ключа", "type": "enum", "enum_values": ["скрипичный", "басовый", "альтовый", "теноровый"]},
+      {"name": "staff_position", "label_ru": "Позиция на нотном стане", "type": "integer"}
+    ]
+  },
+  {
+    "term": "нота",
+    "domain": "музыка",
+    "parameters": [
+      {"name": "pitch", "label_ru": "Высота звука", "type": "string"},
+      {"name": "duration", "label_ru": "Длительность", "type": "enum", "enum_values": ["целая", "половинная", "четвертная", "восьмая", "шестнадцатая"]},
+      {"name": "octave", "label_ru": "Октава", "type": "integer"}
+    ]
+  },
+  {
+    "term": "аккорд",
+    "domain": "музыка",
+    "parameters": [
+      {"name": "chord_type", "label_ru": "Тип аккорда", "type": "enum", "enum_values": ["мажорный", "минорный", "септаккорд", "диминишутое"]},
+      {"name": "root_note", "label_ru": "Основной тон", "type": "string"},
+      {"name": "inversion", "label_ru": "Инверсия", "type": "integer"}
+    ]
+  },
+  {
+    "term": "метроном",
+    "domain": "музыка",
+    "parameters": [
+      {"name": "tempo_range", "label_ru": "Диапазон темпа (уд/мин)", "type": "string"},
+      {"name": "type", "label_ru": "Тип", "type": "enum", "enum_values": ["механический", "электронный", "цифровой"]},
+      {"name": "display", "label_ru": "Дисплей", "type": "boolean"}
+    ]
+  },
+  {
+    "term": "гитара",
+    "domain": "музыка",
+    "parameters": [
+      {"name": "type", "label_ru": "Тип", "type": "enum", "enum_values": ["акустическая", "электрогитара", "классическая", "бас-гитара"]},
+      {"name": "strings_count", "label_ru": "Количество струн", "type": "integer"},
+      {"name": "body_material", "label_ru": "Материал корпуса", "type": "string"},
+      {"name": "scale_length_mm", "label_ru": "Длина мензуры (мм)", "type": "float", "unit": "мм"}
+    ]
+  },
+  {
+    "term": "пианино",
+    "domain": "музыка",
+    "parameters": [
+      {"name": "keys_count", "label_ru": "Количество клавиш", "type": "integer"},
+      {"name": "type", "label_ru": "Тип", "type": "enum", "enum_values": ["вертикальное", "концертное", "цифровое"]},
+      {"name": "length_mm", "label_ru": "Длина (мм)", "type": "float", "unit": "мм"},
+      {"name": "weight_kg", "label_ru": "Масса (кг)", "type": "float", "unit": "кг"}
+    ]
+  },
+  {
+    "term": "резистор",
+    "domain": "электроника",
+    "parameters": [
+      {"name": "resistance_ohm", "label_ru": "Сопротивление (Ом)", "type": "float", "unit": "Ом"},
+      {"name": "power_watt", "label_ru": "Мощность (Вт)", "type": "float", "unit": "Вт"},
+      {"name": "tolerance_percent", "label_ru": "Допуск (%)", "type": "float", "unit": "%"},
+      {"name": "package", "label_ru": "Корпус", "type": "enum", "enum_values": ["SMD", "проводной", "постоянный", "переменный"]}
+    ]
+  },
+  {
+    "term": "конденсатор",
+    "domain": "электроника",
+    "parameters": [
+      {"name": "capacitance_farad", "label_ru": "Ёмкость (Ф)", "type": "float", "unit": "Ф"},
+      {"name": "voltage_rating", "label_ru": "Напряжение (В)", "type": "float", "unit": "В"},
+      {"name": "type", "label_ru": "Тип", "type": "enum", "enum_values": ["керамический", "электролитический", "плёночный", "танталовый"]},
+      {"name": "package", "label_ru": "Корпус", "type": "string"}
+    ]
+  },
+  {
+    "term": "диод",
+    "domain": "электроника",
+    "parameters": [
+      {"name": "forward_voltage", "label_ru": "Прямое напряжение (В)", "type": "float", "unit": "В"},
+      {"name": "max_current", "label_ru": "Макс. ток (А)", "type": "float", "unit": "А"},
+      {"name": "type", "label_ru": "Тип", "type": "enum", "enum_values": ["выпрямительный", "светоизлучающий", "стабилитрон", "шоттки"]},
+      {"name": "wavelength_nm", "label_ru": "Длина волны (нм)", "type": "float", "unit": "нм"}
+    ]
+  },
+  {
+    "term": "транзистор",
+    "domain": "электроника",
+    "parameters": [
+      {"name": "type", "label_ru": "Тип", "type": "enum", "enum_values": ["BJT", "MOSFET", "JFET", "IGBT"]},
+      {"name": "max_voltage", "label_ru": "Макс. напряжение (В)", "type": "float", "unit": "В"},
+      {"name": "max_current", "label_ru": "Макс. ток (А)", "type": "float", "unit": "А"},
+      {"name": "package", "label_ru": "Корпус", "type": "string"}
+    ]
+  },
+  {
+    "term": "микроконтроллер",
+    "domain": "электроника",
+    "parameters": [
+      {"name": "architecture", "label_ru": "Архитектура", "type": "enum", "enum_values": ["ARM", "AVR", "PIC", "ESP32", "STM32"]},
+      {"name": "clock_mhz", "label_ru": "Частота (МГц)", "type": "float", "unit": "МГц"},
+      {"name": "flash_kb", "label_ru": "Flash (КБ)", "type": "float", "unit": "КБ"},
+      {"name": "ram_kb", "label_ru": "RAM (КБ)", "type": "float", "unit": "КБ"},
+      {"name": "gpio_count", "label_ru": "Количество GPIO", "type": "integer"}
+    ]
+  },
+  {
+    "term": "светодиод",
+    "domain": "электроника",
+    "parameters": [
+      {"name": "color", "label_ru": "Цвет", "type": "enum", "enum_values": ["красный", "зелёный", "синий", "белый", "жёлтый", "RGB"]},
+      {"name": "wavelength_nm", "label_ru": "Длина волны (нм)", "type": "float", "unit": "нм"},
+      {"name": "luminosity_mcd", "label_ru": "Сила света (мкд)", "type": "float", "unit": "мкд"},
+      {"name": "forward_voltage", "label_ru": "Прямое напряжение (В)", "type": "float", "unit": "В"}
+    ]
+  },
+  {
+    "term": "кирпич",
+    "domain": "строительство",
+    "parameters": [
+      {"name": "size_mm", "label_ru": "Размер (мм)", "type": "string"},
+      {"name": "material", "label_ru": "Материал", "type": "enum", "enum_values": ["керамический", "силикатный", "гиперпрессованный", "огнеупорный"]},
+      {"name": "strength_mpa", "label_ru": "Прочность (МПа)", "type": "float", "unit": "МПа"},
+      {"name": "density_kg_m3", "label_ru": "Плотность (кг/м³)", "type": "float", "unit": "кг/м³"}
+    ]
+  },
+  {
+    "term": "бетон",
+    "domain": "строительство",
+    "parameters": [
+      {"name": "grade", "label_ru": "Марка", "type": "string"},
+      {"name": "strength_class", "label_ru": "Класс прочности", "type": "string"},
+      {"name": "slump_cm", "label_ru": "Осадка конуса (см)", "type": "float", "unit": "см"},
+      {"name": "density_kg_m3", "label_ru": "Плотность (кг/м³)", "type": "float", "unit": "кг/м³"}
+    ]
+  },
+  {
+    "term": "арматура",
+    "domain": "строительство",
+    "parameters": [
+      {"name": "diameter_mm", "label_ru": "Диаметр (мм)", "type": "float", "unit": "мм"},
+      {"name": "grade", "label_ru": "Марка стали", "type": "string"},
+      {"name": "class", "label_ru": "Класс", "type": "enum", "enum_values": ["A240", "A400", "A500", "A600"]},
+      {"name": "length_m", "label_ru": "Длина (м)", "type": "float", "unit": "м"}
+    ]
+  },
+  {
+    "term": "утеплитель",
+    "domain": "строительство",
+    "parameters": [
+      {"name": "type", "label_ru": "Тип", "type": "enum", "enum_values": ["минеральная вата", "пенополистирол", "пенополиуретан", "эковата"]},
+      {"name": "thermal_conductivity", "label_ru": "Теплопроводность (Вт/м·К)", "type": "float", "unit": "Вт/м·К"},
+      {"name": "thickness_mm", "label_ru": "Толщина (мм)", "type": "float", "unit": "мм"},
+      {"name": "density_kg_m3", "label_ru": "Плотность (кг/м³)", "type": "float", "unit": "кг/м³"}
+    ]
+  },
+  {
+    "term": "лампочка",
+    "domain": "электроника",
+    "parameters": [
+      {"name": "type", "label_ru": "Тип", "type": "enum", "enum_values": ["лампа накаливания", "галогенная", "светодиодная", "люминесцентная"]},
+      {"name": "power_watt", "label_ru": "Мощность (Вт)", "type": "float", "unit": "Вт"},
+      {"name": "lumen", "label_ru": "Световой поток (лм)", "type": "float", "unit": "лм"},
+      {"name": "color_temp_k", "label_ru": "Цветовая температура (К)", "type": "float", "unit": "К"},
+      {"name": "socket_type", "label_ru": "Цоколь", "type": "string"}
+    ]
+  },
+  {
+    "term": "розетка",
+    "domain": "электроника",
+    "parameters": [
+      {"name": "type", "label_ru": "Тип", "type": "enum", "enum_values": ["европейская", "американская", "британская", "универсальная"]},
+      {"name": "voltage", "label_ru": "Напряжение (В)", "type": "float", "unit": "В"},
+      {"name": "current_rating", "label_ru": "Номинальный ток (А)", "type": "float", "unit": "А"},
+      {"name": "mounting", "label_ru": "Монтаж", "type": "enum", "enum_values": ["скрытый", "открытый", "накладной"]}
+    ]
+  },
+  {
+    "term": "автоматический выключатель",
+    "domain": "электроника",
+    "parameters": [
+      {"name": "current_rating", "label_ru": "Номинальный ток (А)", "type": "float", "unit": "А"},
+      {"name": "poles", "label_ru": "Количество полюсов", "type": "integer"},
+      {"name": "trip_characteristic", "label_ru": "Характеристика отключения", "type": "enum", "enum_values": ["B", "C", "D", "K"]},
+      {"name": "breaking_capacity_ka", "label_ru": "Предельная отключающая способность (кА)", "type": "float", "unit": "кА"}
+    ]
+  },
+  {
+    "term": "автомобиль",
+    "domain": "транспорт",
+    "parameters": [
+      {"name": "brand", "label_ru": "Марка", "type": "string"},
+      {"name": "model", "label_ru": "Модель", "type": "string"},
+      {"name": "engine_volume_l", "label_ru": "Объём двигателя (л)", "type": "float", "unit": "л"},
+      {"name": "power_hp", "label_ru": "Мощность (л.с.)", "type": "float", "unit": "л.с."},
+      {"name": "fuel_type", "label_ru": "Тип топлива", "type": "enum", "enum_values": ["бензин", "дизель", "электро", "гибрид"]}
+    ]
+  },
+  {
+    "term": "велосипед",
+    "domain": "транспорт",
+    "parameters": [
+      {"name": "type", "label_ru": "Тип", "type": "enum", "enum_values": ["горный", "шоссейный", "городской", "BMX", "электро"]},
+      {"name": "frame_size", "label_ru": "Размер рамы", "type": "string"},
+      {"name": "wheel_size", "label_ru": "Размер колёс", "type": "string"},
+      {"name": "gears_count", "label_ru": "Количество передач", "type": "integer"},
+      {"name": "weight_kg", "label_ru": "Масса (кг)", "type": "float", "unit": "кг"}
+    ]
+  },
+  {
+    "term": "кофемашина",
+    "domain": "бытовая техника",
+    "parameters": [
+      {"name": "type", "label_ru": "Тип", "type": "enum", "enum_values": ["капельная", "капсульная", "эспрессо", "全自动"]},
+      {"name": "power_watt", "label_ru": "Мощность (Вт)", "type": "float", "unit": "Вт"},
+      {"name": "water_tank_ml", "label_ru": "Объём резервуара (мл)", "type": "float", "unit": "мл"},
+      {"name": "pressure_bar", "label_ru": "Давление (бар)", "type": "float", "unit": "бар"},
+      {"name": " grinder", "label_ru": "Встроенная кофемолка", "type": "boolean"}
+    ]
+  },
+  {
+    "term": "пылесос",
+    "domain": "бытовая техника",
+    "parameters": [
+      {"name": "power_watt", "label_ru": "Мощность (Вт)", "type": "float", "unit": "Вт"},
+      {"name": "suction_power_airw", "label_ru": "Мощность всасывания (Вт)", "type": "float", "unit": "Вт"},
+      {"name": "dust_container_l", "label_ru": "Объём пылесборника (л)", "type": "float", "unit": "л"},
+      {"name": "type", "label_ru": "Тип", "type": "enum", "enum_values": ["вертикальный", "робот", "баллонный", "порошковый"]},
+      {"name": "noise_level_db", "label_ru": "Уровень шума (дБ)", "type": "float", "unit": "дБ"}
+    ]
+  },
+  {
+    "term": "холодильник",
+    "domain": "бытовая техника",
+    "parameters": [
+      {"name": "total_volume_l", "label_ru": "Общий объём (л)", "type": "float", "unit": "л"},
+      {"name": "freezer_volume_l", "label_ru": "Объём морозильника (л)", "type": "float", "unit": "л"},
+      {"name": "energy_class", "label_ru": "Класс энергоэффективности", "type": "enum", "enum_values": ["A+++", "A++", "A+", "A", "B"]},
+      {"name": "type", "label_ru": "Тип", "type": "enum", "enum_values": ["двухкамерный", "однокамерный", "side-by-side", "nox frost"]},
+      {"name": "dimensions_mm", "label_ru": "Габариты (мм)", "type": "string"}
+    ]
+  },
+  {
+    "term": "стиральная машина",
+    "domain": "бытовая техника",
+    "parameters": [
+      {"name": "load_capacity_kg", "label_ru": "Загрузка (кг)", "type": "float", "unit": "кг"},
+      {"name": "spin_speed_rpm", "label_ru": "Скорость отжима (об/мин)", "type": "integer"},
+      {"name": "energy_class", "label_ru": "Класс энергоэффективности", "type": "enum", "enum_values": ["A+++", "A++", "A+", "A"]},
+      {"name": "type", "label_ru": "Тип", "type": "enum", "enum_values": ["фронтальная", "вертикальная"]},
+      {"name": "noise_level_db", "label_ru": "Уровень шума стирки (дБ)", "type": "float", "unit": "дБ"}
+    ]
+  }
+]
