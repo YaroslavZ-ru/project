@@ -1,6 +1,6 @@
 # AI-Terminator
 
-Получает термин + подсказки, определяет контекст, возвращает параметры для описания.
+Интеллектуальный помощник: по термину и подсказкам определяет контекст и возвращает параметры для описания.
 
 ```
 вход:  термин="ключ"  +  hints=["техника"]
@@ -12,28 +12,65 @@
 
 ---
 
-## Установка
+## Быстрая установка (Windows)
+
+1. Скачайте и установите **Python 3.12**: https://www.python.org/downloads/
+   - При установке отметьте **"Add Python to PATH"**
+
+2. Скачайте этот репозиторий
+
+3. Запустите **setup.bat** (двойной клик)
+   - Установит зависимости (~5 мин)
+   - Скачает модель FastText (~8 ГБ, ~15 мин)
+   - Инициализирует базу данных
+
+4. Запустите **run.bat** (двойной клик)
+   - Выберите режим: API, CLI или тесты
+
+---
+
+## Установка вручную
 
 ```bash
+# 1. Создать виртуальное окружение
+py -3.12 -m venv venv312
+venv312\Scripts\activate
+
+# 2. Установить зависимости
 pip install -r requirements.txt
+pip install fastapi uvicorn httpx
+pip install fasttext-wheel
+
+# 3. Скачать модель FastText (~8 ГБ)
+# Скачать cc.ru.300.bin.gz с https://fasttext.cc/docs/en/crawl-vectors.html
+# Распаковать в models/cc.ru.300.bin
+
+# 4. Инициализировать БД
 python setup_project.py
-python -m scripts.setup_all
+python -m scripts.setup_all --force
 ```
+
+---
 
 ## Запуск
 
 ```bash
-# API
+# Активировать окружение
+venv312\Scripts\activate
+
+# REST API
 python -m scripts.run_api              # http://127.0.0.1:8000
 
-# CLI
+# CLI (один запрос)
 echo '{"term":"ключ","hints":["техника"]}' | python main.py --once
 
-# Docker
-docker compose up -d
+# CLI (интерактивный)
+python main.py
 ```
 
-## Запрос
+---
+
+## Запрос к API
 
 ```bash
 curl -X POST http://localhost:8000/v1/query \
@@ -53,6 +90,8 @@ curl -X POST http://localhost:8000/v1/query \
 }
 ```
 
+---
+
 ## API
 
 | Метод | Путь | Описание |
@@ -64,30 +103,33 @@ curl -X POST http://localhost:8000/v1/query \
 | GET | `/v1/metrics` | Метрики Prometheus |
 | GET | `/docs` | Swagger UI |
 
+---
+
 ## Требования
 
-**Обязательные:** Python 3.10+, pymorphy3, numpy
+| Компонент | Минимум | Рекомендуется |
+|---|---|---|
+| Python | 3.12 | 3.12 |
+| RAM | 4 ГБ | 8 ГБ |
+| Диск | 10 ГБ | 20 ГБ |
 
-**Опциональные** (система деградирует без них):
+**Обязательные пакеты:** pymorphy3, numpy, fasttext-wheel
 
-| Пакет | Зачем |
-|---|---|
-| `fasttext` | Семантический поиск (без него fallback-шаблоны) |
-| `fastapi`, `uvicorn` | REST API |
-| `faiss-cpu` | Быстрый поиск при >10k понятий |
-| `transformers`, `torch` | Генеративное расширение параметров |
-| `prometheus_client` | Метрики |
+**Опциональные:**
+- `faiss-cpu` — быстрый поиск при >10k понятий
+- `transformers`, `torch` — генеративное расширение
+- `prometheus_client` — метрики
 
-```bash
-pip install -e ".[all]"    # всё сразу
-pip install -e ".[dev]"    # для разработки
-```
+---
 
 ## Тесты
 
 ```bash
+venv312\Scripts\activate
 python -m pytest tests/ -v     # 202 теста, 0 падений
 ```
+
+---
 
 ## Конфигурация
 
@@ -98,3 +140,29 @@ python -m pytest tests/ -v     # 202 теста, 0 падений
 | `configs/production.json` | Override для prod |
 
 Запуск с окружением: `python -m scripts.run_api --env production`
+
+---
+
+## Структура проекта
+
+```
+project/
+├── src/                    # Ядро системы
+│   ├── config.py          # Конфигурация
+│   ├── preprocess.py      # Предобработка текста
+│   ├── embeddings.py      # FastText эмбеддинги
+│   ├── vectorize.py       # Векторизация запросов
+│   ├── knowledge_base.py  # Поиск в БД
+│   ├── aggregation.py     # Агрегация параметров
+│   ├── fallback.py        # Резервный режим
+│   ├── sessions.py        # Управление сессиями
+│   ├── metrics.py         # Метрики Prometheus
+│   └── api.py             # REST API
+├── scripts/               # Утилиты
+├── tests/                 # Тесты (202 шт)
+├── configs/               # Конфигурация
+├── data/                  # БД и данные
+├── models/                # Модели (cc.ru.300.bin)
+├── setup.bat              # Скрипт установки
+└── run.bat                # Скрипт запуска
+```
