@@ -360,22 +360,50 @@ class KnowledgeBase:
         return weighted_sum.astype("<f4")
 
     def update_all_embeddings(self):
+        """Пересчитать эмбеддинги всех понятий.
+
+        commit() после каждого понятия (partial save).
+        При ошибке одного — лог ERROR и продолжение.
+        В конце — инвалидация кэша под _matrix_lock.
+
+        Returns:
+            Количество успешно обновлённых понятий.
+        """
         if self._embedding_model is None:
             raise RuntimeError("эмбеддинг-модель не задана")
         if self._synonym_dict is None:
             raise RuntimeError("словарь синонимов не задан")
-        self._concepts_cache = None
+
         rows = self._conn.execute("SELECT id, term FROM concepts").fetchall()
         updated = 0
         for row in rows:
-            blob = self._vector_to_blob(self.compute_concept_embedding(row["term"]))
-            self._conn.execute("UPDATE concepts SET embedding=? WHERE id=?", (blob, row["id"]))
-            updated += 1
-        self._conn.commit()
+            try:
+                blob = self._vector_to_blob(
+                    self.compute_concept_embedding(row["term"])
+                )
+                self._conn.execute(
+                    "UPDATE concepts SET embedding=? WHERE id=?",
+                    (blob, row["id"]),
+                )
+                self._conn.commit()
+                updated += 1
+            except Exception as exc:
+                self.logger.error(
+                    "Ошибка обновления эмбеддинга для %s: %s",
+                    row["id"],
+                    exc,
+                )
+                self._conn.rollback()
+                continue
+
+        # Инвалидация кэша под _matrix_lock
+        with self._matrix_lock:
+            self._concepts_cache = None
+            self._embeddings_matrix = None
+            self._matrix_concept_ids = None
         self._faiss_index = None
-        self._invalidate_embeddings_matrix()
         self._search_cache.clear()
-        self.logger.info("Пересчитано эмбеддингов: %d", updated)
+        self.logger.info("Пересчитано эмбеддингов: %d/%d", updated, len(rows))
         self._maybe_rebuild_faiss()
         return updated
 

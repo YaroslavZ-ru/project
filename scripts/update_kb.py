@@ -98,9 +98,10 @@ def load_concepts_from_csv(path: Path) -> list[dict]:
     """Загружает концепты из CSV-файла.
 
     Формат заголовка:
-    id,term,domain,param_name,param_label_ru,param_type,param_description,param_unit
+    term,domain,param_name,param_label_ru,param_type,param_unit,param_description
 
-    Строки с одинаковым id группируются в один концепт.
+    Строки с одинаковым (term, domain) группируются в один концепт.
+    Параметры объединяются, дубликаты по name отбрасываются.
 
     Args:
         path: путь к CSV-файлу.
@@ -109,23 +110,26 @@ def load_concepts_from_csv(path: Path) -> list[dict]:
         Список словарей или [] при ошибке.
     """
     try:
-        concepts_map: dict[str, dict] = {}
+        groups: dict[tuple[str, str], dict] = {}
         with path.open(encoding="utf-8-sig", newline="") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                cid = row.get("id", "").strip()
-                if not cid:
+                term = row.get("term", "").strip()
+                domain = row.get("domain", "").strip()
+                if not term:
                     continue
-                if cid not in concepts_map:
-                    concepts_map[cid] = {
-                        "id": cid,
-                        "term": row.get("term", "").strip(),
-                        "domain": row.get("domain", "").strip() or None,
+                key = (term, domain)
+                if key not in groups:
+                    import uuid
+                    groups[key] = {
+                        "id": str(uuid.uuid4()),
+                        "term": term,
+                        "domain": domain or None,
                         "parameters": [],
                     }
                 param_name = row.get("param_name", "").strip()
                 if param_name:
-                    concepts_map[cid]["parameters"].append(
+                    groups[key]["parameters"].append(
                         {
                             "name": param_name,
                             "label_ru": row.get("param_label_ru", "").strip(),
@@ -135,7 +139,18 @@ def load_concepts_from_csv(path: Path) -> list[dict]:
                             "enum_values": None,
                         }
                     )
-        return list(concepts_map.values())
+
+        # Дедупликация параметров по name
+        for concept in groups.values():
+            seen = set()
+            unique = []
+            for p in concept["parameters"]:
+                if p["name"] not in seen:
+                    seen.add(p["name"])
+                    unique.append(p)
+            concept["parameters"] = unique
+
+        return list(groups.values())
     except Exception as exc:  # noqa: BLE001
         logger.error("Ошибка чтения CSV %s: %s", path, exc)
         return []
