@@ -4,6 +4,7 @@
     python -m scripts.run_api
     python -m scripts.run_api --host 0.0.0.0 --port 9000
     python -m scripts.run_api --reload
+    python -m scripts.run_api --workers 4
 Значения host/port берутся из configs/config.json, если не указаны явно.
 """
 
@@ -67,6 +68,12 @@ if __name__ == "__main__":
         choices=["development", "production", "test"],
         help="Окружение: development, production, test (использует configs/{env}.json override)",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Количество worker'ов (default: 1). workers > 1 требует multiprocessing.",
+    )
     args = parser.parse_args()
 
     # Загрузка конфига для получения host/port
@@ -82,13 +89,21 @@ if __name__ == "__main__":
 
     host = args.host or cfg.api_host
     port = args.port or cfg.api_port
+    workers = args.workers
 
-    logger.info("Запуск API на %s:%d (reload=%s)", host, port, args.reload)
+    if workers > 1 and args.reload:
+        logger.warning(
+            "workers=%d и reload=True несовместимы. reload будет отключён.", workers
+        )
+        args.reload = False
+
+    logger.info("Запуск API на %s:%d (reload=%s, workers=%d)", host, port, args.reload, workers)
 
     uvicorn.run(
         "src.api:app",
         host=host,
         port=port,
         reload=args.reload,
+        workers=workers,
         log_level="info",
     )

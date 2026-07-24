@@ -27,6 +27,13 @@ class KnowledgeBase:
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._concepts_cache = None
         self._faiss_index = None
+        self._faiss_lock = threading.Lock()
+        self._faiss_rebuild_lock = threading.Lock()
+        self._faiss_rebuild_pending = False
+        # --- Изменение 75: Матрица эмбеддингов ---
+        self._embeddings_matrix: np.ndarray | None = None
+        self._matrix_concept_ids: list[str] | None = None
+        self._matrix_lock = threading.RLock()
         self.logger = logging.getLogger(__name__)
 
     def __enter__(self):
@@ -115,7 +122,9 @@ class KnowledgeBase:
             self._conn.commit()
 
         self._concepts_cache = None
+        self._invalidate_embeddings_matrix()
         self.logger.info("Сохранено понятие: id=%s term=%r domain=%r", concept_id, term, domain)
+        self._maybe_rebuild_faiss()
         return concept_id
 
     # --- Изменение 67: Получение параметров связанных понятий ---
@@ -317,7 +326,9 @@ class KnowledgeBase:
             updated += 1
         self._conn.commit()
         self._faiss_index = None
+        self._invalidate_embeddings_matrix()
         self.logger.info("Пересчитано эмбеддингов: %d", updated)
+        self._maybe_rebuild_faiss()
         return updated
 
     def load_domain_centroids(self, centroids_path: str | None = None) -> dict:
@@ -547,7 +558,179 @@ class KnowledgeBase:
             self.logger.warning("faiss не установлен. Переключение на линейный поиск.")
             self._config.use_faiss = False
 
+    def _build_faiss_index_from_embeddings(self, embeddings: np.ndarray):
+        """Построить FAISS-индекс из матрицы эмбеддингов.
+
+        Args:
+            embeddings: матрица (N, 300) float32, нормализованная.
+        """
+        try:
+            import faiss
+        except ImportError:
+            self.logger.warning("faiss не установлен. Переключение на линейный поиск.")
+            self._config.use_faiss = False
+            return None
+
+        N = len(embeddings)
+        if N < 100_000:
+            faiss.normalize_L2(embeddings)
+            index = faiss.IndexFlatIP(300)
+            index.add(embeddings)
+        else:
+            nlist = min(4096, max(256, int(N ** 0.5)))
+            if N < nlist * 39:
+                nlist = max(1, N // 39)
+            quantizer = faiss.IndexFlatIP(300)
+            index = faiss.IndexIVFPQ(quantizer, 300, nlist, 64, 8)
+            index.train(embeddings)
+            index.add(embeddings)
+            index.nprobe = 32
+        return index
+
+    # --- Изменение 71: Автоматическая пересборка FAISS-индекса ---
+
+    def _maybe_rebuild_faiss(self) -> None:
+        """Запустить фоновую пересборку FAISS-индекса при необходимости."""
+        if not getattr(self._config, "use_faiss", False):
+            return
+        try:
+            row = self._conn.execute("SELECT COUNT(*) FROM concepts").fetchone()
+            count = row[0] if row else 0
+        except sqlite3.Error:
+            return
+        if count < getattr(self._config, "faiss_threshold", 10000):
+            return
+        if self._faiss_rebuild_pending:
+            return
+        self._faiss_rebuild_pending = True
+        t = threading.Thread(target=self._rebuild_faiss_async, daemon=True)
+        t.start()
+        self.logger.info("FAISS rebuild запланирован (%d понятий)", count)
+
+    def _rebuild_faiss_async(self) -> None:
+        """Фоновая пересборка FAISS-индекса (выполняется в daemon-потоке).
+
+        Использует отдельное соединение с БД для потокобезопасности.
+        """
+        if not self._faiss_rebuild_lock.acquire(blocking=False):
+            self._faiss_rebuild_pending = False
+            return
+        try:
+            self._faiss_rebuild_pending = False
+            # Отдельное соединение для фонового потока
+            conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            try:
+                cursor = conn.execute(
+                    "SELECT c.id, c.term, c.domain, c.embedding"
+                    " FROM concepts c"
+                    " ORDER BY c.id"
+                )
+                valid = []
+                for row in cursor:
+                    emb = self._blob_to_vector(row["embedding"])
+                    if np.any(emb != 0):
+                        valid.append({
+                            "id": row["id"],
+                            "term": row["term"],
+                            "domain": row["domain"],
+                            "embedding": emb,
+                            "parameters": [],
+                        })
+            finally:
+                conn.close()
+
+            if len(valid) < 256:
+                self.logger.info("FAISS rebuild: мало данных (%d), пропуск", len(valid))
+                return
+            embeddings = np.vstack([c["embedding"] for c in valid]).astype(np.float32)
+            new_index = self._build_faiss_index_from_embeddings(embeddings)
+            if new_index is not None:
+                with self._faiss_lock:
+                    self._faiss_index = {"index": new_index, "concepts": valid}
+                self.logger.info("FAISS rebuild завершён: %d векторов", len(valid))
+        except Exception as exc:
+            self.logger.error("Ошибка FAISS rebuild: %s", exc)
+
+    # --- Изменение 75: Оптимизация матрицы эмбеддингов ---
+
+    def _ensure_embeddings_matrix(self) -> None:
+        """Ленивая инициализация матрицы эмбеддингов для numpy-поиска."""
+        with self._matrix_lock:
+            if self._embeddings_matrix is not None:
+                return
+            concepts = self.get_all_concepts(use_cache=True)
+            valid = [
+                c for c in concepts
+                if c.get("embedding") is not None
+                and np.any(c["embedding"] != 0)
+            ]
+            if not valid:
+                self._embeddings_matrix = np.zeros((0, 300), dtype=np.float32)
+                self._matrix_concept_ids = []
+                return
+            self._embeddings_matrix = np.vstack(
+                [c["embedding"] for c in valid]
+            ).astype(np.float32)
+            self._matrix_concept_ids = [c["id"] for c in valid]
+            self.logger.info(
+                "Матрица эмбеддингов построена: %d x 300",
+                len(valid),
+            )
+
+    def _invalidate_embeddings_matrix(self) -> None:
+        """Инвалидировать матрицу эмбеддингов (при изменении данных)."""
+        with self._matrix_lock:
+            self._embeddings_matrix = None
+            self._matrix_concept_ids = None
+            self.logger.debug("Матрица эмбеддингов инвалидирована")
+
     def _linear_search(self, query_vector, concepts, threshold, max_cand):
+        """Линейный поиск через матрицу эмбеддингов (numpy dot-product)."""
+        self._ensure_embeddings_matrix()
+        with self._matrix_lock:
+            matrix = self._embeddings_matrix
+            ids = self._matrix_concept_ids
+        if matrix is None or ids is None or len(ids) == 0:
+            return self._linear_search_fallback(query_vector, concepts, threshold, max_cand)
+
+        # Фильтруем матрицу по domain_filter если нужно (concepts уже отфильтрованы)
+        concept_ids_set = {c["id"] for c in concepts}
+        if len(concept_ids_set) < len(ids):
+            mask = np.array([cid in concept_ids_set for cid in ids])
+            matrix = matrix[mask]
+            filtered_ids = [cid for cid in ids if cid in concept_ids_set]
+        else:
+            filtered_ids = ids
+
+        if len(matrix) == 0:
+            return []
+
+        similarities = np.dot(matrix, query_vector)
+        top_indices = np.argsort(similarities)[::-1][:max_cand]
+
+        # Быстрый поиск concept по id
+        concepts_by_id = {c["id"]: c for c in concepts}
+
+        results = []
+        for idx in top_indices:
+            sim = float(similarities[idx])
+            if sim < threshold:
+                break
+            cid = filtered_ids[idx]
+            c = concepts_by_id.get(cid)
+            if c is not None:
+                results.append({
+                    "concept_id": c["id"],
+                    "term": c["term"],
+                    "domain": c["domain"],
+                    "similarity": sim,
+                    "parameters": c["parameters"],
+                })
+        return results[:max_cand]
+
+    def _linear_search_fallback(self, query_vector, concepts, threshold, max_cand):
+        """Поиск по итерации (fallback если матрица не построена)."""
         results = []
         for c in concepts:
             sim = float(np.dot(query_vector, c["embedding"]))
@@ -592,11 +775,13 @@ class KnowledgeBase:
         if self._config.use_faiss and len(concepts) > self._config.faiss_threshold:
             if self._faiss_index is None and not self._load_faiss_index_from_disk():
                 self._build_faiss_index(concepts)
-            if self._faiss_index is not None:
-                D, indices = self._faiss_index["index"].search(
+            with self._faiss_lock:
+                faiss_data = self._faiss_index
+            if faiss_data is not None:
+                D, indices = faiss_data["index"].search(
                     query_vector.reshape(1, -1), max_candidates
                 )
-                fc = self._faiss_index["concepts"]
+                fc = faiss_data["concepts"]
                 results = [
                     {
                         "concept_id": fc[idx]["id"],

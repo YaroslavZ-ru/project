@@ -64,6 +64,7 @@ class SessionManager:
             self._maxsize: int = getattr(config, "session_cache_size", 1000)
             self._interval: int = getattr(config, "session_cleanup_interval_seconds", 60)
             self._ensure_table()
+            self.start_cleanup_timer()
         else:
             self._maxsize: int = getattr(config, "session_cache_size", 1000)
             self._interval: int = getattr(config, "session_cleanup_interval_seconds", 60)
@@ -171,6 +172,33 @@ class SessionManager:
                 return self._cleanup_sqlite()
             else:
                 return self._cleanup_unsafe()
+
+    def cleanup_expired(self) -> int:
+        """Удалить все устаревшие сессии (алиас cleanup для совместимости с планом).
+
+        Returns:
+            Количество удалённых сессий.
+        """
+        return self.cleanup()
+
+    def start_cleanup_timer(self) -> None:
+        """Запустить daemon-поток с периодической очисткой устаревших сессий.
+
+        Вызывается автоматически в __init__ для SQLite-хранилища.
+        """
+        def _cleanup_loop() -> None:
+            while True:
+                time.sleep(self._interval)
+                try:
+                    n = self.cleanup_expired()
+                    if n > 0:
+                        logger.info("Session cleanup: удалено %d сессий", n)
+                except Exception as exc:
+                    logger.error("Session cleanup error: %s", exc)
+
+        t = threading.Thread(target=_cleanup_loop, daemon=True)
+        t.start()
+        logger.debug("Session cleanup timer запущен (interval=%ds)", self._interval)
 
     def session_count(self) -> int:
         """Текущее количество активных сессий.

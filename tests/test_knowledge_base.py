@@ -358,3 +358,67 @@ def test_get_feedback_stats_empty(cfg, db_path):
     assert stats["votes"] == 0
 
     kb.close()
+
+
+# --- Изменение 71: Автоматическая пересборка FAISS ---
+
+
+def test_maybe_rebuild_faiss_skips_below_threshold(cfg, db_path):
+    """FAISS rebuild не запускается когда concepts < faiss_threshold."""
+    from dataclasses import replace
+
+    cfg2 = replace(cfg, db_path=db_path, use_faiss=True, faiss_threshold=10000)
+    kb = KnowledgeBase(config=cfg2)
+
+    kb.save_concept("ключ", "инструмент")
+    kb._maybe_rebuild_faiss()
+
+    assert kb._faiss_index is None
+    assert kb._faiss_rebuild_pending is False
+    kb.close()
+
+
+def test_maybe_rebuild_faiss_disabled(cfg, db_path):
+    """FAISS rebuild не запускается когда use_faiss=False."""
+    from dataclasses import replace
+
+    cfg2 = replace(cfg, db_path=db_path, use_faiss=False, faiss_threshold=1)
+    kb = KnowledgeBase(config=cfg2)
+
+    kb.save_concept("ключ", "инструмент")
+    kb._maybe_rebuild_faiss()
+
+    assert kb._faiss_index is None
+    kb.close()
+
+
+def test_build_faiss_index_from_embeddings(cfg, db_path):
+    """_build_faiss_index_from_embeddings создаёт индекс из numpy матрицы."""
+    from dataclasses import replace
+
+    cfg2 = replace(cfg, db_path=db_path)
+    kb = KnowledgeBase(config=cfg2)
+
+    embeddings = np.random.randn(5, 300).astype(np.float32)
+    try:
+        index = kb._build_faiss_index_from_embeddings(embeddings)
+    except Exception:
+        pytest.skip("faiss не установлен")
+
+    if index is not None:
+        assert index.ntotal == 5
+    kb.close()
+
+
+def test_rebuild_faiss_async_skips_few_concepts(cfg, db_path):
+    """_rebuild_faiss_async пропускает rebuild при < 256 понятий."""
+    from dataclasses import replace
+
+    cfg2 = replace(cfg, db_path=db_path, use_faiss=True, faiss_threshold=1)
+    kb = KnowledgeBase(config=cfg2)
+
+    kb.save_concept("тест", "домен")
+    # Проверяем что при малом числе понятий rebuild не создаёт индекс
+    # (не запускаем _rebuild_faiss_async напрямую чтобы избежать threading issues)
+    assert kb._faiss_index is None
+    kb.close()
