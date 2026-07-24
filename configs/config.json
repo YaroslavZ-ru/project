@@ -1,7 +1,7 @@
 {
   "db_path": "data/knowledge_base.db",
   "fasttext_model_path": "models/cc.ru.300.bin",
-  "fallback_embeddings_path": "",
+  "fallback_embeddings_path": "data/fallback_embeddings.npy",
   "synonyms_path": "data/synonyms.json",
   "domain_templates_path": "configs/domain_templates.json",
   "domain_keywords_path": "configs/domain_keywords.json",
