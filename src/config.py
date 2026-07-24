@@ -346,6 +346,37 @@ class Config:
         if lf is not None and lf not in ("text", "json"):
             raise ValueError(f"log_format должен быть 'text' или 'json', получено: {lf!r}")
 
+        # --- Изменение 88: Расширенная валидация ---
+        # Проверка совместимости use_faiss и faiss_index_path
+        if data.get("use_faiss") and not data.get("faiss_index_path"):
+            logger.warning(
+                "use_faiss=true, но faiss_index_path пуст. "
+                "FAISS-индекс не будет загружен."
+            )
+
+        # Проверка доступности transformers при use_generative
+        if data.get("use_generative"):
+            try:
+                import transformers  # noqa: F401
+                import torch  # noqa: F401
+            except ImportError:
+                logger.warning(
+                    "use_generative=true, но transformers/torch не установлены. "
+                    "Генеративный модуль будет отключён."
+                )
+                data["use_generative"] = False
+
+        # Проверка prometheus_client при use_metrics
+        if data.get("use_metrics"):
+            try:
+                import prometheus_client  # noqa: F401
+            except ImportError:
+                logger.warning(
+                    "use_metrics=true, но prometheus_client не установлен. "
+                    "Метрики Prometheus будут отключены."
+                )
+                data["use_metrics"] = False
+
     # ------------------------------------------------------------------
     @classmethod
     def for_environment(

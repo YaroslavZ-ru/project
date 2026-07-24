@@ -135,6 +135,91 @@ def profile_pipeline(
     return stats
 
 
+def run_benchmark(config_path: str, n: int = 10) -> dict:
+    """Запуск бенчмарка и проверка порогов производительности.
+
+    Args:
+        config_path: Путь к config.json.
+        n: Количество запросов для усреднения.
+
+    Returns:
+        Словарь с результатами и статусом прохождения порогов.
+    """
+    from main import _init_components, run_pipeline
+    from src.config import Config
+
+    cfg = Config.from_json(Path(config_path), project_root=Path(config_path).parent.parent)
+    components = _init_components(cfg)
+
+    (
+        synonym_dict,
+        lemmatizer,
+        embedding_model,
+        vector_cache,
+        kb,
+        generative_expander,
+        session_manager,
+    ) = components
+
+    test_queries = [
+        {"term": "ключ", "hints": ["техника"]},
+        {"term": "ключ гаечный", "hints": ["инструмент"]},
+        {"term": "ключ скрипичный", "hints": ["музыка"]},
+        {"term": "bolt", "hints": []},
+        {"term": "резистор", "hints": ["электроника", "ток"]},
+    ]
+
+    timings: dict[str, list[float]] = {"total_ms": []}
+
+    for _ in range(n):
+        for q in test_queries:
+            t0 = time.perf_counter()
+            run_pipeline(
+                term=q["term"],
+                hints=q.get("hints", []),
+                debug=False,
+                min_confidence=None,
+                cfg=cfg,
+                lemmatizer=lemmatizer,
+                synonym_dict=synonym_dict,
+                embedding_model=embedding_model,
+                vector_cache=vector_cache,
+                kb=kb,
+                generative_expander=generative_expander,
+                session_manager=session_manager,
+            )
+            total = (time.perf_counter() - t0) * 1000
+            timings["total_ms"].append(total)
+
+    stats: dict[str, dict] = {}
+    for key, values in timings.items():
+        if values:
+            sorted_vals = sorted(values)
+            stats[key] = {
+                "mean_ms": round(sum(values) / len(values), 2),
+                "p50_ms": round(sorted_vals[len(sorted_vals) // 2], 2),
+                "p95_ms": round(sorted_vals[int(len(sorted_vals) * 0.95)], 2),
+                "p99_ms": round(sorted_vals[int(len(sorted_vals) * 0.99)], 2),
+            }
+
+    thresholds = {"total_ms": 300}
+    checks: dict[str, dict] = {}
+    for metric, threshold in thresholds.items():
+        if metric in stats:
+            passed = stats[metric]["mean_ms"] < threshold
+            checks[metric] = {
+                "threshold_ms": threshold,
+                "actual_ms": stats[metric]["mean_ms"],
+                "passed": passed,
+            }
+
+    return {
+        "stats": stats,
+        "checks": checks,
+        "all_passed": all(c["passed"] for c in checks.values()),
+    }
+
+
 def print_profile_report(stats: dict, n_queries: int, n_runs: int) -> None:
     """Вывести отчёт профилирования в stdout.
 
@@ -181,6 +266,8 @@ if __name__ == "__main__":
     parser.add_argument("--config", default="configs/config.json")
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--queries", default=None, help="JSON-файл с запросами")
+    parser.add_argument("--benchmark", action="store_true", help="Запустить бенчмарк производительности")
+    parser.add_argument("--n", type=int, default=10, help="Количество итераций для бенчмарка (default: 10)")
     args = parser.parse_args()
 
     try:
@@ -206,5 +293,11 @@ if __name__ == "__main__":
             )
 
     n_runs = max(1, args.runs)
+
+    if args.benchmark:
+        result = run_benchmark(args.config, n=args.n)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        sys.exit(0 if result["all_passed"] else 1)
+
     stats = profile_pipeline(cfg, comps, queries, n_runs=n_runs)
     print_profile_report(stats, n_queries=len(queries), n_runs=n_runs)

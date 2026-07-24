@@ -495,6 +495,7 @@ def main() -> None:
             "Примеры:\n"
             '  echo \'{"term":"ключ"}\'  | python main.py\n'
             '  python main.py --input \'{"term":"ключ", "hints":["техника"]}\' \n'
+            '  echo \'{"term":"ключ"}\' | python main.py --once\n'
         ),
     )
     parser.add_argument(
@@ -502,6 +503,24 @@ def main() -> None:
         type=str,
         default=None,
         help="JSON-строка входных данных. Если не указано -- читать из stdin.",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="configs/config.json",
+        help="Путь к файлу конфигурации (default: configs/config.json)",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        default=False,
+        help="Включить debug=True для всех запросов",
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        default=False,
+        help="Обработать один запрос и выйти (без цикла)",
     )
     parser.add_argument(
         "--env",
@@ -517,7 +536,7 @@ def main() -> None:
         if args.env:
             cfg = Config.for_environment(args.env, project_root=PROJECT_ROOT)
         else:
-            cfg = Config.from_json("configs/config.json", project_root=PROJECT_ROOT)
+            cfg = Config.from_json(args.config, project_root=PROJECT_ROOT)
         logger.info("Конфигурация загружена: log_level=%s", cfg.log_level)
     except (FileNotFoundError, ValueError) as exc:
         logger.error("Ошибка загрузки конфига: %s", exc)
@@ -534,6 +553,11 @@ def main() -> None:
         if args.input is not None:
             raw = args.input
             logger.debug("Вход из --input")
+        elif args.once:
+            raw = sys.stdin.readline().strip()
+            if not raw:
+                sys.exit(0)
+            logger.debug("Вход из stdin (once)")
         else:
             logger.debug("Чтение stdin...")
             raw = sys.stdin.read()

@@ -5,13 +5,26 @@
 
 ## [Unreleased]
 ### Добавлено
-- scripts/healthcheck.py -- диагностика всех компонентов
-- Логирование в файл: logs/ai_terminator.log с авторотацией (5 МБ, 3 архива)
-- Makefile и make.bat -- команды для Linux/macOS и Windows
-- .env.example -- шаблон переменных окружения
+- Автоматическая пересборка FAISS-индекса в фоновом потоке
+- CSV-экспорт базы знаний (--format csv)
+- Multi-worker API (--workers N)
+- Периодическая очистка устаревших сессий
+- SearchCache с TTL для результатов поиска
+- Обработка коллизии UUID при создании сессии
+- Расширенная валидация конфигурации
+- Standalone CLI с --once и --config
+- Бенчмарк производительности (--benchmark)
 ### Изменено
-- .gitignore: расширен с 7 до 40+ строк
-- setup_project.py: новый шаг [7/7] -- создание .env.example
+- Fallback confidence: 0.3 -> 0.4, домен "general" вместо "общее"
+- update_all_embeddings: partial commit с rollback при ошибке
+- CSV update_kb: группировка по (term, domain)
+- lemmatize_word: parse[0] вместо max()
+- Валидация weight синонимов [0,1]
+- Термин в сессии неизменяем
+### Исправлено
+- Оптимизация матрицы эмбеддингов (numpy dot-product)
+- Thread-safe доступ к FAISS и матрице эмбеддингов
+- Оптимизация поиска через SearchCache с TTL
 
 ## [0.9.0] -- 2026-06-14
 ### Добавлено (изм. 35-39)
