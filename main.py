@@ -319,6 +319,34 @@ def run_pipeline(
     trace_context.add_stage("search", time.monotonic() - t_stage, {"candidates_count": len(candidates)})
     logger.info("Поиск: %d кандидатов за %.3fс", len(candidates), time.monotonic() - t_stage)
 
+    # --- Фильтрация домена по hints (раздел 19.1 описания) ---
+    # Если hints однозначно указывают на домен — фильтруем кандидатов.
+    # Это предотвращает false-positive "ambiguous" когда hint уже разрешил домен.
+    hint_domain: str | None = None
+    if candidates and hints:
+        hints_lemmas_flat = [lemma for sub in processed.get("hints_lemmas", []) for lemma in sub]
+        if hints_lemmas_flat:
+            from src.fallback import detect_domain
+            hint_domain = detect_domain(set(hints_lemmas_flat), cfg.fallback_domain_keywords_path)
+            if hint_domain and hint_domain != "general":
+                filtered = [c for c in candidates if c.get("domain") == hint_domain]
+                if filtered:
+                    candidates = filtered
+                    logger.info("Hints '%s' -> домен '%s', отфильтровано %d кандидатов",
+                                hints, hint_domain, len(candidates))
+                else:
+                    hint_domain = None
+                    logger.debug("Hints '%s' -> домен '%s', но кандидатов в домене нет", hints, hint_domain)
+
+    # --- Проверка минимального confidence ---
+    # Если лучший кандидат имеет很低 confidence — считаем что термин не найден,
+    # переходим в fallback (шаблонные параметры).
+    if candidates:
+        best_sim = max(c.get("similarity", 0.0) for c in candidates)
+        if best_sim < 0.3:
+            logger.info("Лучший кандидат: %.4f < 0.3, переход в fallback для %r", best_sim, term)
+            candidates = []
+
     # --- Изменение 68: Коррекция по обратной связи ---
     if (
         getattr(cfg, "use_feedback_correction", False)
@@ -337,6 +365,38 @@ def run_pipeline(
     if candidates:
         hints_lemmas = processed.get("hints_lemmas", [])
 
+        # Сначала определяем контекст для ambiguity detection (без фильтрации)
+        selected_context = determine_context(candidates)
+
+        # --- Блок A: Обнаружение неоднозначности ---
+        ambiguity_info = detect_ambiguity(
+            candidates,
+            threshold=cfg.ambiguity_threshold,
+            delta=cfg.ambiguity_delta,
+        )
+        needs_clarification: bool = ambiguity_info["is_ambiguous"]
+        if needs_clarification:
+            clarification_questions = generate_clarification_questions(ambiguity_info, term)
+            suggested_refinements = clarification_questions
+            warnings_list.append(
+                f"Термин неоднозначен: возможны домены "
+                f"'{ambiguity_info['top_domain']}' и '{ambiguity_info['runner_up']}'. "
+                f"Добавьте уточняющие подсказки."
+            )
+            logger.info(
+                "Обнаружена неоднозначность для %r: %s vs %s",
+                term,
+                ambiguity_info["top_domain"],
+                ambiguity_info["runner_up"],
+            )
+        else:
+            # Неоднозначности нет — фильтруем кандидатов по домену
+            primary_domain = selected_context.get("domain")
+            if primary_domain and primary_domain != "не определено":
+                domain_filtered = [c for c in candidates if c.get("domain") == primary_domain]
+                if domain_filtered:
+                    candidates = domain_filtered
+
         # --- Изменение 67: Параметры из графа отношений ---
         related_params: list = []
         if getattr(cfg, "use_relations", False) and kb is not None:
@@ -353,7 +413,6 @@ def run_pipeline(
             parameters = aggregate_parameters(candidates, hints_lemmas, cfg.max_parameters, related_params=related_params)
         else:
             parameters = aggregate_parameters(candidates, hints_lemmas, cfg.max_parameters)
-        selected_context = determine_context(candidates)
         suggested_refinements = []
 
         # Генеративное расширение при нехватке параметров
@@ -374,28 +433,6 @@ def run_pipeline(
             warnings_list.append(
                 "Найдено мало параметров. Рекомендуется добавить уточняющие подсказки."
             )
-
-        # --- Блок A: Обнаружение неоднозначности ---
-        ambiguity_info = detect_ambiguity(
-            candidates,
-            threshold=cfg.ambiguity_threshold,
-            delta=cfg.ambiguity_delta,
-        )
-        needs_clarification: bool = ambiguity_info["is_ambiguous"]
-        if needs_clarification:
-            clarification_questions = generate_clarification_questions(ambiguity_info, term)
-            suggested_refinements = clarification_questions
-            warnings_list.append(
-                f"Термин неоднозначен: возможны домены "
-                f"{ambiguity_info['top_domain']}!r и {ambiguity_info['runner_up']}!r. "
-                f"Добавьте уточняющие подсказки."
-            )
-            logger.info(
-                "Обнаружена неоднозначность для %r: %s vs %s",
-                term,
-                ambiguity_info["top_domain"],
-                ambiguity_info["runner_up"],
-            )
     else:
         needs_clarification = False
         response = fallback_response(term, processed, cfg)
@@ -413,16 +450,32 @@ def run_pipeline(
     trace_context.add_stage("aggregation", time.monotonic() - t_stage, {"parameters_count": len(parameters)})
 
     # --- Шаг 5: Сборка ответа ---
-    result: dict = {
-        "status": "ok",
-        "term": term,
-        "selected_context": selected_context,
-        "needs_clarification": needs_clarification,
-        "parameters": parameters,
-        "suggested_refinements": suggested_refinements,
-        "warnings": warnings_list,
-        "request_id": request_id,
-    }
+    if needs_clarification:
+        # Раздел 19.2 описания: при ambiguous — пустые параметры,
+        # selected_context содержит domain_candidates
+        result: dict = {
+            "status": "ambiguous",
+            "term": term,
+            "selected_context": {
+                "domain_candidates": ambiguity_info.get("domain_candidates", []),
+            },
+            "needs_clarification": True,
+            "parameters": [],
+            "suggested_refinements": suggested_refinements,
+            "warnings": warnings_list,
+            "request_id": request_id,
+        }
+    else:
+        result = {
+            "status": "ok",
+            "term": term,
+            "selected_context": selected_context,
+            "needs_clarification": False,
+            "parameters": parameters,
+            "suggested_refinements": suggested_refinements,
+            "warnings": warnings_list,
+            "request_id": request_id,
+        }
 
     if debug:
         result["debug_info"] = {
