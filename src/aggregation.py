@@ -109,6 +109,9 @@ def aggregate_parameters(
     if not groups:
         return []
 
+    # Определяем лучшего кандидата (максимальная similarity)
+    top_sim = max(candidate["similarity"] for candidate in candidates)
+
     max_freq = max(g["freq"] for g in groups.values())
     hint_set = {lemma for sub in hints_lemmas for lemma in sub}
 
@@ -116,7 +119,20 @@ def aggregate_parameters(
         freq_norm = g["freq"] / max_freq
         avg_sim = sum(g["similarities"]) / len(g["similarities"])
         hint_match = _compute_hint_match(g["param"], hint_set)
-        g["score"] = 0.6 * freq_norm + 0.3 * avg_sim + 0.1 * hint_match
+
+        # Специфичность: параметр от лучшего кандидата — бонус,
+        # параметр только от слабых кандидатов — штраф.
+        max_sim = max(g["similarities"])
+        has_top_candidate = max_sim >= top_sim * 0.95
+        only_weak = all(s < top_sim * 0.7 for s in g["similarities"])
+
+        specificity = 1.0
+        if has_top_candidate:
+            specificity = 1.3
+        elif only_weak:
+            specificity = 0.5
+
+        g["score"] = 0.5 * freq_norm + 0.3 * avg_sim + 0.1 * hint_match + 0.1 * specificity
 
     sorted_groups = sorted(groups.values(), key=lambda g: g["score"], reverse=True)
     top_groups = sorted_groups[:max_parameters]
@@ -329,6 +345,8 @@ def _aggregate_parameters_extended(
     if not groups:
         return []
 
+    top_sim = max(candidate["similarity"] for candidate in candidates)
+
     max_freq = max(g["freq"] for g in groups.values())
     hint_set = {lemma for sub in hints_lemmas for lemma in sub}
 
@@ -336,7 +354,15 @@ def _aggregate_parameters_extended(
         freq_norm = g["freq"] / max_freq
         avg_sim = sum(g["similarities"]) / len(g["similarities"])
         hint_match = _compute_hint_match(g["param"], hint_set)
-        g["score"] = 0.6 * freq_norm + 0.3 * avg_sim + 0.1 * hint_match
+        max_sim = max(g["similarities"])
+        has_top_candidate = max_sim >= top_sim * 0.95
+        only_weak = all(s < top_sim * 0.7 for s in g["similarities"])
+        specificity = 1.0
+        if has_top_candidate:
+            specificity = 1.3
+        elif only_weak:
+            specificity = 0.5
+        g["score"] = 0.5 * freq_norm + 0.3 * avg_sim + 0.1 * hint_match + 0.1 * specificity
 
     sorted_groups = sorted(groups.values(), key=lambda g: g["score"], reverse=True)
     top_groups = sorted_groups[:max_parameters]
