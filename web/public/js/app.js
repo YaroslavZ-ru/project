@@ -300,45 +300,7 @@
 
   window.exportTXT = function () {
     if (!lastResult) return;
-    const lines = [];
-    lines.push('AI-Terminator — Результат анализа');
-    lines.push('='.repeat(40));
-    lines.push('Термин: ' + (lastResult.term || '—'));
-    if (lastResult.selected_context && lastResult.selected_context.domain) {
-      lines.push('Домен: ' + lastResult.selected_context.domain);
-      if (lastResult.selected_context.confidence != null) {
-        lines.push('Уверенность: ' + (lastResult.selected_context.confidence * 100).toFixed(0) + '%');
-      }
-    }
-    lines.push('');
-    if (lastResult.parameters && lastResult.parameters.length > 0) {
-      lines.push('Параметры:');
-      lines.push('-'.repeat(40));
-      lastResult.parameters.forEach((p, i) => {
-        lines.push('');
-        lines.push((i + 1) + '. ' + p.name + ' — ' + (p.label_ru || p.name));
-        lines.push('   Тип: ' + p.type);
-        if (p.description) lines.push('   Описание: ' + p.description);
-        if (p.enum_values) lines.push('   Значения: ' + p.enum_values.join(', '));
-        if (p.unit) lines.push('   Ед. измерения: ' + p.unit);
-        if (p.source) lines.push('   Источник: ' + p.source);
-        if (p.confidence != null) lines.push('   Уверенность: ' + (p.confidence * 100).toFixed(0) + '%');
-      });
-    }
-    if (lastResult.warnings && lastResult.warnings.length > 0) {
-      lines.push('');
-      lines.push('Предупреждения:');
-      lastResult.warnings.forEach(w => lines.push('  - ' + w));
-    }
-    if (lastResult.suggested_refinements && lastResult.suggested_refinements.length > 0) {
-      lines.push('');
-      lines.push('Рекомендации:');
-      lastResult.suggested_refinements.forEach(r => lines.push('  - ' + r));
-    }
-    lines.push('');
-    lines.push('='.repeat(40));
-    lines.push('Сгенерировано AI-Terminator Web');
-    download(lines.join('\n'), 'ai-terminator-result.txt', 'text/plain');
+    download(JSON.stringify(lastResult, null, 2), 'ai-terminator-result.json', 'application/json');
   };
 
   function csvEscape(val) {
