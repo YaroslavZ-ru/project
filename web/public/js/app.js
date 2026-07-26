@@ -315,7 +315,9 @@
         lines.push((i + 1) + '. ' + (p.label_ru || p.name) + ' (' + p.name + ')');
         lines.push('   Тип: ' + p.type);
         if (p.description) lines.push('   Описание: ' + p.description);
+        if (p.enum_values) lines.push('   Значения: ' + p.enum_values.join(', '));
         if (p.unit) lines.push('   Ед. измерения: ' + p.unit);
+        if (p.source) lines.push('   Источник: ' + p.source);
         if (p.confidence != null) lines.push('   Уверенность: ' + (p.confidence * 100).toFixed(0) + '%');
       });
     }

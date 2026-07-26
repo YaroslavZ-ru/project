@@ -95,6 +95,7 @@ if _FASTAPI_AVAILABLE:
         unit: str | None = None
         enum_values: list[str] | None = None
         confidence: float = 1.0
+        source: str = "knowledge_base"
 
     # --- Изменение 69: domain_candidates ---
 
