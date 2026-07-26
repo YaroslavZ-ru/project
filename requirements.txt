@@ -36,8 +36,8 @@ pytest>=7.0.0
 # faiss-cpu>=1.7.0
 
 # Генеративный модуль (use_generative=true в config.json)
-# transformers>=4.30.0
-# torch>=2.0.0
+transformers>=4.30.0
+torch>=2.0.0
 
 # REST API
 # fastapi>=0.100.0

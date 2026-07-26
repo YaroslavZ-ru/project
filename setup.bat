@@ -45,6 +45,7 @@ pip install --upgrade pip >nul 2>&1
 pip install -r requirements.txt >nul 2>&1
 pip install fastapi uvicorn httpx >nul 2>&1
 pip install fasttext-wheel >nul 2>&1
+pip install transformers torch --index-url https://download.pytorch.org/whl/cpu >nul 2>&1
 if errorlevel 1 (
     echo ОШИБКА: Не удалось установить fasttext-wheel
     echo Попробуйте: pip install fasttext-wheel

@@ -8,7 +8,7 @@
   "min_confidence": 0.3,
   "max_candidates": 20,
   "max_parameters": 15,
-  "use_generative": false,
+  "use_generative": true,
   "generative_model": "sberbank-ai/rugpt3small_based_on_gpt2",
   "generative_max_new_tokens": 100,
   "generative_temperature": 0.7,

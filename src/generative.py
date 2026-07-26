@@ -97,15 +97,14 @@ class GenerativeExpander:
         Returns:
             Готовый промпт, усечённый до 512 символов.
         """
-        params_str = ", ".join(p.get("label_ru", p.get("name", "")) for p in existing_params)
-        hints_str = ", ".join(hints) if hints else "нет"
+        params_str = ", ".join(p.get("label_ru", p.get("name", "")) for p in existing_params[:5])
+        hints_str = ", ".join(hints) if hints else ""
+        context = f" ({hints_str})" if hints_str else ""
         prompt = (
-            f"Термин: {term}\n"
-            f"Уточнения: {hints_str}\n"
-            f"Существующие параметры: {params_str}\n"
-            f"Предложи дополнительные характеристики через запятую:"
+            f"Характеристики{context} для \"{term}\": "
+            f"{params_str}, "
         )
-        return safe_truncate(prompt, 512)
+        return safe_truncate(prompt, 256)
 
     def _slugify(self, text: str) -> str:
         """Преобразует label_ru в техническое name.
@@ -146,28 +145,50 @@ class GenerativeExpander:
         # Разбиваем по запятым, точке с запятой, переносам строк
         candidates_raw = re.split(r"[,;\n]", text_to_parse)
 
+        # Ключевые слова для определения типа параметра
+        keywords = getattr(self._cfg, "generative_keywords", [])
+
         result: list[dict] = []
         for raw in candidates_raw:
-            candidate = raw.strip().strip("\"'«»()")
-            if len(candidate) < 2 or len(candidate) > 80:
+            candidate = raw.strip().strip("\"'«»()0123456789. ")
+            if len(candidate) < 3 or len(candidate) > 60:
                 continue
 
-            # Проверка на ключевые слова
-            keywords = getattr(self._cfg, "generative_keywords", [])
-            if not any(kw in candidate.lower() for kw in keywords):
+            # Пропускаем мусорные строки
+            skip_words = ["выполнение", "команд", "танк", "цели", "случай",
+                         "ndash", "nbsp", "mdash", "amp", "quot", "lt", "gt"]
+            if any(skip in candidate.lower() for skip in skip_words):
                 continue
+
+            # Пропускаем строки с HTML-сущностями
+            if "&" in candidate or ";" in candidate:
+                continue
+
+            # Пропускаем строки с цифрами в начале (нумерация)
+            if candidate and candidate[0].isdigit():
+                continue
+
+            # Проверка на ключевые слова (мягкая - любое вхождение)
+            has_keyword = any(kw in candidate.lower() for kw in keywords)
+
+            # Определяем тип по ключевым словам
+            param_type = "string"
+            if any(w in candidate.lower() for w in ["мм", "см", "м", "кг", "г", "вт", "в", "а", "гац"]):
+                param_type = "float"
+            elif any(w in candidate.lower() for w in ["есть", "нет", "да", "можно"]):
+                param_type = "boolean"
 
             slug = self._slugify(candidate)
-            if slug in existing_names:
+            if not slug or slug in existing_names or len(slug) < 3:
                 continue
 
             result.append(
                 {
                     "name": slug,
-                    "label_ru": candidate.strip(),
-                    "type": "string",
+                    "label_ru": candidate.strip().capitalize(),
+                    "type": param_type,
                     "description": "Предложено генеративной моделью",
-                    "confidence": 0.2,
+                    "confidence": 0.3,
                     "source": "generative",
                 }
             )
@@ -211,7 +232,17 @@ class GenerativeExpander:
 
         try:
             with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(self._pipe, prompt)
+                future = executor.submit(
+                    self._pipe,
+                    prompt,
+                    max_new_tokens=50,
+                    temperature=0.9,
+                    do_sample=True,
+                    top_k=50,
+                    top_p=0.95,
+                    repetition_penalty=1.2,
+                    num_return_sequences=1,
+                )
                 try:
                     result = future.result(timeout=active_cfg.generative_timeout_seconds)
                 except FuturesTimeoutError:
