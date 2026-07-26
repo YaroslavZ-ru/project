@@ -117,6 +117,7 @@ input[type="text"]:focus, textarea:focus {
 textarea { resize: vertical; }
 
 .hint-row { display: flex; gap: 0.5rem; align-items: flex-end; }
+.hint-row label { margin-bottom: 0; white-space: nowrap; }
 .hint-row input { flex: 1; }
 
 .form-actions {

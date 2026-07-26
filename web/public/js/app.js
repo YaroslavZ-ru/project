@@ -176,9 +176,11 @@
         const tr = document.createElement('tr');
         const confPct = p.confidence != null ? (p.confidence * 100).toFixed(0) : '—';
         const barWidth = p.confidence != null ? (p.confidence * 60) : 0;
+        const enumStr = p.enum_values ? '<br><small style="color:var(--text-muted)">' + escapeHtml(p.enum_values.join(', ')) + '</small>' : '';
+        const sourceStr = p.source ? '<br><small style="color:var(--text-muted)">' + escapeHtml(p.source) + '</small>' : '';
         tr.innerHTML =
-          '<td><strong>' + escapeHtml(p.label_ru || p.name) + '</strong><br><small style="color:var(--text-muted)">' + escapeHtml(p.name) + '</small></td>' +
-          '<td>' + escapeHtml(p.type) + '</td>' +
+          '<td><strong>' + escapeHtml(p.name) + '</strong><br><small style="color:var(--text-muted)">' + escapeHtml(p.label_ru || '') + '</small>' + enumStr + '</td>' +
+          '<td>' + escapeHtml(p.type) + sourceStr + '</td>' +
           '<td>' + escapeHtml(p.description || '—') + '</td>' +
           '<td>' + escapeHtml(p.unit || '—') + '</td>' +
           '<td><span class="confidence-bar" style="width:' + barWidth + 'px"></span>' + confPct + '%</td>';
@@ -280,14 +282,16 @@
 
   window.exportCSV = function () {
     if (!lastResult || !lastResult.parameters) return;
-    const rows = [['name', 'label_ru', 'type', 'description', 'unit', 'confidence']];
+    const rows = [['name', 'label_ru', 'type', 'description', 'enum_values', 'unit', 'source', 'confidence']];
     lastResult.parameters.forEach(p => {
       rows.push([
         csvEscape(p.name),
         csvEscape(p.label_ru || ''),
         csvEscape(p.type),
         csvEscape(p.description || ''),
+        csvEscape(p.enum_values ? p.enum_values.join('; ') : ''),
         csvEscape(p.unit || ''),
+        csvEscape(p.source || ''),
         p.confidence != null ? p.confidence.toFixed(2) : '',
       ]);
     });
@@ -312,7 +316,7 @@
       lines.push('-'.repeat(40));
       lastResult.parameters.forEach((p, i) => {
         lines.push('');
-        lines.push((i + 1) + '. ' + (p.label_ru || p.name) + ' (' + p.name + ')');
+        lines.push((i + 1) + '. ' + p.name + ' — ' + (p.label_ru || p.name));
         lines.push('   Тип: ' + p.type);
         if (p.description) lines.push('   Описание: ' + p.description);
         if (p.enum_values) lines.push('   Значения: ' + p.enum_values.join(', '));
