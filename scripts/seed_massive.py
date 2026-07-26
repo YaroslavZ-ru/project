@@ -686,6 +686,262 @@ CONCEPTS = [
         {"name": "spin_rpm", "label_ru": "Отжим (об/мин)", "type": "integer", "description": "Максимальные обороты"},
         {"name": "energy_class", "label_ru": "Класс энергоэффективности", "type": "enum", "description": "Класс A-G", "enum_values": ["A+++", "A++", "A+", "A", "B"]},
     ]},
+
+    # =====================================================================
+    # ДОПОЛНИТЕЛЬНЫЕ ПОНЯТИЯ (расширение базы)
+    # =====================================================================
+
+    # --- СЛЕСАРНЫЙ ИНСТРУМЕНТ (дополнительно) ---
+    {"term": "гаечный ключ", "domain": "слесарный инструмент", "parameters": [
+        {"name": "size_mm", "label_ru": "Размер (мм)", "type": "float", "description": "Размер под гайку", "unit": "мм"},
+        {"name": "material", "label_ru": "Материал", "type": "string", "description": "Материал изготовления"},
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Тип ключа", "enum_values": ["рожковый", "накидной", "комбинированный", "торцевой"]},
+    ]},
+    {"term": "рожковый ключ", "domain": "слесарный инструмент", "parameters": [
+        {"name": "size_mm", "label_ru": "Размер (мм)", "type": "float", "description": "Размер рожков", "unit": "мм"},
+        {"name": "material", "label_ru": "Материал", "type": "string", "description": "Материал"},
+    ]},
+    {"term": "накидной ключ", "domain": "слесарный инструмент", "parameters": [
+        {"name": "size_mm", "label_ru": "Размер (мм)", "type": "float", "description": "Размер", "unit": "мм"},
+        {"name": "ratchet", "label_ru": "Трещётка", "type": "boolean", "description": "Наличие трещётки"},
+    ]},
+    {"term": "торцевой ключ", "domain": "слесарный инструмент", "parameters": [
+        {"name": "size_mm", "label_ru": "Размер (мм)", "type": "float", "description": "Размер головки", "unit": "мм"},
+        {"name": "drive_type", "label_ru": "Тип привода", "type": "enum", "description": "Привод", "enum_values": ["1/4", "3/8", "1/2", "3/4", "1"]},
+    ]},
+    {"term": "набор ключей", "domain": "слесарный инструмент", "parameters": [
+        {"name": "count", "label_ru": "Количество", "type": "integer", "description": "Число ключей в наборе"},
+        {"name": "size_range", "label_ru": "Диапазон размеров", "type": "string", "description": "Мин-макс размер"},
+    ]},
+    {"term": "шарнирно-губцевый инструмент", "domain": "слесарный инструмент", "parameters": [
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Вид инструмента", "enum_values": ["кусачки", "пассатижи", "бокорезы", "тонкогубцы"]},
+        {"name": "length_mm", "label_ru": "Длина (мм)", "type": "float", "description": "Общая длина", "unit": "мм"},
+    ]},
+    {"term": "кусачки электрика", "domain": "слесарный инструмент", "parameters": [
+        {"name": "length_mm", "label_ru": "Длина (мм)", "type": "float", "description": "Длина", "unit": "мм"},
+        {"name": "cutting_diameter", "label_ru": "Диаметр реза (мм)", "type": "float", "description": "Максимальный диаметр провода", "unit": "мм"},
+    ]},
+
+    # --- ЭЛЕКТРОНИКА (дополнительно) ---
+    {"term": "транзистор", "domain": "электроника", "parameters": [
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Тип транзистора", "enum_values": ["NPN", "PNP", "MOSFET", "JFET"]},
+        {"name": "voltage_v", "label_ru": "Напряжение (В)", "type": "float", "description": "Максимальное напряжение", "unit": "В"},
+        {"name": "current_a", "label_ru": "Ток (А)", "type": "float", "description": "Максимальный ток", "unit": "А"},
+    ]},
+    {"term": "микросхема", "domain": "электроника", "parameters": [
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Тип микросхемы", "enum_values": ["микроконтроллер", "операционный усилитель", "стабилизатор", "логическая"]},
+        {"name": "package", "label_ru": "Корпус", "type": "string", "description": "Тип корпуса"},
+    ]},
+    {"term": "датчик", "domain": "электроника", "parameters": [
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Тип датчика", "enum_values": ["температуры", "давления", "влажности", "света", "движения"]},
+        {"name": "voltage", "label_ru": "Напряжение (В)", "type": "float", "description": "Рабочее напряжение", "unit": "В"},
+        {"name": "interface", "label_ru": "Интерфейс", "type": "enum", "description": "Тип выхода", "enum_values": ["аналоговый", "цифровой", "I2C", "SPI", "UART"]},
+    ]},
+    {"term": "реле", "domain": "электроника", "parameters": [
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Тип реле", "enum_values": ["электромеханическое", "твердотельное", "импульсное"]},
+        {"name": "voltage_v", "label_ru": "Напряжение катушки (В)", "type": "float", "description": "Напряжение управления", "unit": "В"},
+        {"name": "current_a", "label_ru": "Ток коммутации (А)", "type": "float", "description": "Максимальный коммутируемый ток", "unit": "А"},
+    ]},
+    {"term": "кабель", "domain": "электроника", "parameters": [
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Тип кабеля", "enum_values": ["силовой", "сигнальный", "сетевой", "коаксиальный", "оптоволоконный"]},
+        {"name": "cross_section", "label_ru": "Сечение (мм²)", "type": "float", "description": "Сечение жилы", "unit": "мм²"},
+        {"name": "length_m", "label_ru": "Длина (м)", "type": "float", "description": "Длина кабеля", "unit": "м"},
+    ]},
+
+    # --- СТРОИТЕЛЬСТВО (дополнительно) ---
+    {"term": "бетонная смесь", "domain": "строительство", "parameters": [
+        {"name": "grade", "label_ru": "Марка", "type": "enum", "description": "Класс прочности", "enum_values": ["М100", "М150", "М200", "М250", "М300", "М350", "М400"]},
+        {"name": "slump_cm", "label_ru": "Подвижность (см)", "type": "float", "description": "Осадка конуса", "unit": "см"},
+    ]},
+    {"term": "арматура", "domain": "строительство", "parameters": [
+        {"name": "diameter_mm", "label_ru": "Диаметр (мм)", "type": "float", "description": "Диаметр стержня", "unit": "мм"},
+        {"name": "steel_grade", "label_ru": "Марка стали", "type": "enum", "description": "Класс стали", "enum_values": ["А400", "А500", "А600", "В500"]},
+        {"name": "length_m", "label_ru": "Длина (м)", "type": "float", "description": "Длина стержня", "unit": "м"},
+    ]},
+    {"term": "утеплитель", "domain": "строительство", "parameters": [
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Вид утеплителя", "enum_values": ["минвата", "пенопласт", "пенополистирол", "эковата", "пенополиуретан"]},
+        {"name": "thickness_mm", "label_ru": "Толщина (мм)", "type": "float", "description": "Толщина плиты", "unit": "мм"},
+        {"name": "thermal_conductivity", "label_ru": "Теплопроводность (Вт/м·К)", "type": "float", "description": "Коэффициент теплопроводности", "unit": "Вт/м·К"},
+    ]},
+    {"term": "краска", "domain": "строительство", "parameters": [
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Вид краски", "enum_values": ["акриловая", "силиконовая", "масляная", "водоэмульсионная", "alkидная"]},
+        {"name": "volume_l", "label_ru": "Объём (л)", "type": "float", "description": "Объём банки", "unit": "л"},
+        {"name": "coverage", "label_ru": "Расход (м²/л)", "type": "float", "description": "Расход на слой", "unit": "м²/л"},
+    ]},
+
+    # --- КРЕПЁЖ (дополнительно) ---
+    {"term": "дюбель", "domain": "крепёж", "parameters": [
+        {"name": "diameter_mm", "label_ru": "Диаметр (мм)", "type": "float", "description": "Диаметр дюбеля", "unit": "мм"},
+        {"name": "length_mm", "label_ru": "Длина (мм)", "type": "float", "description": "Длина", "unit": "мм"},
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Тип дюбеля", "enum_values": ["пластиковый", "металлический", "химический", "frames"]},
+    ]},
+    {"term": "саморез", "domain": "крепёж", "parameters": [
+        {"name": "diameter_mm", "label_ru": "Диаметр (мм)", "type": "float", "description": "Диаметр резьбы", "unit": "мм"},
+        {"name": "length_mm", "label_ru": "Длина (мм)", "type": "float", "description": "Длина самореза", "unit": "мм"},
+        {"name": "head_type", "label_ru": "Тип головки", "type": "enum", "description": "Форма головки", "enum_values": ["потайная", "полукруглая", "шестигранная"]},
+    ]},
+    {"term": "анкер", "domain": "крепёж", "parameters": [
+        {"name": "diameter_mm", "label_ru": "Диаметр (мм)", "type": "float", "description": "Диаметр анкера", "unit": "мм"},
+        {"name": "length_mm", "label_ru": "Длина (мм)", "type": "float", "description": "Длина", "unit": "мм"},
+        {"name": "load_kg", "label_ru": "Нагрузка (кг)", "type": "float", "description": "Максимальная нагрузка на отрыв", "unit": "кг"},
+    ]},
+
+    # --- БЫТОВАЯ ТЕХНИКА (дополнительно) ---
+    {"term": "пылесос", "domain": "бытовая техника", "parameters": [
+        {"name": "power_watt", "label_ru": "Мощность (Вт)", "type": "float", "description": "Потребляемая мощность", "unit": "Вт"},
+        {"name": "suction_pa", "label_ru": "Всасывание (Па)", "type": "float", "description": "Разрежение", "unit": "Па"},
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Тип пылесоса", "enum_values": ["вертикальный", "робот", "классический", "аккумуляторный"]},
+    ]},
+    {"term": "кофемашина", "domain": "бытовая техника", "parameters": [
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Тип кофемашины", "enum_values": ["капсульная", "капельная", "эспрессо", "капучино"]},
+        {"name": "power_watt", "label_ru": "Мощность (Вт)", "type": "float", "description": "Мощность", "unit": "Вт"},
+        {"name": "water_tank_l", "label_ru": "Бак (л)", "type": "float", "description": "Объём бака для воды", "unit": "л"},
+    ]},
+    {"term": "микроволновая печь", "domain": "бытовая техника", "parameters": [
+        {"name": "power_watt", "label_ru": "Мощность (Вт)", "type": "float", "description": "Мощность", "unit": "Вт"},
+        {"name": "volume_l", "label_ru": "Объём (л)", "type": "float", "description": "Объём камеры", "unit": "л"},
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Тип", "enum_values": ["только подогрев", "с грилем", "с конвекцией"]},
+    ]},
+    {"term": "чайник электрический", "domain": "бытовая техника", "parameters": [
+        {"name": "volume_l", "label_ru": "Объём (л)", "type": "float", "description": "Объём", "unit": "л"},
+        {"name": "power_watt", "label_ru": "Мощность (Вт)", "type": "float", "description": "Мощность", "unit": "Вт"},
+        {"name": "material", "label_ru": "Материал", "type": "enum", "description": "Материал корпуса", "enum_values": ["нержавеющая сталь", "пластик", "стекло", "керамика"]},
+    ]},
+
+    # --- ТРАНСПОРТ (дополнительно) ---
+    {"term": "мотоцикл", "domain": "транспорт", "parameters": [
+        {"name": "engine_cc", "label_ru": "Объём двигателя (см³)", "type": "float", "description": "Рабочий объём", "unit": "см³"},
+        {"name": "power_hp", "label_ru": "Мощность (л.с.)", "type": "float", "description": "Мощность", "unit": "л.с."},
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Тип мотоцикла", "enum_values": ["sport", "touring", "chopper", "enduro", "scooter"]},
+    ]},
+    {"term": "скутер", "domain": "транспорт", "parameters": [
+        {"name": "engine_cc", "label_ru": "Объём двигателя (см³)", "type": "float", "description": "Объём", "unit": "см³"},
+        {"name": "max_speed_kmh", "label_ru": "Макс. скорость (км/ч)", "type": "float", "description": "Максимальная скорость", "unit": "км/ч"},
+    ]},
+    {"term": "автобус", "domain": "транспорт", "parameters": [
+        {"name": "capacity", "label_ru": "Вместимость (чел)", "type": "integer", "description": "Количество пассажиров"},
+        {"name": "length_m", "label_ru": "Длина (м)", "type": "float", "description": "Длина автобуса", "unit": "м"},
+        {"name": "fuel_type", "label_ru": "Тип топлива", "type": "enum", "description": "Вид топлива", "enum_values": ["дизель", "электро", "газ", "гибрид"]},
+    ]},
+    {"term": "грузовик", "domain": "транспорт", "parameters": [
+        {"name": "payload_kg", "label_ru": "Грузоподъёмность (кг)", "type": "float", "description": "Максимальная нагрузка", "unit": "кг"},
+        {"name": "volume_m3", "label_ru": "Объём кузова (м³)", "type": "float", "description": "Объём кузова", "unit": "м³"},
+        {"name": "fuel_type", "label_ru": "Тип топлива", "type": "enum", "description": "Вид топлива", "enum_values": ["дизель", "электро", "газ"]},
+    ]},
+
+    # --- МЕБЕЛЬ (дополнительно) ---
+    {"term": "комод", "domain": "мебель", "parameters": [
+        {"name": "drawers", "label_ru": "Количество ящиков", "type": "integer", "description": "Число ящиков"},
+        {"name": "material", "label_ru": "Материал", "type": "string", "description": "Материал"},
+        {"name": "width_mm", "label_ru": "Ширина (мм)", "type": "float", "description": "Ширина", "unit": "мм"},
+    ]},
+    {"term": "стеллаж", "domain": "мебель", "parameters": [
+        {"name": "shelves", "label_ru": "Количество полок", "type": "integer", "description": "Число полок"},
+        {"name": "material", "label_ru": "Материал", "type": "string", "description": "Материал"},
+        {"name": "max_load_kg", "label_ru": "Нагрузка на полку (кг)", "type": "float", "description": "Максимальная нагрузка", "unit": "кг"},
+    ]},
+    {"term": "кресло", "domain": "мебель", "parameters": [
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Тип кресла", "enum_values": ["офисное", "компьютерное", "кресло-мешок", "кресло-качалка"]},
+        {"name": "upholstery", "label_ru": "Обивка", "type": "string", "description": "Материал обивки"},
+        {"name": "armrests", "label_ru": "Подлокотники", "type": "boolean", "description": "Наличие подлокотников"},
+    ]},
+
+    # --- СПОРТ (дополнительно) ---
+    {"term": "мяч футбольный", "domain": "спорт", "parameters": [
+        {"name": "size", "label_ru": "Размер", "type": "enum", "description": "Размер мяча", "enum_values": ["3", "4", "5"]},
+        {"name": "material", "label_ru": "Материал", "type": "string", "description": "Материал покрытия"},
+        {"name": "weight_g", "label_ru": "Масса (г)", "type": "float", "description": "Вес мяча", "unit": "г"},
+    ]},
+    {"term": "ракетка теннисная", "domain": "спорт", "parameters": [
+        {"name": "weight_g", "label_ru": "Масса (г)", "type": "float", "description": "Вес ракетки", "unit": "г"},
+        {"name": "head_size_cm2", "label_ru": "Площадь головки (см²)", "type": "float", "description": "Размер головки", "unit": "см²"},
+        {"name": "string_pattern", "label_ru": "Плотность нитей", "type": "string", "description": "Схема переплетения"},
+    ]},
+    {"term": "велосипед горный", "domain": "спорт", "parameters": [
+        {"name": "wheel_size", "label_ru": "Диаметр колёс", "type": "enum", "description": "Размер колёс", "enum_values": ["26", "27.5", "29"]},
+        {"name": "gears", "label_ru": "Количество передач", "type": "integer", "description": "Число скоростей"},
+        {"name": "frame_material", "label_ru": "Материал рамы", "type": "enum", "description": "Материал", "enum_values": ["алюминий", "карбон", "сталь", "титан"]},
+        {"name": "suspension", "label_ru": "Подвеска", "type": "enum", "description": "Тип подвески", "enum_values": ["hardtail", "full-suspension", "rigid"]},
+    ]},
+
+    # --- ОДЕЖДА (дополнительно) ---
+    {"term": "джинсы", "domain": "одежда", "parameters": [
+        {"name": "size", "label_ru": "Размер", "type": "string", "description": "Размер"},
+        {"name": "material", "label_ru": "Материал", "type": "string", "description": "Материал"},
+        {"name": "fit", "label_ru": "Крой", "type": "enum", "description": "Тип кроя", "enum_values": ["skinny", "slim", "regular", "relaxed", "bootcut"]},
+    ]},
+    {"term": "футболка", "domain": "одежда", "parameters": [
+        {"name": "size", "label_ru": "Размер", "type": "string", "description": "Размер"},
+        {"name": "material", "label_ru": "Материал", "type": "string", "description": "Материал"},
+        {"name": "sleeve", "label_ru": "Рукав", "type": "enum", "description": "Длина рукава", "enum_values": ["короткий", "длинный", "без рукавов"]},
+    ]},
+    {"term": "куртка демисезонная", "domain": "одежда", "parameters": [
+        {"name": "size", "label_ru": "Размер", "type": "string", "description": "Размер"},
+        {"name": "material", "label_ru": "Материал", "type": "string", "description": "Материал"},
+        {"name": "waterproof", "label_ru": "Водонепроницаемость", "type": "boolean", "description": "Наличие мембраны"},
+    ]},
+
+    # --- ЕДА (дополнительно) ---
+    {"term": "чай", "domain": "еда", "parameters": [
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Вид чая", "enum_values": ["чёрный", "зелёный", "белый", "oolong", "травяной"]},
+        {"name": "weight_g", "label_ru": "Масса (г)", "type": "float", "description": "Масса упаковки", "unit": "г"},
+        {"name": "origin", "label_ru": "Происхождение", "type": "string", "description": "Страна производства"},
+    ]},
+    {"term": "сахар", "domain": "еда", "parameters": [
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Вид сахара", "enum_values": ["песок", "рафинад", "коричневый", "пудра"]},
+        {"name": "weight_kg", "label_ru": "Масса (кг)", "type": "float", "description": "Масса упаковки", "unit": "кг"},
+    ]},
+    {"term": "молоко", "domain": "еда", "parameters": [
+        {"name": "fat_percent", "label_ru": "Жирность (%)", "type": "float", "description": "Процент жирности", "unit": "%"},
+        {"name": "volume_l", "label_ru": "Объём (л)", "type": "float", "description": "Объём упаковки", "unit": "л"},
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Тип молока", "enum_values": ["пастеризованное", "ультрапастеризованное", "свежее"]},
+    ]},
+
+    # --- ЖИВОТНЫЕ (дополнительно) ---
+    {"term": "собака", "domain": "животные", "parameters": [
+        {"name": "breed", "label_ru": "Порода", "type": "string", "description": "Порода"},
+        {"name": "weight_kg", "label_ru": "Масса (кг)", "type": "float", "description": "Вес", "unit": "кг"},
+        {"name": "size", "label_ru": "Размер", "type": "enum", "description": "Группа размера", "enum_values": ["малый", "средний", "крупный", "гигантский"]},
+    ]},
+    {"term": "кошка", "domain": "животные", "parameters": [
+        {"name": "breed", "label_ru": "Порода", "type": "string", "description": "Порода"},
+        {"name": "color", "label_ru": "Окрас", "type": "string", "description": "Окрас шерсти"},
+        {"name": "weight_kg", "label_ru": "Масса (кг)", "type": "float", "description": "Вес", "unit": "кг"},
+    ]},
+    {"term": "рыба аквариумная", "domain": "животные", "parameters": [
+        {"name": "species", "label_ru": "Вид", "type": "string", "description": "Вид рыбы"},
+        {"name": "size_cm", "label_ru": "Размер (см)", "type": "float", "description": "Длина тела", "unit": "см"},
+        {"name": "temperature_c", "label_ru": "Температура (°C)", "type": "string", "description": "Диапазон температуры"},
+    ]},
+
+    # --- МЕДИЦИНА (дополнительно) ---
+    {"term": "шприц", "domain": "медицина", "parameters": [
+        {"name": "volume_ml", "label_ru": "Объём (мл)", "type": "float", "description": "Объём шприца", "unit": "мл"},
+        {"name": "needle_gauge", "label_ru": "Диаметр иглы (G)", "type": "float", "description": "Калибр иглы", "unit": "G"},
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Тип шприца", "enum_values": ["одноразовый", "многоразовый", "инсулиновый"]},
+    ]},
+    {"term": "бинт", "domain": "медицина", "parameters": [
+        {"name": "width_cm", "label_ru": "Ширина (см)", "type": "float", "description": "Ширина бинта", "unit": "см"},
+        {"name": "length_m", "label_ru": "Длина (м)", "type": "float", "description": "Длина бинта", "unit": "м"},
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Тип бинта", "enum_values": ["стерильный", "нестерильный", "эластичный", " самоклеющийся"]},
+    ]},
+
+    # --- ОБОРУДОВАНИЕ (дополнительно) ---
+    {"term": "сварочный аппарат", "domain": "оборудование", "parameters": [
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Тип сварки", "enum_values": ["MIG", "TIG", "MMA", "plasma"]},
+        {"name": "current_a", "label_ru": "Ток (А)", "type": "float", "description": "Максимальный ток", "unit": "А"},
+        {"name": "voltage_v", "label_ru": "Напряжение (В)", "type": "float", "description": "Рабочее напряжение", "unit": "В"},
+    ]},
+    {"term": "компрессор", "domain": "оборудование", "parameters": [
+        {"name": "pressure_bar", "label_ru": "Давление (бар)", "type": "float", "description": "Максимальное давление", "unit": "бар"},
+        {"name": "volume_l", "label_ru": "Объём ресивера (л)", "type": "float", "description": "Объём бака", "unit": "л"},
+        {"name": "power_watt", "label_ru": "Мощность (Вт)", "type": "float", "description": "Мощность мотора", "unit": "Вт"},
+    ]},
+    {"term": "дрель", "domain": "оборудование", "parameters": [
+        {"name": "power_watt", "label_ru": "Мощность (Вт)", "type": "float", "description": "Мощность", "unit": "Вт"},
+        {"name": "max_drill_mm", "label_ru": "Макс. диаметр (мм)", "type": "float", "description": "Максимальный диаметр сверления", "unit": "мм"},
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Тип дрели", "enum_values": ["ударная", "безударная", "аккумуляторная"]},
+    ]},
 ]
 
 
