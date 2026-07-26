@@ -1,0 +1,207 @@
+{
+  "status": "ok",
+  "term": "стол",
+  "selected_context": {
+    "domain": "мебель",
+    "concept_id": null,
+    "term": null,
+    "similarity": null,
+    "domain_candidates": null
+  },
+  "needs_clarification": false,
+  "parameters": [
+    {
+      "name": "type",
+      "label_ru": "Тип",
+      "type": "enum",
+      "description": "Назначение стола",
+      "unit": null,
+      "enum_values": [
+        "обеденный",
+        "письменный",
+        "журнальный",
+        "компьютерный",
+        "кухонный",
+        "консольный",
+        "трансформер"
+      ],
+      "confidence": 1,
+      "source": "knowledge_base"
+    },
+    {
+      "name": "material",
+      "label_ru": "Материал",
+      "type": "enum",
+      "description": "Основной материал изготовления",
+      "unit": null,
+      "enum_values": [
+        "дерево",
+        "металл",
+        "пластик",
+        "стекло",
+        "камень",
+        "композит"
+      ],
+      "confidence": 1,
+      "source": "knowledge_base"
+    },
+    {
+      "name": "load_capacity_kg",
+      "label_ru": "Нагрузка (кг)",
+      "type": "float",
+      "description": "Максимальная допустимая нагрузка на столешницу",
+      "unit": "кг",
+      "enum_values": null,
+      "confidence": 1,
+      "source": "knowledge_base"
+    },
+    {
+      "name": "wood_type",
+      "label_ru": "Порода дерева",
+      "type": "enum",
+      "description": "Порода древесины для деревянных столов",
+      "unit": null,
+      "enum_values": [
+        "сосна",
+        "ель",
+        "дуб",
+        "бук",
+        "ясень",
+        "орех",
+        "вишня",
+        "клен",
+        "тик"
+      ],
+      "confidence": 0.8776,
+      "source": "knowledge_base"
+    },
+    {
+      "name": "width_mm",
+      "label_ru": "Ширина (мм)",
+      "type": "float",
+      "description": "Ширина столешницы",
+      "unit": "мм",
+      "enum_values": null,
+      "confidence": 0.7639,
+      "source": "knowledge_base"
+    },
+    {
+      "name": "depth_mm",
+      "label_ru": "Глубина (мм)",
+      "type": "float",
+      "description": "Глубина столешницы",
+      "unit": "мм",
+      "enum_values": null,
+      "confidence": 0.7639,
+      "source": "knowledge_base"
+    },
+    {
+      "name": "height_mm",
+      "label_ru": "Высота (мм)",
+      "type": "float",
+      "description": "Высота стола от пола до столешницы",
+      "unit": "мм",
+      "enum_values": null,
+      "confidence": 0.7639,
+      "source": "knowledge_base"
+    },
+    {
+      "name": "shape",
+      "label_ru": "Форма столешницы",
+      "type": "enum",
+      "description": "Геометрическая форма столешницы",
+      "unit": null,
+      "enum_values": [
+        "прямоугольная",
+        "квадратная",
+        "круглая",
+        "овальная",
+        "угловая",
+        "трапециевидная"
+      ],
+      "confidence": 0.7639,
+      "source": "knowledge_base"
+    },
+    {
+      "name": "coating",
+      "label_ru": "Покрытие",
+      "type": "enum",
+      "description": "Тип защитно-декоративного покрытия",
+      "unit": null,
+      "enum_values": [
+        "лак",
+        "масло",
+        "воск",
+        "полиуретан",
+        "шлифовка",
+        "без покрытия"
+      ],
+      "confidence": 0.7639,
+      "source": "knowledge_base"
+    },
+    {
+      "name": "wood_grade",
+      "label_ru": "Класс древесины",
+      "type": "enum",
+      "description": "Сортность древесины",
+      "unit": null,
+      "enum_values": [
+        "A",
+        "B",
+        "C",
+        "Extra",
+        "Prime"
+      ],
+      "confidence": 0.7639,
+      "source": "knowledge_base"
+    },
+    {
+      "name": "moisture_resistance",
+      "label_ru": "Влагостойкость",
+      "type": "enum",
+      "description": "Устойчивость к воздействию влаги",
+      "unit": null,
+      "enum_values": [
+        "низкая",
+        "средняя",
+        "высокая",
+        "водостойкая"
+      ],
+      "confidence": 0.7639,
+      "source": "knowledge_base"
+    },
+    {
+      "name": "foldable",
+      "label_ru": "Складной",
+      "type": "boolean",
+      "description": "Возможность складывания стола",
+      "unit": null,
+      "enum_values": null,
+      "confidence": 0.7639,
+      "source": "knowledge_base"
+    },
+    {
+      "name": "extendable",
+      "label_ru": "Раздвижной",
+      "type": "boolean",
+      "description": "Возможность увеличения размера столешницы",
+      "unit": null,
+      "enum_values": null,
+      "confidence": 0.7639,
+      "source": "knowledge_base"
+    }
+  ],
+  "suggested_refinements": [
+    "Уточните тип: обеденный, письменный, журнальный, компьютерный, кухонный, консольный",
+    "Уточните материал: дерево, металл, пластик, стекло, камень, композит",
+    "Уточните порода дерева: сосна, ель, дуб, бук, ясень, орех",
+    "Уточните форма столешницы: прямоугольная, квадратная, круглая, овальная, угловая, трапециевидная",
+    "Уточните покрытие: лак, масло, воск, полиуретан, шлифовка, без покрытия",
+    "Уточните класс древесины: A, B, C, Extra, Prime",
+    "Уточните влагостойкость: низкая, средняя, высокая, водостойкая"
+  ],
+  "warnings": [],
+  "request_id": "6f161eff7ebc4ac1abaf8b9bab73ef1f",
+  "debug_info": null,
+  "trace": null
+}

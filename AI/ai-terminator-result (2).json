@@ -1,0 +1,59 @@
+{
+  "status": "ok",
+  "term": "труба",
+  "selected_context": {
+    "domain": "строительство",
+    "concept_id": null,
+    "term": null,
+    "similarity": null,
+    "domain_candidates": null
+  },
+  "needs_clarification": false,
+  "parameters": [
+    {
+      "name": "diameter_mm",
+      "label_ru": "Диаметр (мм)",
+      "type": "float",
+      "description": "Наружный диаметр",
+      "unit": "мм",
+      "enum_values": null,
+      "confidence": 1,
+      "source": "knowledge_base"
+    },
+    {
+      "name": "thickness_mm",
+      "label_ru": "Толщина стенки (мм)",
+      "type": "float",
+      "description": "Толщина стенки",
+      "unit": "мм",
+      "enum_values": null,
+      "confidence": 1,
+      "source": "knowledge_base"
+    },
+    {
+      "name": "material",
+      "label_ru": "Материал",
+      "type": "string",
+      "description": "Материал трубы",
+      "unit": null,
+      "enum_values": null,
+      "confidence": 1,
+      "source": "knowledge_base"
+    },
+    {
+      "name": "length_m",
+      "label_ru": "Длина (м)",
+      "type": "float",
+      "description": "Длина трубы",
+      "unit": "м",
+      "enum_values": null,
+      "confidence": 1,
+      "source": "knowledge_base"
+    }
+  ],
+  "suggested_refinements": [],
+  "warnings": [],
+  "request_id": "95b47801ff90444fafd3df323a8ffd3d",
+  "debug_info": null,
+  "trace": null
+}

@@ -1,0 +1,128 @@
+вот что ввожу
+стол + дерево
+я ввел 2 слово основное и уточняющее
+вот вывод
+{
+  "status": "ok",
+  "term": "стол",
+  "selected_context": {
+    "domain": "мебель",
+    "confidence": 0.82
+  },
+  "parameters": [
+    {
+      "name": "material",
+      "label_ru": "Материал",
+      "type": "enum",
+      "description": "Основной материал изготовления",
+      "enum_values": ["дерево", "металл", "пластик", "стекло", "камень", "композит"],
+      "confidence": 0.95,
+      "source": "knowledge_base"
+    },
+    {
+      "name": "wood_type",
+      "label_ru": "Порода дерева",
+      "type": "enum",
+      "description": "Порода древесины для деревянных столов",
+      "enum_values": ["сосна", "ель", "дуб", "бук", "ясень", "орех", "вишня", "клен", "тик"],
+      "confidence": 0.92,
+      "source": "generative"
+    },
+    {
+      "name": "width_mm",
+      "label_ru": "Ширина (мм)",
+      "type": "float",
+      "unit": "мм",
+      "description": "Ширина столешницы",
+      "confidence": 0.88,
+      "source": "knowledge_base"
+    },
+    {
+      "name": "depth_mm",
+      "label_ru": "Глубина (мм)",
+      "type": "float",
+      "unit": "мм",
+      "description": "Глубина столешницы",
+      "confidence": 0.86,
+      "source": "knowledge_base"
+    },
+    {
+      "name": "height_mm",
+      "label_ru": "Высота (мм)",
+      "type": "float",
+      "unit": "мм",
+      "description": "Высота стола от пола до столешницы",
+      "confidence": 0.84,
+      "source": "knowledge_base"
+    },
+    {
+      "name": "coating",
+      "label_ru": "Покрытие",
+      "type": "enum",
+      "description": "Тип защитно-декоративного покрытия",
+      "enum_values": ["лак", "масло", "воск", "полиуретан", "шлифовка", "без покрытия"],
+      "confidence": 0.78,
+      "source": "generative"
+    },
+    {
+      "name": "load_capacity_kg",
+      "label_ru": "Нагрузка (кг)",
+      "type": "float",
+      "unit": "кг",
+      "description": "Максимальная допустимая нагрузка на столешницу",
+      "confidence": 0.72,
+      "source": "knowledge_base"
+    },
+    {
+      "name": "shape",
+      "label_ru": "Форма столешницы",
+      "type": "enum",
+      "description": "Геометрическая форма столешницы",
+      "enum_values": ["прямоугольная", "квадратная", "круглая", "овальная", "угловая", "трапециевидная"],
+      "confidence": 0.68,
+      "source": "knowledge_base"
+    },
+    {
+      "name": "wood_grade",
+      "label_ru": "Класс древесины",
+      "type": "enum",
+      "description": "Сортность древесины (наличие сучков, трещин)",
+      "enum_values": ["A", "B", "C", "Extra", "Prime"],
+      "confidence": 0.62,
+      "source": "generative"
+    },
+    {
+      "name": "moisture_resistance",
+      "label_ru": "Влагостойкость",
+      "type": "enum",
+      "description": "Устойчивость к воздействию влаги",
+      "enum_values": ["низкая", "средняя", "высокая", "водостойкая"],
+      "confidence": 0.58,
+      "source": "generative"
+    },
+    {
+      "name": "foldable",
+      "label_ru": "Складной",
+      "type": "boolean",
+      "description": "Возможность складывания стола",
+      "confidence": 0.52,
+      "source": "knowledge_base"
+    },
+    {
+      "name": "extendable",
+      "label_ru": "Раздвижной",
+      "type": "boolean",
+      "description": "Возможность увеличения размера столешницы",
+      "confidence": 0.50,
+      "source": "knowledge_base"
+    }
+  ],
+  "suggested_refinements": [
+    "Уточните тип стола: обеденный, письменный, журнальный, кухонный, консольный, трансформер",
+    "Укажите форму столешницы для более точного подбора параметров",
+    "Определите целевое назначение: домашний, офисный, ресторанный, дачный"
+  ],
+  "warnings": []
+}
+это идеальный вывод тоесть то что должна выводить программа наша если нет то значит есть какие то проблемы.
+вывод может отличаться но когда что то не работает это плохо
