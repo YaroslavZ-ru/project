@@ -244,6 +244,12 @@ textarea { resize: vertical; }
 
 .params-table tbody tr:hover { background: rgba(59, 130, 246, 0.05); }
 
+.source-generative { color: var(--accent); font-weight: 600; }
+
+.refinements-list { list-style: none; padding: 0; }
+.refinements-list li { padding: 0.5rem 0; border-bottom: 1px solid var(--border); color: var(--text); }
+.refinements-list li:last-child { border-bottom: none; }
+
 .confidence-bar {
   display: inline-block;
   height: 6px;

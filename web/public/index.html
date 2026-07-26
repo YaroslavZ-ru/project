@@ -52,10 +52,34 @@
       </div>
 
       <div id="downloadBlock" style="display:none;">
-        <p style="color:var(--success); margin-bottom:1rem;">Анализ завершён. Скачайте результат:</p>
+        <p style="color:var(--success); margin-bottom:1rem;">Анализ завершён.</p>
         <div class="export-buttons">
-          <button class="btn btn-primary" onclick="exportTXT()">Скачать JSON</button>
+          <button class="btn btn-export" onclick="exportJSON()">JSON</button>
+          <button class="btn btn-export" onclick="exportCSV()">CSV</button>
+          <button class="btn btn-export" onclick="exportTXT()">TXT</button>
         </div>
+      </div>
+
+      <div id="parametersBlock" style="display:none;">
+        <h3>Параметры</h3>
+        <table class="params-table">
+          <thead>
+            <tr>
+              <th>Имя</th>
+              <th>Название</th>
+              <th>Тип</th>
+              <th>Описание</th>
+              <th>Уверенность</th>
+              <th>Источник</th>
+            </tr>
+          </thead>
+          <tbody id="parametersTable"></tbody>
+        </table>
+      </div>
+
+      <div id="refinementsBlock" style="display:none;">
+        <h3>Рекомендации</h3>
+        <ul id="refinementsList" class="refinements-list"></ul>
       </div>
 
       <div id="warningsBlock" style="display:none;">

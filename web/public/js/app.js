@@ -154,10 +154,32 @@
       return;
     }
 
-    // OK — показать кнопку скачивания
+    // OK — показать результат
     document.getElementById('downloadBlock').style.display = '';
+    showParameters(data.parameters);
+    showRefinements(data.suggested_refinements);
     showWarnings(data.warnings);
     showDebug(data);
+  }
+
+  function showParameters(parameters) {
+    const block = document.getElementById('parametersBlock');
+    const table = document.getElementById('parametersTable');
+    if (!parameters || parameters.length === 0) { block.style.display = 'none'; return; }
+    block.style.display = '';
+    table.innerHTML = '';
+    parameters.forEach(p => {
+      const tr = document.createElement('tr');
+      const srcClass = p.source === 'generative' ? 'source-generative' : '';
+      tr.innerHTML =
+        '<td>' + escapeHtml(p.name) + '</td>' +
+        '<td>' + escapeHtml(p.label_ru || '') + '</td>' +
+        '<td>' + escapeHtml(p.type) + '</td>' +
+        '<td>' + escapeHtml(p.description || '') + '</td>' +
+        '<td>' + (p.confidence != null ? (p.confidence * 100).toFixed(0) + '%' : '—') + '</td>' +
+        '<td class="' + srcClass + '">' + escapeHtml(p.source || 'knowledge_base') + '</td>';
+      table.appendChild(tr);
+    });
   }
 
   function renderError(message) {
@@ -259,7 +281,28 @@
 
   window.exportTXT = function () {
     if (!lastResult) return;
-    download(JSON.stringify(lastResult, null, 2), 'ai-terminator-result.json', 'application/json');
+    let txt = 'AI-Terminator Result\n';
+    txt += '====================\n\n';
+    txt += 'Status: ' + lastResult.status + '\n';
+    txt += 'Term: ' + lastResult.term + '\n';
+    if (lastResult.selected_context) {
+      txt += 'Domain: ' + (lastResult.selected_context.domain || '—') + '\n';
+      txt += 'Confidence: ' + (lastResult.selected_context.confidence ? (lastResult.selected_context.confidence * 100).toFixed(0) + '%' : '—') + '\n';
+    }
+    txt += '\nParameters:\n';
+    txt += '----------\n';
+    if (lastResult.parameters) {
+      lastResult.parameters.forEach(p => {
+        txt += p.name + ' (' + p.type + ')\n';
+        txt += '  ' + (p.label_ru || '') + '\n';
+        txt += '  ' + (p.description || '') + '\n';
+        if (p.unit) txt += '  Unit: ' + p.unit + '\n';
+        if (p.enum_values) txt += '  Values: ' + p.enum_values.join(', ') + '\n';
+        txt += '  Confidence: ' + (p.confidence != null ? (p.confidence * 100).toFixed(0) + '%' : '—') + '\n';
+        txt += '  Source: ' + (p.source || 'knowledge_base') + '\n\n';
+      });
+    }
+    download(txt, 'ai-terminator-result.txt', 'text/plain');
   };
 
   function csvEscape(val) {
@@ -295,7 +338,7 @@
           term: currentTerm,
           rating: selectedRating,
           comment: comment || null,
-          concept_id: lastResult.selected_context ? lastResult.selected_context.concept_id : null,
+          concept_id: null,
         }),
       });
       const data = await res.json();
