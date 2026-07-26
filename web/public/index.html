@@ -44,8 +44,6 @@
 
     <!-- Результат -->
     <section class="card" id="resultSection" style="display:none;">
-      <h2>Результат</h2>
-
       <div class="result-status" id="resultStatus"></div>
 
       <div id="ambiguousBlock" style="display:none;">
@@ -53,40 +51,16 @@
         <div id="domainCandidates" class="domain-candidates"></div>
       </div>
 
-      <div id="domainBlock" style="display:none;">
-        <div class="domain-info">
-          <span class="domain-label">Домен:</span>
-          <span class="domain-value" id="domainValue"></span>
-          <span class="confidence-badge" id="confidenceBadge"></span>
-        </div>
-      </div>
-
-      <div id="parametersBlock" style="display:none;">
-        <h3>Параметры</h3>
-        <div class="table-wrap">
-          <table class="params-table" id="paramsTable">
-            <thead>
-              <tr>
-                <th>Название</th>
-                <th>Тип</th>
-                <th>Описание</th>
-                <th>Ед. изм.</th>
-                <th>Уверенность</th>
-              </tr>
-            </thead>
-            <tbody id="paramsBody"></tbody>
-          </table>
+      <div id="downloadBlock" style="display:none;">
+        <p style="color:var(--success); margin-bottom:1rem;">Анализ завершён. Скачайте результат:</p>
+        <div class="export-buttons">
+          <button class="btn btn-primary" onclick="exportTXT()">Скачать JSON</button>
         </div>
       </div>
 
       <div id="warningsBlock" style="display:none;">
         <h3>Предупреждения</h3>
         <ul id="warningsList" class="warnings-list"></ul>
-      </div>
-
-      <div id="refinementsBlock" style="display:none;">
-        <h3>Рекомендации</h3>
-        <ul id="refinementsList" class="refinements-list"></ul>
       </div>
 
       <div id="debugBlock" style="display:none;">

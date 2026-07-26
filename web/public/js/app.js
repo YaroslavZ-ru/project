@@ -120,10 +120,8 @@
 
     // Сброс блоков
     document.getElementById('ambiguousBlock').style.display = 'none';
-    document.getElementById('domainBlock').style.display = 'none';
-    document.getElementById('parametersBlock').style.display = 'none';
+    document.getElementById('downloadBlock').style.display = 'none';
     document.getElementById('warningsBlock').style.display = 'none';
-    document.getElementById('refinementsBlock').style.display = 'none';
     document.getElementById('debugBlock').style.display = 'none';
     document.getElementById('feedbackSection').style.display = 'none';
     document.getElementById('exportSection').style.display = 'none';
@@ -133,7 +131,7 @@
       return;
     }
 
-    // Ambiguous — показать кандидатов
+    // Ambiguous — показать кандидатов для выбора
     if (data.status === 'ambiguous') {
       document.getElementById('ambiguousBlock').style.display = '';
       const container = document.getElementById('domainCandidates');
@@ -152,53 +150,14 @@
         container.appendChild(div);
       });
       showWarnings(data.warnings);
-      showRefinements(data.suggested_refinements);
       showDebug(data);
-      document.getElementById('exportSection').style.display = '';
       return;
     }
 
-    // OK — показать домен и параметры
-    if (data.selected_context && data.selected_context.domain) {
-      document.getElementById('domainBlock').style.display = '';
-      document.getElementById('domainValue').textContent = data.selected_context.domain;
-      const conf = data.selected_context.confidence;
-      document.getElementById('confidenceBadge').textContent =
-        conf != null ? 'Уверенность: ' + (conf * 100).toFixed(0) + '%' : '';
-    }
-
-    // Параметры
-    if (data.parameters && data.parameters.length > 0) {
-      document.getElementById('parametersBlock').style.display = '';
-      const tbody = document.getElementById('paramsBody');
-      tbody.innerHTML = '';
-      data.parameters.forEach(p => {
-        const tr = document.createElement('tr');
-        const confPct = p.confidence != null ? (p.confidence * 100).toFixed(0) : '—';
-        const barWidth = p.confidence != null ? (p.confidence * 60) : 0;
-        const enumStr = p.enum_values ? '<br><small style="color:var(--text-muted)">' + escapeHtml(p.enum_values.join(', ')) + '</small>' : '';
-        const sourceStr = p.source ? '<br><small style="color:var(--text-muted)">' + escapeHtml(p.source) + '</small>' : '';
-        tr.innerHTML =
-          '<td><strong>' + escapeHtml(p.name) + '</strong><br><small style="color:var(--text-muted)">' + escapeHtml(p.label_ru || '') + '</small>' + enumStr + '</td>' +
-          '<td>' + escapeHtml(p.type) + sourceStr + '</td>' +
-          '<td>' + escapeHtml(p.description || '—') + '</td>' +
-          '<td>' + escapeHtml(p.unit || '—') + '</td>' +
-          '<td><span class="confidence-bar" style="width:' + barWidth + 'px"></span>' + confPct + '%</td>';
-        tbody.appendChild(tr);
-      });
-    }
-
+    // OK — показать кнопку скачивания
+    document.getElementById('downloadBlock').style.display = '';
     showWarnings(data.warnings);
-    showRefinements(data.suggested_refinements);
     showDebug(data);
-
-    // Показать.feedback и экспорт
-    document.getElementById('feedbackSection').style.display = '';
-    document.getElementById('exportSection').style.display = '';
-    selectedRating = 0;
-    document.querySelectorAll('#starRating .star').forEach(s => s.classList.remove('active'));
-    document.getElementById('commentInput').value = '';
-    document.getElementById('feedbackMsg').textContent = '';
   }
 
   function renderError(message) {
