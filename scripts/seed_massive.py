@@ -567,6 +567,125 @@ CONCEPTS = [
         {"name": "voltage", "label_ru": "Напряжение (В)", "type": "float", "description": "Выходное напряжение", "unit": "В"},
         {"name": "noise_level_db", "label_ru": "Уровень шума (дБ)", "type": "float", "description": "Уровень шума", "unit": "дБ"},
     ]},
+
+    # =====================================================================
+    # НОВЫЕ ПОНЯТИЯ (добавлены для расширения базы)
+    # =====================================================================
+
+    # --- МЕБЕЛЬ ---
+    {"term": "стул офисный", "domain": "мебель", "parameters": [
+        {"name": "seat_height_mm", "label_ru": "Высота сиденья (мм)", "type": "float", "description": "Регулируемая высота", "unit": "мм"},
+        {"name": "load_capacity_kg", "label_ru": "Нагрузка (кг)", "type": "float", "description": "Максимальная нагрузка", "unit": "кг"},
+        {"name": "backrest", "label_ru": "Спинка", "type": "boolean", "description": "Наличие регулируемой спинки"},
+        {"name": "armrests", "label_ru": "Подлокотники", "type": "boolean", "description": "Наличие подлокотников"},
+    ]},
+    {"term": "кровать", "domain": "мебель", "parameters": [
+        {"name": "size", "label_ru": "Размер спального места", "type": "enum", "description": "Стандартный размер", "enum_values": ["90x200", "120x200", "140x200", "160x200", "180x200"]},
+        {"name": "material", "label_ru": "Материал каркаса", "type": "string", "description": "Материал каркаса"},
+        {"name": "storage", "label_ru": "Ящик для белья", "type": "boolean", "description": "Наличие выдвижного ящика"},
+    ]},
+    {"term": "диван", "domain": "мебель", "parameters": [
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Тип дивана", "enum_values": ["прямой", "угловой", "выкатной", "раскладной"]},
+        {"name": "length_mm", "label_ru": "Длина (мм)", "type": "float", "description": "Общая длина", "unit": "мм"},
+        {"name": "upholstery", "label_ru": "Обивка", "type": "string", "description": "Материал обивки"},
+    ]},
+
+    # --- СТРОИТЕЛЬСТВО ---
+    {"term": "кирпич", "domain": "строительство", "parameters": [
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Вид кирпича", "enum_values": ["силикатный", "керамический", "гиперпрессованный"]},
+        {"name": "size_mm", "label_ru": "Размер (мм)", "type": "string", "description": "Длина x Ширина x Высота"},
+        {"name": "strength_mpa", "label_ru": "Прочность (МПа)", "type": "float", "description": "Марка прочности", "unit": "МПа"},
+    ]},
+    {"term": "бетон", "domain": "строительство", "parameters": [
+        {"name": "grade", "label_ru": "Марка", "type": "enum", "description": "Класс прочности", "enum_values": ["М100", "М150", "М200", "М250", "М300", "М350", "М400"]},
+        {"name": "slump_cm", "label_ru": "Подвижность (см)", "type": "float", "description": "Осадка конуса", "unit": "см"},
+    ]},
+
+    # --- ЭЛЕКТРОНИКА ---
+    {"term": "аккумулятор", "domain": "электроника", "parameters": [
+        {"name": "capacity_mah", "label_ru": "Ёмкость (мАч)", "type": "float", "description": "Ёмкость аккумулятора", "unit": "мАч"},
+        {"name": "voltage", "label_ru": "Напряжение (В)", "type": "float", "description": "Номинальное напряжение", "unit": "В"},
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Тип элементов", "enum_values": ["Li-Ion", "Li-Po", "NiMH", "NiCd"]},
+    ]},
+    {"term": "микроконтроллер", "domain": "электроника", "parameters": [
+        {"name": "architecture", "label_ru": "Архитектура", "type": "enum", "description": "Архитектура ядра", "enum_values": ["ARM", "AVR", "RISC-V", "ESP32"]},
+        {"name": "flash_kb", "label_ru": "Flash (КБ)", "type": "float", "description": "Объём флеш-памяти", "unit": "КБ"},
+        {"name": "clock_mhz", "label_ru": "Частота (МГц)", "type": "float", "description": "Тактовая частота", "unit": "МГц"},
+    ]},
+
+    # --- ТРАНСПОРТ ---
+    {"term": "велосипед", "domain": "транспорт", "parameters": [
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Тип велосипеда", "enum_values": ["горный", "шоссейный", "городской", "BMX", "электро"]},
+        {"name": "wheel_size", "label_ru": "Диаметр колёс", "type": "enum", "description": "Размер колёс", "enum_values": ["20", "24", "26", "27.5", "29"]},
+        {"name": "gears", "label_ru": "Количество передач", "type": "integer", "description": "Число скоростей"},
+        {"name": "weight_kg", "label_ru": "Масса (кг)", "type": "float", "description": "Вес велосипеда", "unit": "кг"},
+    ]},
+    {"term": "автомобиль", "domain": "транспорт", "parameters": [
+        {"name": "body_type", "label_ru": "Тип кузова", "type": "enum", "description": "Форма кузова", "enum_values": ["седан", "хэтчбек", "универсал", "кроссовер", "минивэн"]},
+        {"name": "engine_volume_l", "label_ru": "Объём двигателя (л)", "type": "float", "description": "Рабочий объём", "unit": "л"},
+        {"name": "power_hp", "label_ru": "Мощность (л.с.)", "type": "float", "description": "Мощность двигателя", "unit": "л.с."},
+    ]},
+
+    # --- СПОРТ ---
+    {"term": "беговые кроссовки", "domain": "спорт", "parameters": [
+        {"name": "size", "label_ru": "Размер", "type": "string", "description": "EU размер"},
+        {"name": "drop_mm", "label_ru": "Дроп (мм)", "type": "float", "description": "Перепад высоты", "unit": "мм"},
+        {"name": "weight_g", "label_ru": "Масса (г)", "type": "float", "description": "Вес пары", "unit": "г"},
+    ]},
+    {"term": "штанга", "domain": "спорт", "parameters": [
+        {"name": "length_m", "label_ru": "Длина (м)", "type": "float", "description": "Длина штанги", "unit": "м"},
+        {"name": "weight_kg", "label_ru": "Масса (кг)", "type": "float", "description": "Масса штанги", "unit": "кг"},
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Тип штанги", "enum_values": ["олимпийская", "классическая", "-trap-bar"]},
+    ]},
+
+    # --- ОДЕЖДА ---
+    {"term": "зимняя куртка", "domain": "одежда", "parameters": [
+        {"name": "size", "label_ru": "Размер", "type": "string", "description": "Размер одежды"},
+        {"name": "fill_type", "label_ru": "Утеплитель", "type": "enum", "description": "Тип утеплителя", "enum_values": ["пух", "синтепон", "мембрана", "淑羊毛"]},
+        {"name": "waterproof", "label_ru": "Водонепроницаемость", "type": "boolean", "description": "Наличие мембраны"},
+    ]},
+
+    # --- ЕДА ---
+    {"term": "кофе", "domain": "еда", "parameters": [
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Вид кофе", "enum_values": ["арабика", "робуста", "смесь"]},
+        {"name": "roast", "label_ru": "Обжарка", "type": "enum", "description": "Степень обжарки", "enum_values": ["светлая", "средняя", "тёмная"]},
+        {"name": "weight_g", "label_ru": "Масса (г)", "type": "float", "description": "Масса упаковки", "unit": "г"},
+    ]},
+    {"term": "шоколад", "domain": "еда", "parameters": [
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Вид шоколада", "enum_values": ["тёмный", "молочный", "белый"]},
+        {"name": "cocoa_percent", "label_ru": "Какао (%)", "type": "float", "description": "Содержание какао-бобов", "unit": "%"},
+        {"name": "weight_g", "label_ru": "Масса (г)", "type": "float", "description": "Масса плитки", "unit": "г"},
+    ]},
+
+    # --- ЖИВОТНЫЕ ---
+    {"term": "лабрадор", "domain": "животные", "parameters": [
+        {"name": "color", "label_ru": "Окрас", "type": "enum", "description": "Цвет шерсти", "enum_values": ["чёрный", "жёлтый", "шоколадный"]},
+        {"name": "weight_kg", "label_ru": "Масса (кг)", "type": "float", "description": "Взрослая масса", "unit": "кг"},
+        {"name": "lifespan_years", "label_ru": "Продолжительность жизни (лет)", "type": "float", "description": "Средняя продолжительность", "unit": "лет"},
+    ]},
+    {"term": "метис", "domain": "животные", "parameters": [
+        {"name": "size", "label_ru": "Размер", "type": "enum", "description": "Группа размера", "enum_values": ["малый", "средний", "крупный"]},
+        {"name": "weight_kg", "label_ru": "Масса (кг)", "type": "float", "description": "Примерная масса", "unit": "кг"},
+    ]},
+
+    # --- МЕДИЦИНА ---
+    {"term": "термометр", "domain": "медицина", "parameters": [
+        {"name": "type", "label_ru": "Тип", "type": "enum", "description": "Вид термометра", "enum_values": ["ртутный", "электронный", "инфракрасный"]},
+        {"name": "range_c", "label_ru": "Диапазон (°C)", "type": "string", "description": "Измеряемый диапазон"},
+        {"name": "accuracy_c", "label_ru": "Точность (°C)", "type": "float", "description": "Погрешность измерения", "unit": "°C"},
+    ]},
+
+    # --- БЫТОВАЯ ТЕХНИКА ---
+    {"term": "холодильник", "domain": "бытовая техника", "parameters": [
+        {"name": "volume_l", "label_ru": "Объём (л)", "type": "float", "description": "Общий объём", "unit": "л"},
+        {"name": "energy_class", "label_ru": "Класс энергоэффективности", "type": "enum", "description": "Класс A-G", "enum_values": ["A+++", "A++", "A+", "A", "B"]},
+        {"name": "noise_db", "label_ru": "Уровень шума (дБ)", "type": "float", "description": "Уровень шума", "unit": "дБ"},
+    ]},
+    {"term": "стиральная машина", "domain": "бытовая техника", "parameters": [
+        {"name": "load_kg", "label_ru": "Загрузка (кг)", "type": "float", "description": "Максимальная загрузка", "unit": "кг"},
+        {"name": "spin_rpm", "label_ru": "Отжим (об/мин)", "type": "integer", "description": "Максимальные обороты"},
+        {"name": "energy_class", "label_ru": "Класс энергоэффективности", "type": "enum", "description": "Класс A-G", "enum_values": ["A+++", "A++", "A+", "A", "B"]},
+    ]},
 ]
 
 

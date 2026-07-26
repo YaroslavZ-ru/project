@@ -105,10 +105,9 @@ if _FASTAPI_AVAILABLE:
         example_term: str | None = None
 
     class SelectedContext(BaseModel):
+        model_config = ConfigDict(extra="ignore")
         domain: str | None = None
-        concept_id: str | None = None
-        term: str | None = None
-        similarity: float | None = None
+        confidence: float | None = None
         domain_candidates: list[DomainCandidate] | None = None
 
     class QueryResponse(BaseModel):
@@ -116,13 +115,9 @@ if _FASTAPI_AVAILABLE:
         status: str
         term: str = ""
         selected_context: SelectedContext = SelectedContext()
-        needs_clarification: bool = False
         parameters: list[ParameterModel] = []
         suggested_refinements: list[str] = []
         warnings: list[str] = []
-        request_id: str | None = None
-        debug_info: dict | None = None
-        trace: dict | None = None
 
     class HealthResponse(BaseModel):
         status: str
@@ -300,7 +295,7 @@ def _api_run_pipeline(
         processed = preprocess(term, hints, cfg, synonym_dict, lemmatizer)
         trace_context.add_stage("preprocess", time.monotonic() - t_stage, {"lemmas": len(processed.get("all_lemmas", []))})
         if processed["status"] == "error":
-            result = {"status": "error", "message": processed["message"], "request_id": request_id}
+            result = {"status": "error", "message": processed["message"]}
             return result
 
         warnings_list = list(processed.get("warnings", []))
@@ -471,28 +466,23 @@ def _api_run_pipeline(
                     "selected_context": {
                         "domain_candidates": ambiguity_info.get("domain_candidates", []),
                     },
-                    "needs_clarification": True,
                     "parameters": [],
                     "suggested_refinements": suggested_refinements,
                     "warnings": warnings_list,
-                    "request_id": request_id,
                 }
             else:
                 result = {
                     "status": "ok",
                     "term": term,
                     "selected_context": selected_context,
-                    "needs_clarification": False,
                     "parameters": parameters,
                     "suggested_refinements": suggested_refinements,
                     "warnings": warnings_list,
-                    "request_id": request_id,
                 }
         else:
             if metrics:
                 metrics.record_fallback_activation()
             result = fallback_response(term, processed, cfg)
-            result["request_id"] = request_id
         trace_context.add_stage("aggregation", time.monotonic() - t_stage, {"parameters_count": len(result.get("parameters", []))})
 
         if debug and "debug_info" not in result:

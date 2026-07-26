@@ -453,8 +453,6 @@ def run_pipeline(
     else:
         needs_clarification = False
         response = fallback_response(term, processed, cfg)
-        response["needs_clarification"] = False
-        response["request_id"] = request_id
         if debug:
             response["debug_info"] = {
                 "query_vector": query_vector.tolist(),
@@ -476,22 +474,18 @@ def run_pipeline(
             "selected_context": {
                 "domain_candidates": ambiguity_info.get("domain_candidates", []),
             },
-            "needs_clarification": True,
             "parameters": [],
             "suggested_refinements": suggested_refinements,
             "warnings": warnings_list,
-            "request_id": request_id,
         }
     else:
         result = {
             "status": "ok",
             "term": term,
             "selected_context": selected_context,
-            "needs_clarification": False,
             "parameters": parameters,
             "suggested_refinements": suggested_refinements,
             "warnings": warnings_list,
-            "request_id": request_id,
         }
 
     if debug:

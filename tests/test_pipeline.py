@@ -323,25 +323,16 @@ def test_pipeline_none_hints_handled(pipeline_components):
     assert result["status"] in ("ok", "error")
 
 
-def test_pipeline_returns_needs_clarification_field(pipeline_components):
-    """Поле needs_clarification должно присутствовать в ответе."""
+def test_pipeline_no_needs_clarification_field(pipeline_components):
+    """Поле needs_clarification не должно присутствовать в ответе (удалено по описанию)."""
     result = call_pipeline(pipeline_components, "ключ")
-    assert "needs_clarification" in result, "Поле needs_clarification должно быть в ответе"
-    assert isinstance(result["needs_clarification"], bool)
+    assert "needs_clarification" not in result, "Поле needs_clarification не должно быть в ответе"
 
 
-def test_pipeline_needs_clarification_false_by_default(pipeline_components):
-    """fallback-ответ должен содержать needs_clarification=False."""
+def test_pipeline_no_request_id_field(pipeline_components):
+    """Поле request_id не должно присутствовать в ответе (удалено по описанию)."""
     result = call_pipeline(pipeline_components, "ключ")
-    assert not result.get("needs_clarification")
-
-
-def test_pipeline_returns_request_id(pipeline_components):
-    """Ответ должен содержать request_id."""
-    result = call_pipeline(pipeline_components, "ключ")
-    assert "request_id" in result, "Поле request_id должно быть в ответе"
-    assert isinstance(result["request_id"], str)
-    assert len(result["request_id"]) == 32  # uuid4 hex
+    assert "request_id" not in result, "Поле request_id не должно быть в ответе"
 
 
 def test_pipeline_returns_trace_in_debug_mode(pipeline_components):

@@ -1,23 +1,107 @@
 {
   "музыка": {
     "parameters": [
-      {"name": "genre",    "label_ru": "Жанр",              "type": "string", "description": "Музыкальное направление"},
+      {"name": "genre", "label_ru": "Жанр", "type": "string", "description": "Музыкальное направление"},
       {"name": "composer", "label_ru": "Автор / Композитор", "type": "string", "description": "Создатель произведения"},
-      {"name": "tempo",    "label_ru": "Темп",               "type": "string", "description": "Скорость исполнения"}
+      {"name": "tempo", "label_ru": "Темп", "type": "string", "description": "Скорость исполнения"}
     ]
   },
   "слесарный инструмент": {
     "parameters": [
-      {"name": "material", "label_ru": "Материал",   "type": "string", "description": "Материал изготовления"},
-      {"name": "size",     "label_ru": "Размер",     "type": "float",  "description": "Характерный размер", "unit": "мм"},
-      {"name": "purpose",  "label_ru": "Назначение", "type": "string", "description": "Для каких работ"}
+      {"name": "material", "label_ru": "Материал", "type": "string", "description": "Материал изготовления"},
+      {"name": "size_mm", "label_ru": "Размер (мм)", "type": "float", "description": "Характерный размер", "unit": "мм"},
+      {"name": "purpose", "label_ru": "Назначение", "type": "string", "description": "Для каких работ"}
+    ]
+  },
+  "электроника": {
+    "parameters": [
+      {"name": "voltage", "label_ru": "Напряжение (В)", "type": "float", "description": "Рабочее напряжение", "unit": "В"},
+      {"name": "power", "label_ru": "Мощность (Вт)", "type": "float", "description": "Потребляемая мощность", "unit": "Вт"},
+      {"name": "package_type", "label_ru": "Корпус", "type": "string", "description": "Тип корпуса"}
+    ]
+  },
+  "строительство": {
+    "parameters": [
+      {"name": "material", "label_ru": "Материал", "type": "string", "description": "Основной материал"},
+      {"name": "strength_mpa", "label_ru": "Прочность (МПа)", "type": "float", "description": "Предел прочности", "unit": "МПа"},
+      {"name": "dimensions", "label_ru": "Размеры", "type": "string", "description": "Габаритные размеры"}
+    ]
+  },
+  "крепёж": {
+    "parameters": [
+      {"name": "size_mm", "label_ru": "Размер (мм)", "type": "float", "description": "Номинальный размер", "unit": "мм"},
+      {"name": "material", "label_ru": "Материал", "type": "string", "description": "Материал изготовления"},
+      {"name": "thread_type", "label_ru": "Тип резьбы", "type": "string", "description": "Вид резьбы"}
+    ]
+  },
+  "бытовая техника": {
+    "parameters": [
+      {"name": "power_watt", "label_ru": "Мощность (Вт)", "type": "float", "description": "Потребляемая мощность", "unit": "Вт"},
+      {"name": "volume_l", "label_ru": "Объём (л)", "type": "float", "description": "Рабочий объём", "unit": "л"},
+      {"name": "brand", "label_ru": "Бренд", "type": "string", "description": "Производитель"}
+    ]
+  },
+  "транспорт": {
+    "parameters": [
+      {"name": "engine_type", "label_ru": "Тип двигателя", "type": "enum", "description": "Вид силовой установки", "enum_values": ["бензиновый", "дизельный", "электрический", "гибридный"]},
+      {"name": "power_hp", "label_ru": "Мощность (л.с.)", "type": "float", "description": "Мощность двигателя", "unit": "л.с."},
+      {"name": "weight_kg", "label_ru": "Масса (кг)", "type": "float", "description": "Снаряжённая масса", "unit": "кг"}
+    ]
+  },
+  "мебель": {
+    "parameters": [
+      {"name": "material", "label_ru": "Материал", "type": "string", "description": "Основной материал"},
+      {"name": "dimensions_mm", "label_ru": "Размеры (мм)", "type": "string", "description": "Ширина x Глубина x Высота"},
+      {"name": "style", "label_ru": "Стиль", "type": "string", "description": "Дизайнерский стиль"}
+    ]
+  },
+  "спорт": {
+    "parameters": [
+      {"name": "sport_type", "label_ru": "Вид спорта", "type": "string", "description": "Предназначение"},
+      {"name": "weight_kg", "label_ru": "Масса (кг)", "type": "float", "description": "Вес изделия", "unit": "кг"},
+      {"name": "level", "label_ru": "Уровень", "type": "enum", "description": "Уровень пользователя", "enum_values": ["начинающий", "средний", "профессиональный"]}
+    ]
+  },
+  "одежда": {
+    "parameters": [
+      {"name": "size", "label_ru": "Размер", "type": "string", "description": "Размер одежды"},
+      {"name": "material", "label_ru": "Материал", "type": "string", "description": "Основной материал"},
+      {"name": "season", "label_ru": "Сезон", "type": "enum", "description": "Сезон использования", "enum_values": ["лето", "зима", "демисезон", "всесезон"]}
+    ]
+  },
+  "еда": {
+    "parameters": [
+      {"name": "weight_g", "label_ru": "Масса (г)", "type": "float", "description": "Масса нетто", "unit": "г"},
+      {"name": "calories", "label_ru": "Калорийность (ккал)", "type": "float", "description": "Энергетическая ценность", "unit": "ккал"},
+      {"name": "shelf_life", "label_ru": "Срок годности", "type": "string", "description": "Условия и срок хранения"}
+    ]
+  },
+  "животные": {
+    "parameters": [
+      {"name": "species", "label_ru": "Вид", "type": "string", "description": "Биологический вид"},
+      {"name": "breed", "label_ru": "Порода", "type": "string", "description": "Порода или разновидность"},
+      {"name": "weight_kg", "label_ru": "Масса (кг)", "type": "float", "description": "Средний вес", "unit": "кг"}
+    ]
+  },
+  "медицина": {
+    "parameters": [
+      {"name": "active_ingredient", "label_ru": "Действующее вещество", "type": "string", "description": "Основной компонент"},
+      {"name": "dosage", "label_ru": "Дозировка", "type": "string", "description": "Рекомендуемая доза"},
+      {"name": "form", "label_ru": "Форма выпуска", "type": "enum", "description": "Форма препарата", "enum_values": ["таблетки", "капсулы", "раствор", "мазь", "спрей"]}
+    ]
+  },
+  "оборудование": {
+    "parameters": [
+      {"name": "power_watt", "label_ru": "Мощность (Вт)", "type": "float", "description": "Потребляемая мощность", "unit": "Вт"},
+      {"name": "weight_kg", "label_ru": "Масса (кг)", "type": "float", "description": "Вес оборудования", "unit": "кг"},
+      {"name": "purpose", "label_ru": "Назначение", "type": "string", "description": "Для каких работ"}
     ]
   },
   "general": {
     "parameters": [
-      {"name": "name",        "label_ru": "Наименование", "type": "string", "description": "Официальное название"},
-      {"name": "description", "label_ru": "Описание",    "type": "string", "description": "Краткое описание"},
-      {"name": "category",    "label_ru": "Категория",    "type": "string", "description": "Предметная область"}
+      {"name": "name", "label_ru": "Наименование", "type": "string", "description": "Официальное название"},
+      {"name": "description", "label_ru": "Описание", "type": "string", "description": "Краткое описание"},
+      {"name": "category", "label_ru": "Категория", "type": "string", "description": "Предметная область"}
     ]
   }
 }

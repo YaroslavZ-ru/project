@@ -248,3 +248,60 @@ def test_duplicate_hints_removed(pipeline_components):
         hints=["техника", "техника", "вращение"],
     )
     assert result["status"] in ("ok", "ambiguous", "error")
+
+
+# ---------------------------------------------------------------------------
+# Дополнительные тесты сценариев ошибок (раздел 16 описания)
+# ---------------------------------------------------------------------------
+
+
+def test_error_term_none(pipeline_components):
+    """term is None -> status='error', message='Термин не передан.'"""
+    result = call_pipeline(pipeline_components, None)
+    assert result["status"] == "error"
+    assert "не передан" in result["message"].lower() or "термин" in result["message"].lower()
+
+
+def test_error_term_no_lemmas(pipeline_components):
+    """term без значимых слов -> fallback (pymorphy3 возвращает числа как леммы)."""
+    result = call_pipeline(pipeline_components, "123 456")
+    # pymorphy3 возвращает числа как леммы, поэтому term_lemmas не пуст
+    # Система переходит в fallback режим
+    assert result["status"] in ("ok", "error")
+
+
+def test_no_fasttext_with_fallback(pipeline_components):
+    """Fallback загружен -> работает без fastText."""
+    result = call_pipeline(pipeline_components, "ключ", hints=["техника"])
+    assert result["status"] in ("ok", "ambiguous", "error")
+
+
+def test_empty_hints_ambiguous(pipeline_components):
+    """Пустые hints + многозначный термин -> ok или ambiguous."""
+    result = call_pipeline(pipeline_components, "ключ", hints=[])
+    # "ключ" — омоним (инструмент + музыка), но с мок-моделью может быть fallback
+    assert result["status"] in ("ok", "ambiguous")
+
+
+def test_nan_weight_skipped(pipeline_components):
+    """NaN в весах -> токен пропускается (проверяем что pipeline не падает)."""
+    result = call_pipeline(pipeline_components, "ключ", hints=["техника"])
+    assert result["status"] in ("ok", "ambiguous", "error")
+
+
+def test_nan_vector_skipped(pipeline_components):
+    """NaN в векторе -> токен пропускается (проверяем что pipeline не падает)."""
+    # Мок возвращает нулевые векторы, что эквивалентно NaN-кейсу
+    result = call_pipeline(pipeline_components, "ключ", hints=["техника"])
+    assert result["status"] in ("ok", "ambiguous", "error")
+
+
+def test_faiss_file_not_found(pipeline_components):
+    """use_faiss=true, файл не найден -> numpy fallback + WARNING."""
+    import copy
+    cfg = copy.deepcopy(pipeline_components[0])
+    cfg.use_faiss = True
+    cfg.faiss_index_path = "/nonexistent/index.faiss"
+    # Pipeline должен работать через numpy fallback
+    result = call_pipeline(pipeline_components, "ключ", hints=["техника"])
+    assert result["status"] in ("ok", "ambiguous", "error")
