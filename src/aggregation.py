@@ -122,10 +122,12 @@ def aggregate_parameters(
         return []
 
     max_freq = max(g["freq"] for g in groups.values())
+    n_candidates = len(candidates)
     hint_set = {lemma for sub in hints_lemmas for lemma in sub}
 
     for g in groups.values():
-        freq_norm = g["freq"] / max_freq
+        # freq_norm: доля кандидатов, содержащих этот параметр (0.0 - 1.0)
+        freq_norm = g["freq"] / n_candidates if n_candidates > 0 else 0.0
         avg_sim = sum(g["similarities"]) / len(g["similarities"])
         hint_match = _compute_hint_match(g["param"], hint_set)
 
@@ -144,14 +146,14 @@ def aggregate_parameters(
     sorted_groups = sorted(groups.values(), key=lambda g: g["score"], reverse=True)
     top_groups = sorted_groups[:max_parameters]
 
-    max_score = top_groups[0]["score"] if top_groups else 1.0
-    if max_score <= 0:
-        max_score = 1.0
+    # Confidence: score нормализованный к theoretical max (1.0)
+    # Максимальный score = 0.5*1.0 + 0.3*1.0 + 0.1*1.0 + 0.1*1.3 = 1.03
+    theoretical_max = 1.03
 
     result = []
     for g in top_groups:
         p = g["param"].copy()
-        p["confidence"] = round(g["score"] / max_score, 4)
+        p["confidence"] = round(min(g["score"] / theoretical_max, 1.0), 4)
         p["source"] = "knowledge_base"
         result.append(p)
 

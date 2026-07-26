@@ -343,8 +343,8 @@ def run_pipeline(
     # переходим в fallback (шаблонные параметры).
     if candidates:
         best_sim = max(c.get("similarity", 0.0) for c in candidates)
-        if best_sim < 0.3:
-            logger.info("Лучший кандидат: %.4f < 0.3, переход в fallback для %r", best_sim, term)
+        if best_sim < 0.35:
+            logger.info("Лучший кандидат: %.4f < 0.35, переход в fallback для %r", best_sim, term)
             candidates = []
 
     # --- Изменение 68: Коррекция по обратной связи ---
@@ -424,9 +424,9 @@ def run_pipeline(
         else:
             parameters = aggregate_parameters(candidates, hints_lemmas, cfg.max_parameters)
 
-        # Генерация suggested_refinements на основе enum-параметров
+        # Генерация suggested_refinements на основе enum-параметров (макс. 3)
         suggested_refinements: list = []
-        for p in parameters:
+        for p in parameters[:3]:  # Только топ-3 параметра
             if p.get("type") == "enum" and p.get("enum_values"):
                 label = p.get("label_ru", p.get("name", ""))
                 values = ", ".join(p["enum_values"][:6])

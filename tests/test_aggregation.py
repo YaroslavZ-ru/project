@@ -52,7 +52,10 @@ def test_source_knowledge_base():
 
 def test_confidence_normalized():
     result = aggregate_parameters(Cands, [], max_parameters=10)
-    assert result[0]["confidence"] == pytest.approx(1.0)
+    # Confidence теперь нормализован к theoretical_max (1.03), не к max_score
+    assert 0.0 < result[0]["confidence"] <= 1.0
+    # Первый параметр должен иметь наибольший confidence
+    assert result[0]["confidence"] >= result[-1]["confidence"]
 
 
 def test_empty_candidates():
