@@ -85,13 +85,32 @@ if errorlevel 1 (
 echo OK
 echo.
 
-:: Проверка
-echo [6/6] Проверка установки...
-python -c "import fasttext; model = fasttext.load_model('models/cc.ru.300.bin'); print('FastText: OK, размерность', model.get_dimension())"
+:: Проверка Node.js и установка веб-зависимостей
+echo [6/7] Проверка Node.js...
+node --version >nul 2>&1
 if errorlevel 1 (
-    echo ОШИБКА: FastText не загружается
-    pause
-    exit /b 1
+    echo ПРЕДУПРЕЖДЕНИЕ: Node.js не найден!
+    echo Веб-интерфейс потребует Node.js 18+.
+    echo Скачайте: https://nodejs.org/
+    echo.
+) else (
+    for /f "tokens=*" %%i in ('node --version') do set NODEVER=%%i
+    echo OK: NodeJS !NODEVER!
+    echo.
+    echo [7/7] Установка веб-зависимостей...
+    cd web
+    call npm install
+    cd ..
+    echo OK
+)
+echo.
+
+:: Проверка модели
+echo Проверка модели FastText...
+if not exist models\cc.ru.300.bin (
+    echo Модель не найдена. Запустите setup.bat повторно для скачивания.
+) else (
+    python -c "import fasttext; model = fasttext.load_model('models/cc.ru.300.bin'); print('FastText: OK, размерность', model.get_dimension())" 2>nul
 )
 echo.
 
@@ -100,5 +119,6 @@ echo   Установка завершена успешно!
 echo ============================================================
 echo.
 echo Для запуска: run.bat
+echo Для веб-интерфейса: start_web.bat
 echo.
 pause
