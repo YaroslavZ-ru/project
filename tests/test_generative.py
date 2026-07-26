@@ -79,7 +79,7 @@ class TestParseResponse:
     def test_parse_response_filters_by_keywords(self, expander):
         """парсер оставляет только элементы с ключевыми словами"""
         text = "Предложения: материал, xyz_nonsense, размер, тип"
-        result = expander._parse_response(text, set())
+        result = expander._parse_response(text, set(), [])
         names = [p["label_ru"] for p in result]
         assert "xyz_nonsense" not in names
         assert len(result) >= 2
@@ -89,14 +89,14 @@ class TestParseResponse:
         """ограничение generative_max_new_params=1"""
         object.__setattr__(expander._cfg, "generative_max_new_params", 1)
         text = "материал, размер, тип, форма, цвет"
-        result = expander._parse_response(text, set())
+        result = expander._parse_response(text, set(), [])
         assert len(result) <= 1
 
     def test_parse_response_skips_existing_names(self, expander):
         """existing_names исключаются из результата"""
         existing = {"материал"}
         text = "материал, размер"
-        result = expander._parse_response(text, existing)
+        result = expander._parse_response(text, existing, [])
         slugs = [p["name"] for p in result]
         assert "материал" not in slugs
 

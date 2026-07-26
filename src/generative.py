@@ -97,14 +97,14 @@ class GenerativeExpander:
         Returns:
             Готовый промпт, усечённый до 512 символов.
         """
-        params_str = ", ".join(p.get("label_ru", p.get("name", "")) for p in existing_params[:5])
+        existing_labels = [p.get("label_ru", p.get("name", "")) for p in existing_params[:3]]
+        params_str = ", ".join(existing_labels)
         hints_str = ", ".join(hints) if hints else ""
-        context = f" ({hints_str})" if hints_str else ""
+        context = f" {hints_str}" if hints_str else ""
         prompt = (
-            f"Характеристики{context} для \"{term}\": "
-            f"{params_str}, "
+            f"{term}{context}: {params_str}, "
         )
-        return safe_truncate(prompt, 256)
+        return safe_truncate(prompt, 128)
 
     def _slugify(self, text: str) -> str:
         """Преобразует label_ru в техническое name.
@@ -128,12 +128,14 @@ class GenerativeExpander:
         self,
         response_text: str,
         existing_names: set[str],
+        existing_params: list[dict],
     ) -> list[dict]:
         """Парсит ответ LLM и возвращает новые параметры.
 
         Args:
             response_text:  текст ответа модели.
             existing_names: имена уже существующих параметров.
+            existing_params: полный список параметров для проверки дубликатов.
 
         Returns:
             Список новых параметров (ограничен generative_max_new_params).
@@ -180,6 +182,24 @@ class GenerativeExpander:
 
             slug = self._slugify(candidate)
             if not slug or slug in existing_names or len(slug) < 3:
+                continue
+
+            # Проверка на семантические дубликаты (рус/англ совпадение)
+            candidate_lower = candidate.lower().strip()
+            is_duplicate = False
+            for ep in existing_params:
+                ep_name = ep.get("name", "").lower()
+                ep_label = ep.get("label_ru", "").lower()
+                # Точное совпадение или вхождение
+                if (candidate_lower in ep_label or ep_label in candidate_lower or
+                    candidate_lower in ep_name or ep_name in candidate_lower):
+                    is_duplicate = True
+                    break
+                # Совпадение ключевых слов (мм, кг и т.д.)
+                if any(w in candidate_lower and w in ep_label for w in ["мм", "кг", "м ", "ватт"]):
+                    is_duplicate = True
+                    break
+            if is_duplicate:
                 continue
 
             result.append(
@@ -268,6 +288,6 @@ class GenerativeExpander:
             return []
 
         generated_text = first["generated_text"]
-        new_params = self._parse_response(generated_text, existing_names)
+        new_params = self._parse_response(generated_text, existing_names, existing_params)
         logger.info("GenerativeExpander: добавлено %d параметров", len(new_params))
         return new_params
