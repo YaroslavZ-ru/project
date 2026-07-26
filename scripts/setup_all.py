@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 def setup_all(config, force: bool = False) -> None:
     from scripts.init_db import init_db
-    from scripts.seed_data import seed
+    from scripts.seed_massive import seed_massive
     from src.embeddings import FastTextWrapper
     from src.knowledge_base import KnowledgeBase
     from src.lemmatizer import Lemmatizer
@@ -16,8 +16,8 @@ def setup_all(config, force: bool = False) -> None:
     init_db(str(config.db_path))
     logger.info("Шаг 1/3: схема создана.")
 
-    seed(config, force=force)
-    logger.info("Шаг 2/3: данные вставлены.")
+    n = seed_massive(str(config.db_path), force=force)
+    logger.info("Шаг 2/3: данные вставлены: %d понятий.", n)
 
     Lemmatizer(cache_size=config.cache_lemma_size)
     synonym_dict = SynonymDict(config.synonyms_path)

@@ -398,11 +398,11 @@ def run_pipeline(
                     candidates = domain_filtered
 
         # --- Фильтрация по порогу similarity ---
-        # Отбрасываем кандидатов с similarity < 70% от лучшего.
+        # Отбрасываем кандидатов с similarity < 75% от лучшего.
         # Иначе параметры из слабо похожих понятий попадают в результат.
         if candidates:
             top_sim = max(c.get("similarity", 0.0) for c in candidates)
-            threshold_sim = top_sim * 0.7
+            threshold_sim = top_sim * 0.75
             before_count = len(candidates)
             candidates = [c for c in candidates if c.get("similarity", 0.0) >= threshold_sim]
             if len(candidates) < before_count:

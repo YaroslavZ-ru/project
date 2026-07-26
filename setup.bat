@@ -67,7 +67,7 @@ if exist models\cc.ru.300.bin (
         exit /b 1
     )
     echo Распаковка...
-    python -c "import gzip, shutil; gzip.open('models/cc.ru.300.bin.gz','rb') and shutil.copyfileobj(gzip.open('models/cc.ru.300.bin.gz','rb'), open('models/cc.ru.300.bin','wb'))"
+    python -c "import gzip; import shutil; shutil.copyfileobj(gzip.open('models/cc.ru.300.bin.gz','rb'), open('models/cc.ru.300.bin','wb'), length=16*1024*1024)"
     del models\cc.ru.300.bin.gz
 )
 echo OK
@@ -86,7 +86,7 @@ echo OK
 echo.
 
 :: Проверка Node.js и установка веб-зависимостей
-echo [6/7] Проверка Node.js...
+echo [6/6] Проверка Node.js...
 node --version >nul 2>&1
 if errorlevel 1 (
     echo ПРЕДУПРЕЖДЕНИЕ: Node.js не найден!
@@ -97,7 +97,7 @@ if errorlevel 1 (
     for /f "tokens=*" %%i in ('node --version') do set NODEVER=%%i
     echo OK: NodeJS !NODEVER!
     echo.
-    echo [7/7] Установка веб-зависимостей...
+    echo Установка веб-зависимостей...
     cd web
     call npm install
     cd ..

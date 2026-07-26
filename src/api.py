@@ -415,10 +415,10 @@ def _api_run_pipeline(
                     if domain_filtered:
                         candidates = domain_filtered
 
-            # --- Фильтр similarity: отбросить кандидатов < 70% от лучшего ---
+            # --- Фильтр similarity: отбросить кандидатов < 75% от лучшего ---
             if candidates:
                 top_sim = max(c.get("similarity", 0.0) for c in candidates)
-                threshold_sim = top_sim * 0.7
+                threshold_sim = top_sim * 0.75
                 candidates = [c for c in candidates if c.get("similarity", 0.0) >= threshold_sim]
 
             # --- Изменение 67: Параметры из графа отношений ---
