@@ -112,6 +112,15 @@ def aggregate_parameters(
     # Определяем лучшего кандидата (максимальная similarity)
     top_sim = max(candidate["similarity"] for candidate in candidates)
 
+    # Убираем параметры, которые пришли ТОЛЬКО от слабых кандидатов (< 85% от лучшего)
+    weak_threshold = top_sim * 0.85
+    groups = {
+        name: g for name, g in groups.items()
+        if max(g["similarities"]) >= weak_threshold
+    }
+    if not groups:
+        return []
+
     max_freq = max(g["freq"] for g in groups.values())
     hint_set = {lemma for sub in hints_lemmas for lemma in sub}
 
@@ -121,16 +130,14 @@ def aggregate_parameters(
         hint_match = _compute_hint_match(g["param"], hint_set)
 
         # Специфичность: параметр от лучшего кандидата — бонус,
-        # параметр только от слабых кандидатов — штраф.
+        # параметр от слабого кандидата (< 85% от лучшего) — штраф.
         max_sim = max(g["similarities"])
-        has_top_candidate = max_sim >= top_sim * 0.95
-        only_weak = all(s < top_sim * 0.7 for s in g["similarities"])
-
-        specificity = 1.0
-        if has_top_candidate:
-            specificity = 1.3
-        elif only_weak:
-            specificity = 0.5
+        if max_sim >= top_sim * 0.95:
+            specificity = 1.3  # от лучшего кандидата
+        elif max_sim >= top_sim * 0.85:
+            specificity = 1.0  # от похожего кандидата
+        else:
+            specificity = 0.3  # от слабого кандидата — сильный штраф
 
         g["score"] = 0.5 * freq_norm + 0.3 * avg_sim + 0.1 * hint_match + 0.1 * specificity
 
@@ -347,6 +354,14 @@ def _aggregate_parameters_extended(
 
     top_sim = max(candidate["similarity"] for candidate in candidates)
 
+    weak_threshold = top_sim * 0.85
+    groups = {
+        name: g for name, g in groups.items()
+        if max(g["similarities"]) >= weak_threshold
+    }
+    if not groups:
+        return []
+
     max_freq = max(g["freq"] for g in groups.values())
     hint_set = {lemma for sub in hints_lemmas for lemma in sub}
 
@@ -355,13 +370,12 @@ def _aggregate_parameters_extended(
         avg_sim = sum(g["similarities"]) / len(g["similarities"])
         hint_match = _compute_hint_match(g["param"], hint_set)
         max_sim = max(g["similarities"])
-        has_top_candidate = max_sim >= top_sim * 0.95
-        only_weak = all(s < top_sim * 0.7 for s in g["similarities"])
-        specificity = 1.0
-        if has_top_candidate:
+        if max_sim >= top_sim * 0.95:
             specificity = 1.3
-        elif only_weak:
-            specificity = 0.5
+        elif max_sim >= top_sim * 0.85:
+            specificity = 1.0
+        else:
+            specificity = 0.3
         g["score"] = 0.5 * freq_norm + 0.3 * avg_sim + 0.1 * hint_match + 0.1 * specificity
 
     sorted_groups = sorted(groups.values(), key=lambda g: g["score"], reverse=True)
