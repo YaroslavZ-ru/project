@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI-Terminator</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="header">
+    <div class="header-left">
+      <h1 class="logo">AI-Terminator</h1>
+      <span class="version">v0.9.0</span>
+    </div>
+    <div class="header-right">
+      <span class="status-dot" id="statusDot"></span>
+      <span class="status-text" id="statusText">Проверка...</span>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- Форма ввода -->
+    <section class="card">
+      <h2>Анализ термина</h2>
+      <div class="form-group">
+        <label for="termInput">Термин <span class="required">*</span></label>
+        <input type="text" id="termInput" placeholder="Например: ключ" maxlength="200" autocomplete="off">
+      </div>
+      <div id="hintsContainer">
+        <div class="form-group hint-row">
+          <label>Подсказка 1</label>
+          <input type="text" class="hint-input" placeholder="Например: техника" maxlength="50" autocomplete="off">
+        </div>
+      </div>
+      <div class="form-actions">
+        <label class="checkbox-label">
+          <input type="checkbox" id="debugToggle"> Отладочная информация
+        </label>
+        <button class="btn btn-primary" id="analyzeBtn" onclick="analyze()">
+          Анализировать
+        </button>
+      </div>
+    </section>
+
+    <!-- Результат -->
+    <section class="card" id="resultSection" style="display:none;">
+      <h2>Результат</h2>
+
+      <div class="result-status" id="resultStatus"></div>
+
+      <div id="ambiguousBlock" style="display:none;">
+        <p class="ambiguous-text">Термин многозначен. Выберите домен:</p>
+        <div id="domainCandidates" class="domain-candidates"></div>
+      </div>
+
+      <div id="domainBlock" style="display:none;">
+        <div class="domain-info">
+          <span class="domain-label">Домен:</span>
+          <span class="domain-value" id="domainValue"></span>
+          <span class="confidence-badge" id="confidenceBadge"></span>
+        </div>
+      </div>
+
+      <div id="parametersBlock" style="display:none;">
+        <h3>Параметры</h3>
+        <div class="table-wrap">
+          <table class="params-table" id="paramsTable">
+            <thead>
+              <tr>
+                <th>Название</th>
+                <th>Тип</th>
+                <th>Описание</th>
+                <th>Ед. изм.</th>
+                <th>Уверенность</th>
+              </tr>
+            </thead>
+            <tbody id="paramsBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="warningsBlock" style="display:none;">
+        <h3>Предупреждения</h3>
+        <ul id="warningsList" class="warnings-list"></ul>
+      </div>
+
+      <div id="refinementsBlock" style="display:none;">
+        <h3>Рекомендации</h3>
+        <ul id="refinementsList" class="refinements-list"></ul>
+      </div>
+
+      <div id="debugBlock" style="display:none;">
+        <h3>Отладка</h3>
+        <pre class="debug-pre" id="debugContent"></pre>
+      </div>
+    </section>
+
+    <!-- Обратная связь -->
+    <section class="card" id="feedbackSection" style="display:none;">
+      <h2>Оценка результата</h2>
+      <div class="star-rating" id="starRating">
+        <span class="star" data-value="1">&#9733;</span>
+        <span class="star" data-value="2">&#9733;</span>
+        <span class="star" data-value="3">&#9733;</span>
+        <span class="star" data-value="4">&#9733;</span>
+        <span class="star" data-value="5">&#9733;</span>
+      </div>
+      <div class="form-group">
+        <label for="commentInput">Комментарий</label>
+        <textarea id="commentInput" rows="2" placeholder="Необязательно"></textarea>
+      </div>
+      <button class="btn btn-secondary" onclick="submitFeedback()">Отправить оценку</button>
+      <span id="feedbackMsg" class="feedback-msg"></span>
+    </section>
+
+    <!-- Экспорт -->
+    <section class="card" id="exportSection" style="display:none;">
+      <h2>Экспорт</h2>
+      <div class="export-buttons">
+        <button class="btn btn-export" onclick="exportJSON()">Скачать JSON</button>
+        <button class="btn btn-export" onclick="exportCSV()">Скачать CSV</button>
+        <button class="btn btn-export" onclick="exportTXT()">Скачать TXT</button>
+      </div>
+    </section>
+
+    <!-- Статистика -->
+    <section class="card" id="statsSection">
+      <h2>Статистика базы знаний</h2>
+      <div class="stats-grid" id="statsGrid">
+        <div class="stat-item">
+          <span class="stat-value" id="statConcepts">—</span>
+          <span class="stat-label">Понятий</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-value" id="statParams">—</span>
+          <span class="stat-label">Параметров</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-value" id="statModel">—</span>
+          <span class="stat-label">Модель</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>AI-Terminator &mdash; Интеллектуальный помощник по терминам</p>
+  </footer>
+
+  <script src="js/app.js"></script>
+</body>
+</html>
