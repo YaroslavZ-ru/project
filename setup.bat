@@ -3,7 +3,7 @@ chcp 65001 >nul
 setlocal enabledelayedexpansion
 
 echo ============================================================
-echo   AI-Terminator — Установка
+echo   AI-Terminator -- Установка
 echo ============================================================
 echo.
 
@@ -12,10 +12,7 @@ echo [1/6] Проверка Python 3.12...
 py -3.12 --version >nul 2>&1
 if errorlevel 1 (
     echo ОШИБКА: Python 3.12 не найден!
-    echo.
-    echo Скачайте Python 3.12: https://www.python.org/downloads/
-    echo При установке отметьте "Add Python to PATH"
-    echo.
+    echo Скачайте: https://www.python.org/downloads/
     pause
     exit /b 1
 )
@@ -29,11 +26,6 @@ if exist venv312 (
     echo venv312 уже существует, пропускаю...
 ) else (
     py -3.12 -m venv venv312
-    if errorlevel 1 (
-        echo ОШИБКА: Не удалось создать venv
-        pause
-        exit /b 1
-    )
 )
 echo OK
 echo.
@@ -43,12 +35,8 @@ echo [3/6] Установка зависимостей...
 call venv312\Scripts\activate.bat
 pip install --upgrade pip >nul 2>&1
 pip install -r requirements.txt >nul 2>&1
-pip install fastapi uvicorn httpx >nul 2>&1
-pip install fasttext-wheel >nul 2>&1
-pip install transformers torch --index-url https://download.pytorch.org/whl/cpu >nul 2>&1
 if errorlevel 1 (
-    echo ОШИБКА: Не удалось установить fasttext-wheel
-    echo Попробуйте: pip install fasttext-wheel
+    echo ОШИБКА: Не удалось установить зависимости
     pause
     exit /b 1
 )
@@ -77,7 +65,8 @@ echo.
 :: Инициализация БД
 echo [5/6] Инициализация базы данных...
 python setup_project.py >nul 2>&1
-python -m scripts.setup_all --force >nul 2>&1
+python -m scripts.init_db >nul 2>&1
+python -m scripts.seed_massive --force >nul 2>&1
 if errorlevel 1 (
     echo ОШИБКА: Не удалось инициализировать БД
     pause
@@ -86,14 +75,13 @@ if errorlevel 1 (
 echo OK
 echo.
 
-:: Проверка Node.js и установка веб-зависимостей
+:: Проверка Node.js и веб-зависимостей
 echo [6/6] Проверка Node.js...
 node --version >nul 2>&1
 if errorlevel 1 (
     echo ПРЕДУПРЕЖДЕНИЕ: Node.js не найден!
     echo Веб-интерфейс потребует Node.js 18+.
     echo Скачайте: https://nodejs.org/
-    echo.
 ) else (
     for /f "tokens=*" %%i in ('node --version') do set NODEVER=%%i
     echo OK: NodeJS !NODEVER!
@@ -119,6 +107,7 @@ echo ============================================================
 echo   Установка завершена успешно!
 echo ============================================================
 echo.
+echo База данных: 499 понятий по 14 доменам
 echo Для запуска: run.bat
 echo Для веб-интерфейса: start_web.bat
 echo.
