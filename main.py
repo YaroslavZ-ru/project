@@ -397,6 +397,17 @@ def run_pipeline(
                 if domain_filtered:
                     candidates = domain_filtered
 
+        # --- Фильтрация по порогу similarity ---
+        # Отбрасываем кандидатов с similarity < 70% от лучшего.
+        # Иначе параметры из слабо похожих понятий попадают в результат.
+        if candidates:
+            top_sim = max(c.get("similarity", 0.0) for c in candidates)
+            threshold_sim = top_sim * 0.7
+            before_count = len(candidates)
+            candidates = [c for c in candidates if c.get("similarity", 0.0) >= threshold_sim]
+            if len(candidates) < before_count:
+                logger.info("Фильтр similarity: %d -> %d (порог %.4f)", before_count, len(candidates), threshold_sim)
+
         # --- Изменение 67: Параметры из графа отношений ---
         related_params: list = []
         if getattr(cfg, "use_relations", False) and kb is not None:
