@@ -424,7 +424,14 @@ def run_pipeline(
             parameters = aggregate_parameters(candidates, hints_lemmas, cfg.max_parameters, related_params=related_params)
         else:
             parameters = aggregate_parameters(candidates, hints_lemmas, cfg.max_parameters)
-        suggested_refinements = []
+
+        # Генерация suggested_refinements на основе enum-параметров
+        suggested_refinements: list = []
+        for p in parameters:
+            if p.get("type") == "enum" and p.get("enum_values"):
+                label = p.get("label_ru", p.get("name", ""))
+                values = ", ".join(p["enum_values"][:6])
+                suggested_refinements.append(f"Уточните {label.lower()}: {values}")
 
         # Генеративное расширение при нехватке параметров
         if (
