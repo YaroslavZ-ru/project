@@ -483,6 +483,22 @@ def _api_run_pipeline(
             if metrics:
                 metrics.record_fallback_activation()
             result = fallback_response(term, processed, cfg)
+
+            # Генеративное расширение в fallback-ветке
+            fb_params = result.get("parameters", [])
+            if (
+                cfg.use_generative
+                and generative_expander is not None
+                and len(fb_params) < cfg.min_parameters_for_generative
+            ):
+                gen_params = generative_expander.expand(term, hints, fb_params, cfg)
+                if gen_params:
+                    fb_params.extend(gen_params)
+                    result["parameters"] = fb_params
+                    result["warnings"] = result.get("warnings", []) + [
+                        f"Добавлено {len(gen_params)} параметров генеративной моделью."
+                    ]
+                    logger.info("Генеративное расширение (fallback): +%d параметров", len(gen_params))
         trace_context.add_stage("aggregation", time.monotonic() - t_stage, {"parameters_count": len(result.get("parameters", []))})
 
         if debug and "debug_info" not in result:

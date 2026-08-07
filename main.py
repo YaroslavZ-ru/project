@@ -453,6 +453,23 @@ def run_pipeline(
     else:
         needs_clarification = False
         response = fallback_response(term, processed, cfg)
+
+        # Генеративное расширение в fallback-ветке
+        parameters = response.get("parameters", [])
+        if (
+            cfg.use_generative
+            and generative_expander is not None
+            and len(parameters) < cfg.min_parameters_for_generative
+        ):
+            gen_params = generative_expander.expand(term, hints, parameters, cfg)
+            if gen_params:
+                parameters.extend(gen_params)
+                response["parameters"] = parameters
+                response["warnings"] = response.get("warnings", []) + [
+                    f"Добавлено {len(gen_params)} параметров генеративной моделью."
+                ]
+                logger.info("Генеративное расширение (fallback): +%d параметров", len(gen_params))
+
         if debug:
             response["debug_info"] = {
                 "query_vector": query_vector.tolist(),
