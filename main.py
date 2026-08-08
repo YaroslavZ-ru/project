@@ -269,6 +269,33 @@ def run_pipeline(
         return {"status": "error", "message": processed["message"], "request_id": request_id}
     warnings_list = list(processed.get("warnings", []))
 
+    # ===== ПРЯМОЙ ПОИСК В БАЗЕ (до векторизации) =====
+    if kb is not None:
+        logger.info(f"🔍 Прямой поиск термина '{term}' в базе...")
+        try:
+            concepts = kb.get_all_concepts(use_cache=True)
+            logger.info(f"   Всего понятий в базе: {len(concepts)}")
+            
+            for c in concepts:
+                if c.get('term', '').lower() == term.lower():
+                    logger.info(f"✅ Термин найден напрямую: {c.get('term')} ({c.get('domain')})")
+                    logger.info(f"   Параметров: {len(c.get('parameters', []))}")
+                    return {
+                        "status": "ok",
+                        "term": term,
+                        "selected_context": {
+                            "domain": c.get('domain', 'general'),
+                            "confidence": 0.95,
+                        },
+                        "parameters": c.get('parameters', []),
+                        "suggested_refinements": [],
+                        "warnings": warnings_list,
+                        "request_id": request_id,
+                    }
+        except Exception as e:
+            logger.warning(f"Ошибка прямого поиска: {e}")
+    # ==================================================
+
     # Шаг 2: векторизация (с кэшем)
     t_stage = time.monotonic()
     query_vector = None
@@ -308,14 +335,62 @@ def run_pipeline(
     # --- Шаг 3: Поиск кандидатов ---
     t_stage = time.monotonic()
     candidates: list = []
+
+    # ===== ДИАГНОСТИКА ПОИСКА =====
+    logger.info("=" * 60)
+    logger.info("🔍 ДИАГНОСТИКА ПОИСКА")
+    logger.info("=" * 60)
+    logger.info(f"   kb is None: {kb is None}")
+    logger.info(f"   query_vector is zero: {np.all(query_vector == 0)}")
+    logger.info(f"   effective_min_confidence: {effective_min_confidence}")
+    logger.info(f"   max_candidates: {cfg.max_candidates}")
+
+    if kb is not None:
+        try:
+            concepts = kb.get_all_concepts(use_cache=True)
+            logger.info(f"   concepts in kb: {len(concepts)}")
+            
+            if hasattr(kb, '_embeddings_matrix'):
+                matrix = kb._embeddings_matrix
+                if matrix is not None:
+                    logger.info(f"   embeddings_matrix: {matrix.shape}")
+                else:
+                    logger.warning("   embeddings_matrix is None!")
+            else:
+                logger.warning("   kb._embeddings_matrix не найден!")
+            
+            logger.info(f"   query_vector[:5]: {query_vector[:5] if not np.all(query_vector == 0) else 'ZERO'}")
+        except Exception as e:
+            logger.warning(f"Ошибка диагностики: {e}")
+    # =================================
+
     if kb is not None and not np.all(query_vector == 0):
         candidates = kb.search_similar_concepts(
             query_vector,
             min_confidence=effective_min_confidence,
             max_candidates=cfg.max_candidates,
         )
+        logger.info(f"   candidates found with {effective_min_confidence}: {len(candidates)}")
+        
+        if candidates:
+            logger.info(f"   first candidate: {candidates[0].get('term')} (sim={candidates[0].get('similarity', 0):.4f})")
+        else:
+            # Пробуем с более низким порогом
+            logger.warning("   No candidates with min_confidence=%.2f, trying 0.2", effective_min_confidence)
+            candidates = kb.search_similar_concepts(
+                query_vector,
+                min_confidence=0.2,
+                max_candidates=cfg.max_candidates,
+            )
+            logger.info(f"   candidates with 0.2: {len(candidates)}")
     elif kb is None:
         warnings_list.append("KnowledgeBase не инициализирован. Поиск пропущен.")
+    else:
+        warnings_list.append("Вектор запроса нулевой. Поиск пропущен.")
+
+    logger.info("=" * 60)
+    # =================================
+
     trace_context.add_stage("search", time.monotonic() - t_stage, {"candidates_count": len(candidates)})
     logger.info("Поиск: %d кандидатов за %.3fс", len(candidates), time.monotonic() - t_stage)
 
@@ -453,23 +528,6 @@ def run_pipeline(
     else:
         needs_clarification = False
         response = fallback_response(term, processed, cfg)
-
-        # Генеративное расширение в fallback-ветке
-        parameters = response.get("parameters", [])
-        if (
-            cfg.use_generative
-            and generative_expander is not None
-            and len(parameters) < cfg.min_parameters_for_generative
-        ):
-            gen_params = generative_expander.expand(term, hints, parameters, cfg)
-            if gen_params:
-                parameters.extend(gen_params)
-                response["parameters"] = parameters
-                response["warnings"] = response.get("warnings", []) + [
-                    f"Добавлено {len(gen_params)} параметров генеративной моделью."
-                ]
-                logger.info("Генеративное расширение (fallback): +%d параметров", len(gen_params))
-
         if debug:
             response["debug_info"] = {
                 "query_vector": query_vector.tolist(),

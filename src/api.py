@@ -300,6 +300,32 @@ def _api_run_pipeline(
 
         warnings_list = list(processed.get("warnings", []))
 
+        # ===== ПРЯМОЙ ПОИСК В БАЗЕ (до векторизации) =====
+        if kb is not None:
+            logger.info(f"🔍 Прямой поиск термина '{term}' в базе...")
+            try:
+                concepts = kb.get_all_concepts(use_cache=True)
+                logger.info(f"   Всего понятий в базе: {len(concepts)}")
+                
+                for c in concepts:
+                    if c.get('term', '').lower() == term.lower():
+                        logger.info(f"✅ Термин найден напрямую: {c.get('term')} ({c.get('domain')})")
+                        logger.info(f"   Параметров: {len(c.get('parameters', []))}")
+                        return {
+                            "status": "ok",
+                            "term": term,
+                            "selected_context": {
+                                "domain": c.get('domain', 'general'),
+                                "confidence": 0.95,
+                            },
+                            "parameters": c.get('parameters', []),
+                            "suggested_refinements": [],
+                            "warnings": warnings_list,
+                        }
+            except Exception as e:
+                logger.warning(f"Ошибка прямого поиска: {e}")
+        # ==================================================
+
         # Изменение 63: Проверка связности подсказок
         if hints and len(hints) >= 2 and _embedding_model is not None:
             coherence_threshold = getattr(_cfg, "hints_coherence_threshold", 0.2)
@@ -339,6 +365,29 @@ def _api_run_pipeline(
         # Шаг 3: поиск кандидатов
         t_stage = time.monotonic()
         candidates: list = []
+
+        # ===== ДИАГНОСТИКА ПОИСКА =====
+        logger.info("=" * 60)
+        logger.info("🔍 ДИАГНОСТИКА ПОИСКА (API)")
+        logger.info("=" * 60)
+        logger.info(f"   term: {term}")
+        logger.info(f"   kb is None: {kb is None}")
+        if kb is not None:
+            try:
+                concepts = kb.get_all_concepts(use_cache=True)
+                logger.info(f"   concepts in kb: {len(concepts)}")
+                if hasattr(kb, '_embeddings_matrix'):
+                    matrix = kb._embeddings_matrix
+                    if matrix is not None:
+                        logger.info(f"   embeddings_matrix: {matrix.shape}")
+                    else:
+                        logger.warning("   embeddings_matrix is None!")
+            except Exception as e:
+                logger.warning(f"   Ошибка диагностики: {e}")
+        logger.info(f"   effective_min_confidence: {effective_min_confidence}")
+        logger.info(f"   selected_domain: {selected_domain}")
+        # =================================
+
         if kb is not None and not np.all(query_vector == 0):
             candidates = kb.search_similar_concepts(
                 query_vector,
@@ -346,8 +395,25 @@ def _api_run_pipeline(
                 max_candidates=cfg.max_candidates,
                 domain_filter=selected_domain,
             )
+            logger.info(f"   Найдено кандидатов: {len(candidates)}")
+            if candidates:
+                logger.info(f"   Первый кандидат: {candidates[0].get('term')} (sim={candidates[0].get('similarity', 0):.4f})")
+            else:
+                # Пробуем с более низким порогом
+                logger.warning(f"   Нет кандидатов с порогом {effective_min_confidence}, пробуем 0.2")
+                candidates = kb.search_similar_concepts(
+                    query_vector,
+                    min_confidence=0.2,
+                    max_candidates=cfg.max_candidates,
+                    domain_filter=selected_domain,
+                )
+                logger.info(f"   Найдено с порогом 0.2: {len(candidates)}")
         elif kb is None:
             warnings_list.append("KnowledgeBase не инициализирован. Поиск пропущен.")
+        else:
+            warnings_list.append("Вектор запроса нулевой. Поиск пропущен.")
+
+        logger.info("=" * 60)
         trace_context.add_stage("search", time.monotonic() - t_stage, {"candidates_count": len(candidates)})
 
         # --- Фильтрация домена по hints ---
@@ -364,7 +430,8 @@ def _api_run_pipeline(
         # --- Проверка минимального confidence ---
         if candidates:
             best_sim = max(c.get("similarity", 0.0) for c in candidates)
-            if best_sim < 0.3:
+            if best_sim < 0.35:
+                logger.info("Лучший кандидат: %.4f < 0.35, переход в fallback", best_sim)
                 candidates = []
 
         # --- Изменение 68: Коррекция по обратной связи ---
@@ -415,7 +482,10 @@ def _api_run_pipeline(
             if candidates:
                 top_sim = max(c.get("similarity", 0.0) for c in candidates)
                 threshold_sim = top_sim * 0.7
+                before_count = len(candidates)
                 candidates = [c for c in candidates if c.get("similarity", 0.0) >= threshold_sim]
+                if len(candidates) < before_count:
+                    logger.info("Фильтр similarity: %d -> %d", before_count, len(candidates))
 
             # --- Изменение 67: Параметры из графа отношений ---
             related_params: list = []
@@ -483,27 +553,11 @@ def _api_run_pipeline(
             if metrics:
                 metrics.record_fallback_activation()
             result = fallback_response(term, processed, cfg)
-
-            # Генеративное расширение в fallback-ветке
-            fb_params = result.get("parameters", [])
-            if (
-                cfg.use_generative
-                and generative_expander is not None
-                and len(fb_params) < cfg.min_parameters_for_generative
-            ):
-                gen_params = generative_expander.expand(term, hints, fb_params, cfg)
-                if gen_params:
-                    fb_params.extend(gen_params)
-                    result["parameters"] = fb_params
-                    result["warnings"] = result.get("warnings", []) + [
-                        f"Добавлено {len(gen_params)} параметров генеративной моделью."
-                    ]
-                    logger.info("Генеративное расширение (fallback): +%d параметров", len(gen_params))
         trace_context.add_stage("aggregation", time.monotonic() - t_stage, {"parameters_count": len(result.get("parameters", []))})
 
         if debug and "debug_info" not in result:
             result["debug_info"] = {
-                "query_vector": query_vector.tolist(),
+                "query_vector": query_vector.tolist() if query_vector is not None else [],
                 "candidates_raw": candidates,
             }
             result["trace"] = trace_context.to_dict()
@@ -522,7 +576,7 @@ def _api_run_pipeline(
             ):
                 session_manager.update_session(session_id, domain, term)
 
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception("Ошибка в пайплайне API: %s", exc)
         result = {"status": "error", "message": f"Внутренняя ошибка: {exc}", "request_id": request_id}
 
